@@ -13,6 +13,18 @@ import { userRouter } from "./routes/user";
 import { downloadsRouter } from "./routes/downloads";
 import { caseLawRouter } from "./routes/caseLaw";
 
+// ---------------------------------------------------------------------------
+// Required environment variable check — fail fast before binding the port.
+// ---------------------------------------------------------------------------
+
+if (!process.env.SAKANA_API_KEY?.trim()) {
+    console.error(
+        "FATAL: SAKANA_API_KEY is required. " +
+        "Add it to your Railway environment variables (Settings → Variables).",
+    );
+    process.exit(1);
+}
+
 const app = express();
 const PORT = process.env.PORT ?? 3001;
 const isProduction = process.env.NODE_ENV === "production";
