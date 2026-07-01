@@ -1,5 +1,5 @@
 [phases.setup]
-nixPkgs = ["libreoffice"]
+nixPkgs = ["libreoffice", "bun"]
 
 [phases.install]
 cmds = ["bun install"]
