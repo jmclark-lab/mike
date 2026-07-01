@@ -1,17 +1,23 @@
 /**
  * SerpApi web search integration for Mike (bioaccess® AI Platform).
  *
- * Provides real-time web search context for regulatory pathway validation,
- * device classification lookups, and LATAM country approval timelines.
+ * Provides real-time web search context for all queries, grounding
+ * Fugu Ultra's responses in current information.
  *
  * Requires SERPAPI_KEY to be set in Railway Variables. When absent, all
  * functions degrade gracefully — Mike continues to operate using only
  * Fugu Ultra's training data.
+ *
+ * See: https://serpapi.com/search-api
  */
 
 const SERPAPI_BASE = "https://serpapi.com/search";
 const MAX_RESULTS = 5;
 const TIMEOUT_MS = 12_000;
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
 
 export interface SerpResult {
     title: string;
@@ -27,6 +33,10 @@ export interface SerpSearchResponse {
     timestamp: string;
 }
 
+// ---------------------------------------------------------------------------
+// Core search
+// ---------------------------------------------------------------------------
+
 function serpApiKey(): string | null {
     return process.env.SERPAPI_KEY?.trim() || null;
 }
@@ -38,7 +48,10 @@ export function isSerpEnabled(): boolean {
 export async function serpSearch(query: string): Promise<SerpSearchResponse> {
     const key = serpApiKey();
     const timestamp = new Date().toISOString();
-    if (!key) return { results: [], query, timestamp };
+
+    if (!key) {
+        return { results: [], query, timestamp };
+    }
 
     const params = new URLSearchParams({
         api_key: key,
@@ -52,6 +65,7 @@ export async function serpSearch(query: string): Promise<SerpSearchResponse> {
     try {
         const controller = new AbortController();
         const timerId = setTimeout(() => controller.abort(), TIMEOUT_MS);
+
         const response = await fetch(`${SERPAPI_BASE}?${params.toString()}`, {
             signal: controller.signal,
         });
@@ -91,7 +105,7 @@ export async function serpSearch(query: string): Promise<SerpSearchResponse> {
         return { results, query, timestamp };
     } catch (err) {
         if ((err as { name?: string }).name === "AbortError") {
-            console.warn(`[serpSearch] Timed out after ${TIMEOUT_MS}ms`);
+            console.warn(`[serpSearch] Timed out after ${TIMEOUT_MS}ms for: "${query}"`);
         } else {
             console.warn("[serpSearch] Fetch error:", err);
         }
@@ -99,40 +113,53 @@ export async function serpSearch(query: string): Promise<SerpSearchResponse> {
     }
 }
 
-const REGULATORY_KEYWORDS: string[] = [
-    "conis", "cneis", "anmat", "anvisa", "cofepris", "invima", "emed", "anamed", "cecmed",
-    "regulatory", "regulatoria", "regulatorio", "pathway", "approval",
-    "homologation", "registro sanitario", "registry", "clearance", "authorization",
-    "timeline", "cronograma", "plazo", "business days", "working days",
-    "class ii", "class iii", "clase ii", "clase iii", "510(k)", "510k", "pma", "de novo", "ide ",
-    "investigational device", "dispositivo médico", "medical device",
-    "pivotal trial", "pivotal study", "ensayo pivotal", "ensayo clínico", "clinical trial",
-    "panama", "panamá", "chile", "argentina", "brazil", "brasil",
-    "costa rica", "el salvador", "dominicana", "dominican republic",
-    "colombia", "mexico", "méxico", "peru", "perú",
-];
+// ---------------------------------------------------------------------------
+// Search gate — always enabled when SERPAPI_KEY is set.
+// Every query gets real-time web context injected into the system prompt.
+// ---------------------------------------------------------------------------
 
-export function needsWebSearch(text: string): boolean {
-    const lower = text.toLowerCase();
-    return REGULATORY_KEYWORDS.some((kw) => lower.includes(kw));
+export function needsWebSearch(_text: string): boolean {
+    return true;
 }
+
+// ---------------------------------------------------------------------------
+// Search query builder
+// For long messages (pasted documents), extract the most query-relevant
+// portion rather than sending megabytes to SerpApi.
+// ---------------------------------------------------------------------------
 
 export function buildSearchQuery(userMessage: string): string {
     const text = userMessage.trim();
-    if (text.length <= 400) return text.slice(0, 350);
+
+    if (text.length <= 400) {
+        // Short messages: use directly
+        return text.slice(0, 350);
+    }
+
+    // Long messages (document pasted inline):
+    // Combine context header (first 150 chars) + analysis request (last 200 chars).
     const head = text.slice(0, 150).trim();
     const tail = text.slice(-200).trim();
     return `${head} ${tail}`.replace(/\s+/g, " ").trim().slice(0, 350);
 }
 
+// ---------------------------------------------------------------------------
+// Context formatter
+// Produces the block injected into the system prompt before Fugu processes
+// the query. Format is intentionally terse and clearly delimited so Fugu
+// can distinguish it from the system instructions.
+// ---------------------------------------------------------------------------
+
 export function formatSearchContext(response: SerpSearchResponse): string {
     if (response.results.length === 0) return "";
+
     const lines: string[] = [
         `[REAL-TIME WEB SEARCH — ${response.timestamp}]`,
         `Query: "${response.query}"`,
         "The following current sources were retrieved to supplement your training data:",
         "",
     ];
+
     for (const [i, r] of response.results.entries()) {
         const dateStr = r.date ? ` (${r.date})` : "";
         lines.push(`[${i + 1}] ${r.title}${dateStr}`);
@@ -141,6 +168,12 @@ export function formatSearchContext(response: SerpSearchResponse): string {
         lines.push(`    URL: ${r.link}`);
         lines.push("");
     }
-    lines.push("[END REAL-TIME CONTEXT]", "Cross-reference these results with your training data when synthesizing.", "");
+
+    lines.push(
+        "[END REAL-TIME CONTEXT]",
+        "Cross-reference these results with your training data when synthesizing.",
+        "",
+    );
+
     return lines.join("\n");
 }
