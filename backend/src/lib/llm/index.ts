@@ -3,24 +3,11 @@ import { streamClaude, completeClaudeText } from "./claude";
 import { DEFAULT_SAKANA_MODEL, providerForModel } from "./models";
 import type { StreamChatParams, StreamChatResult, UserApiKeys } from "./types";
 import {
-    isSerpEnabled,
-    needsWebSearch,
-    buildSearchQuery,
-    serpSearch,
-    formatSearchContext,
+    isSerpEnabled, needsWebSearch, buildSearchQuery, serpSearch, formatSearchContext,
 } from "../serpSearch";
 
 export * from "./types";
 export * from "./models";
-
-// ---------------------------------------------------------------------------
-// Active model resolution
-// ---------------------------------------------------------------------------
-// Priority: LLM_MODEL env var > LLM_PROVIDER=anthropic shorthand > SAKANA_MODEL > default Fugu Ultra
-//
-// To use Fable 5:  set LLM_MODEL=claude-fable-5 in Railway Variables
-// To use Sakana:   leave LLM_MODEL unset (or set LLM_MODEL=fugu-ultra-20260615)
-// ---------------------------------------------------------------------------
 
 const DEFAULT_FABLE_MODEL = "claude-fable-5";
 
@@ -33,39 +20,54 @@ function resolveActiveModel(): string {
     return process.env.SAKANA_MODEL?.trim() || DEFAULT_SAKANA_MODEL;
 }
 
-/**
- * Route ALL chat completions through the configured LLM provider.
- *
- * Set LLM_MODEL=claude-fable-5 in Railway Variables to use Fable 5.
- * Leave LLM_MODEL unset to use Sakana Fugu Ultra (default).
- *
- * When SERPAPI_KEY is set in Railway Variables, regulatory and country-specific
- * queries automatically receive real-time web search context injected into the
- * system prompt before the LLM processes them.
- *
- * Fable 5 pricing:  $10/M input · $50/M output
- * Fugu Ultra pricing: $5/M input · $30/M output (as of 2026-06-23)
- */
-export async function streamChatWithTools(
-    params: StreamChatParams,
+function resolveFallbackModel(primaryModel: string): string | null {
+    const explicit = process.env.LLM_FALLBACK_MODEL?.trim();
+    if (explicit) return explicit;
+    if (primaryModel.startsWith("claude-")) {
+        return process.env.SAKANA_MODEL?.trim() || DEFAULT_SAKANA_MODEL;
+    }
+    return null;
+}
+
+function isRetryableError(err: unknown): boolean {
+    const msg = String(err instanceof Error ? err.message : err).toLowerCase();
+    return (
+        msg.includes("not_found") ||
+        msg.includes("overloaded") ||
+        msg.includes("timeout") ||
+        msg.includes("524") ||
+        msg.includes("503") ||
+        msg.includes("502") ||
+        msg.includes("econnreset") ||
+        msg.includes("econnrefused") ||
+        msg.includes("service_unavailable") ||
+        msg.includes("service unavailable")
+    );
+}
+
+async function invokeStream(
+    model: string,
+    params: StreamChatParams & { systemPrompt?: string },
 ): Promise<StreamChatResult> {
+    const provider = providerForModel(model);
+    if (provider === "claude") return streamClaude({ ...params, model });
+    return streamSakana({ ...params, model });
+}
+
+async function invokeComplete(
+    model: string,
+    params: { systemPrompt?: string; user: string; maxTokens?: number; apiKeys?: UserApiKeys },
+): Promise<string> {
+    const provider = providerForModel(model);
+    if (provider === "claude") return completeClaudeText({ ...params, model });
+    return completeSakanaText({ ...params, model });
+}
+
+export async function streamChatWithTools(params: StreamChatParams): Promise<StreamChatResult> {
     let { systemPrompt } = params;
-
-    // -------------------------------------------------------------------------
-    // Real-time regulatory search injection (requires SERPAPI_KEY in env)
-    // When a regulatory keyword is detected in the last user message, fire a
-    // SerpApi search and prepend the results to the system prompt so the LLM
-    // can ground its analysis in current information.
-    // -------------------------------------------------------------------------
     if (isSerpEnabled()) {
-        const lastUserMsg = [...(params.messages ?? [])].reverse().find(
-            (m) => m.role === "user",
-        );
-        const userText =
-            typeof lastUserMsg?.content === "string"
-                ? lastUserMsg.content
-                : JSON.stringify(lastUserMsg?.content ?? "");
-
+        const lastUserMsg = [...(params.messages ?? [])].reverse().find(m => m.role === "user");
+        const userText = typeof lastUserMsg?.content === "string" ? lastUserMsg.content : JSON.stringify(lastUserMsg?.content ?? "");
         if (userText && needsWebSearch(userText)) {
             const query = buildSearchQuery(userText);
             try {
@@ -73,34 +75,25 @@ export async function streamChatWithTools(
                 const contextBlock = formatSearchContext(searchResult);
                 if (contextBlock) {
                     systemPrompt = `${contextBlock}\n\n${systemPrompt ?? ""}`;
-                    console.log(
-                        `[serpSearch] Injected ${searchResult.results.length} results for: "${query.slice(0, 80)}..."`,
-                    );
+                    console.log(`[serpSearch] Injected ${searchResult.results.length} results for: "${query.slice(0, 80)}..."`);
                 }
             } catch (err) {
-                // Non-fatal — LLM continues without live context
-                console.warn(
-                    "[serpSearch] Context injection failed, proceeding without web context:",
-                    err,
-                );
+                console.warn("[serpSearch] Context injection failed, proceeding without web context:", err);
             }
         }
     }
-
     const model = resolveActiveModel();
-    const provider = providerForModel(model);
-
-    console.log(`[llm] provider=${provider} model=${model}`);
-
-    if (provider === "claude") {
-        return streamClaude({ ...params, systemPrompt, model });
+    const fallbackModel = resolveFallbackModel(model);
+    console.log(`[llm] provider=${providerForModel(model)} model=${model}` + (fallbackModel ? ` fallback=${fallbackModel}` : ""));
+    try {
+        return await invokeStream(model, { ...params, systemPrompt });
+    } catch (err) {
+        if (fallbackModel && isRetryableError(err)) {
+            console.warn(`[llm] Primary ${model} failed (${err instanceof Error ? err.message : String(err)}), switching to fallback ${fallbackModel}`);
+            return invokeStream(fallbackModel, { ...params, systemPrompt });
+        }
+        throw err;
     }
-
-    return streamSakana({
-        ...params,
-        systemPrompt,
-        model,
-    });
 }
 
 export async function completeText(params: {
@@ -111,14 +104,14 @@ export async function completeText(params: {
     apiKeys?: UserApiKeys;
 }): Promise<string> {
     const model = resolveActiveModel();
-    const provider = providerForModel(model);
-
-    if (provider === "claude") {
-        return completeClaudeText({ ...params, model });
+    const fallbackModel = resolveFallbackModel(model);
+    try {
+        return await invokeComplete(model, params);
+    } catch (err) {
+        if (fallbackModel && isRetryableError(err)) {
+            console.warn(`[llm] Primary ${model} failed in completeText, switching to fallback ${fallbackModel}`);
+            return invokeComplete(fallbackModel, params);
+        }
+        throw err;
     }
-
-    return completeSakanaText({
-        ...params,
-        model: process.env.SAKANA_MODEL?.trim() || DEFAULT_SAKANA_MODEL,
-    });
 }
