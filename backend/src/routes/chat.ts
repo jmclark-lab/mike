@@ -571,8 +571,18 @@ chatRouter.post("/", requireAuth, async (req, res) => {
     const write = (line: string) => res.write(line);
     const streamAbort = new AbortController();
     let streamFinished = false;
+    // Heartbeat: emit an SSE comment every 20s so upstream proxies and MCP
+    // connectors with idle timeouts do not abort during slow model or
+    // fallback-chain steps that produce no output for a while. Comment lines
+    // (starting with ":") are ignored by SSE/data parsers but keep bytes
+    // flowing over the wire.
+    const KEEPALIVE_MS = 20000;
+    const keepAlive = setInterval(() => {
+        try { res.write(": keepalive\n\n"); } catch { /* ignore */ }
+    }, KEEPALIVE_MS);
     res.on("close", () => {
         if (!streamFinished) streamAbort.abort();
+        clearInterval(keepAlive);
     });
 
     try {
@@ -676,6 +686,7 @@ chatRouter.post("/", requireAuth, async (req, res) => {
         }
     } finally {
         streamFinished = true;
+        clearInterval(keepAlive);
         res.end();
     }
 });
