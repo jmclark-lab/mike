@@ -10,6 +10,9 @@ export * from "./types";
 export * from "./models";
 
 const DEFAULT_FABLE_MODEL = "claude-fable-5";
+// Stable Anthropic model used as the final safety net in the fallback chain
+// while the Fable 5 rollout stabilizes (per Anthropic interim guidance, Jul 2026).
+const INTERIM_STABLE_MODEL = "claude-opus-4-8";
 
 function resolveActiveModel(): string {
     const explicit = process.env.LLM_MODEL?.trim();
@@ -20,13 +23,41 @@ function resolveActiveModel(): string {
     return process.env.SAKANA_MODEL?.trim() || DEFAULT_SAKANA_MODEL;
 }
 
-function resolveFallbackModel(primaryModel: string): string | null {
-    const explicit = process.env.LLM_FALLBACK_MODEL?.trim();
-    if (explicit) return explicit;
-    if (primaryModel.startsWith("claude-")) {
-        return process.env.SAKANA_MODEL?.trim() || DEFAULT_SAKANA_MODEL;
+/**
+ * Ordered model fallback chain. Default is a three-way chain:
+ *   1. Fable 5   (primary)   — claude-fable-5
+ *   2. Fugu Ultra (fallback) — Sakana multi-model orchestrator
+ *   3. Opus 4.8  (final net) — stable Anthropic model
+ * Each model is attempted in order until one returns a non-empty result.
+ * The primary is whatever resolveActiveModel() picks (LLM_MODEL / LLM_PROVIDER).
+ * Override the fallback tail entirely with LLM_FALLBACK_MODEL — a comma-separated
+ * list of model ids, tried in the order given.
+ */
+function resolveModelChain(): string[] {
+    const chain: string[] = [];
+    const push = (m?: string | null) => {
+        const v = m?.trim();
+        if (v && !chain.includes(v)) chain.push(v);
+    };
+
+    // 1. Primary.
+    push(resolveActiveModel());
+
+    // 2+. Fallbacks.
+    const explicitFallbacks = process.env.LLM_FALLBACK_MODEL?.trim();
+    if (explicitFallbacks) {
+        for (const m of explicitFallbacks.split(",")) push(m);
+    } else {
+        // Default three-way tail: Fugu Ultra, then Opus 4.8.
+        push(process.env.SAKANA_MODEL?.trim() || DEFAULT_SAKANA_MODEL);
+        push(INTERIM_STABLE_MODEL);
     }
-    return null;
+
+    return chain;
+}
+
+function isEmptyResult(text: string | null | undefined): boolean {
+    return !text || text.trim().length === 0;
 }
 
 function isRetryableError(err: unknown): boolean {
@@ -35,11 +66,24 @@ function isRetryableError(err: unknown): boolean {
         msg.includes("not_found") ||
         msg.includes("overloaded") ||
         msg.includes("timeout") ||
+        msg.includes("timed out") ||
+        msg.includes("aborted") ||
+        msg.includes("abort") ||
+        msg.includes("empty response") ||
+        msg.includes("empty") ||
+        msg.includes("429") ||
+        msg.includes("rate limit") ||
+        msg.includes("too many requests") ||
+        msg.includes("socket hang up") ||
+        msg.includes("fetch failed") ||
+        msg.includes("network") ||
+        msg.includes("eai_again") ||
+        msg.includes("econnreset") ||
+        msg.includes("econnrefused") ||
+        msg.includes("econnaborted") ||
         msg.includes("524") ||
         msg.includes("503") ||
         msg.includes("502") ||
-        msg.includes("econnreset") ||
-        msg.includes("econnrefused") ||
         msg.includes("service_unavailable") ||
         msg.includes("service unavailable")
     );
@@ -82,18 +126,33 @@ export async function streamChatWithTools(params: StreamChatParams): Promise<Str
             }
         }
     }
-    const model = resolveActiveModel();
-    const fallbackModel = resolveFallbackModel(model);
-    console.log(`[llm] provider=${providerForModel(model)} model=${model}` + (fallbackModel ? ` fallback=${fallbackModel}` : ""));
-    try {
-        return await invokeStream(model, { ...params, systemPrompt });
-    } catch (err) {
-        if (fallbackModel && isRetryableError(err)) {
-            console.warn(`[llm] Primary ${model} failed (${err instanceof Error ? err.message : String(err)}), switching to fallback ${fallbackModel}`);
-            return invokeStream(fallbackModel, { ...params, systemPrompt });
+
+    const chain = resolveModelChain();
+    console.log(`[llm] model fallback chain: ${chain.join(" -> ")}`);
+
+    let lastError: unknown;
+    for (let i = 0; i < chain.length; i++) {
+        const model = chain[i];
+        const isLast = i === chain.length - 1;
+        try {
+            const result = await invokeStream(model, { ...params, systemPrompt });
+            if (isEmptyResult(result.fullText) && !isLast) {
+                console.warn(`[llm] ${model} returned an empty response; falling back to ${chain[i + 1]}`);
+                lastError = new Error(`empty response from ${model}`);
+                continue;
+            }
+            if (i > 0) console.log(`[llm] answered via fallback model ${model}`);
+            return result;
+        } catch (err) {
+            lastError = err;
+            if (!isLast && isRetryableError(err)) {
+                console.warn(`[llm] ${model} failed (${err instanceof Error ? err.message : String(err)}); falling back to ${chain[i + 1]}`);
+                continue;
+            }
+            throw err;
         }
-        throw err;
     }
+    throw lastError instanceof Error ? lastError : new Error("all models in the fallback chain failed");
 }
 
 export async function completeText(params: {
@@ -103,15 +162,29 @@ export async function completeText(params: {
     maxTokens?: number;
     apiKeys?: UserApiKeys;
 }): Promise<string> {
-    const model = resolveActiveModel();
-    const fallbackModel = resolveFallbackModel(model);
-    try {
-        return await invokeComplete(model, params);
-    } catch (err) {
-        if (fallbackModel && isRetryableError(err)) {
-            console.warn(`[llm] Primary ${model} failed in completeText, switching to fallback ${fallbackModel}`);
-            return invokeComplete(fallbackModel, params);
+    const chain = resolveModelChain();
+
+    let lastError: unknown;
+    for (let i = 0; i < chain.length; i++) {
+        const model = chain[i];
+        const isLast = i === chain.length - 1;
+        try {
+            const result = await invokeComplete(model, params);
+            if (isEmptyResult(result) && !isLast) {
+                console.warn(`[llm] ${model} returned an empty completion; falling back to ${chain[i + 1]}`);
+                lastError = new Error(`empty response from ${model}`);
+                continue;
+            }
+            if (i > 0) console.log(`[llm] completeText answered via fallback model ${model}`);
+            return result;
+        } catch (err) {
+            lastError = err;
+            if (!isLast && isRetryableError(err)) {
+                console.warn(`[llm] ${model} failed in completeText (${err instanceof Error ? err.message : String(err)}); falling back to ${chain[i + 1]}`);
+                continue;
+            }
+            throw err;
         }
-        throw err;
     }
+    throw lastError instanceof Error ? lastError : new Error("all models in the fallback chain failed");
 }
