@@ -89,6 +89,44 @@ function isRetryableError(err: unknown): boolean {
     );
 }
 
+// ---------------------------------------------------------------------------
+// Health-aware routing: when a model returns empty or a retryable error, put it
+// on a short cooldown so subsequent requests try the healthy models first
+// (avoids repeatedly paying the latency of a known-bad primary). In-memory and
+// per-process; self-heals after MODEL_COOLDOWN_MS. A cooling-down model is only
+// deprioritised, never removed -- it is still tried last if every other model
+// is also unhealthy.
+const MODEL_COOLDOWN_MS = 3 * 60 * 1000;
+const modelCooldownUntil = new Map<string, number>();
+
+function markModelUnhealthy(model: string): void {
+    modelCooldownUntil.set(model, Date.now() + MODEL_COOLDOWN_MS);
+}
+
+function markModelHealthy(model: string): void {
+    modelCooldownUntil.delete(model);
+}
+
+function isModelCoolingDown(model: string): boolean {
+    const until = modelCooldownUntil.get(model);
+    if (until === undefined) return false;
+    if (Date.now() >= until) {
+        modelCooldownUntil.delete(model);
+        return false;
+    }
+    return true;
+}
+
+// Stable-partition the chain: healthy models keep their configured priority;
+// cooling-down models move to the back. If every model is cooling down, keep
+// the original order so we still attempt them.
+function orderByHealth(chain: string[]): string[] {
+    const healthy = chain.filter((m) => !isModelCoolingDown(m));
+    if (healthy.length === 0) return chain;
+    const cooling = chain.filter((m) => isModelCoolingDown(m));
+    return [...healthy, ...cooling];
+}
+
 async function invokeStream(
     model: string,
     params: StreamChatParams & { systemPrompt?: string },
@@ -127,7 +165,7 @@ export async function streamChatWithTools(params: StreamChatParams): Promise<Str
         }
     }
 
-    const chain = resolveModelChain();
+    const chain = orderByHealth(resolveModelChain());
     console.log(`[llm] model fallback chain: ${chain.join(" -> ")}`);
 
     let lastError: unknown;
@@ -136,10 +174,15 @@ export async function streamChatWithTools(params: StreamChatParams): Promise<Str
         const isLast = i === chain.length - 1;
         try {
             const result = await invokeStream(model, { ...params, systemPrompt });
-            if (isEmptyResult(result.fullText) && !isLast) {
-                console.warn(`[llm] ${model} returned an empty response; falling back to ${chain[i + 1]}`);
-                lastError = new Error(`empty response from ${model}`);
-                continue;
+            if (isEmptyResult(result.fullText)) {
+                markModelUnhealthy(model);
+                if (!isLast) {
+                    console.warn(`[llm] ${model} returned an empty response; falling back to ${chain[i + 1]}`);
+                    lastError = new Error(`empty response from ${model}`);
+                    continue;
+                }
+            } else {
+                markModelHealthy(model);
             }
             if (i > 0) console.log(`[llm] answered via fallback model ${model}`);
             if (!result.providerMetadata) {
@@ -149,6 +192,7 @@ export async function streamChatWithTools(params: StreamChatParams): Promise<Str
         } catch (err) {
             lastError = err;
             if (!isLast && isRetryableError(err)) {
+                markModelUnhealthy(model);
                 console.warn(`[llm] ${model} failed (${err instanceof Error ? err.message : String(err)}); falling back to ${chain[i + 1]}`);
                 continue;
             }
@@ -165,7 +209,7 @@ export async function completeText(params: {
     maxTokens?: number;
     apiKeys?: UserApiKeys;
 }): Promise<string> {
-    const chain = resolveModelChain();
+    const chain = orderByHealth(resolveModelChain());
 
     let lastError: unknown;
     for (let i = 0; i < chain.length; i++) {
@@ -173,16 +217,22 @@ export async function completeText(params: {
         const isLast = i === chain.length - 1;
         try {
             const result = await invokeComplete(model, params);
-            if (isEmptyResult(result) && !isLast) {
-                console.warn(`[llm] ${model} returned an empty completion; falling back to ${chain[i + 1]}`);
-                lastError = new Error(`empty response from ${model}`);
-                continue;
+            if (isEmptyResult(result)) {
+                markModelUnhealthy(model);
+                if (!isLast) {
+                    console.warn(`[llm] ${model} returned an empty completion; falling back to ${chain[i + 1]}`);
+                    lastError = new Error(`empty response from ${model}`);
+                    continue;
+                }
+            } else {
+                markModelHealthy(model);
             }
             if (i > 0) console.log(`[llm] completeText answered via fallback model ${model}`);
             return result;
         } catch (err) {
             lastError = err;
             if (!isLast && isRetryableError(err)) {
+                markModelUnhealthy(model);
                 console.warn(`[llm] ${model} failed in completeText (${err instanceof Error ? err.message : String(err)}); falling back to ${chain[i + 1]}`);
                 continue;
             }
