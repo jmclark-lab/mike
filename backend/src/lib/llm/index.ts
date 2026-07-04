@@ -60,6 +60,28 @@ function isEmptyResult(text: string | null | undefined): boolean {
     return !text || text.trim().length === 0;
 }
 
+// Structured per-call telemetry: one JSON line per LLM call, greppable in Railway
+// logs and shippable to Axiom/Better Stack via a log drain. fallback_depth > 0 is
+// the leading indicator of a provider problem.
+function classifyLlmError(err: unknown): string {
+    const msg = String(err instanceof Error ? err.message : err).toLowerCase();
+    if (msg.includes("empty")) return "empty_response";
+    if (msg.includes("abort")) return "aborted";
+    if (msg.includes("429") || msg.includes("rate limit") || msg.includes("too many")) return "rate_limited";
+    if (msg.includes("timeout") || msg.includes("timed out")) return "timeout";
+    if (msg.includes("502") || msg.includes("503") || msg.includes("504") || msg.includes("522") || msg.includes("524") || msg.includes("service")) return "upstream_unavailable";
+    if (msg.includes("network") || msg.includes("fetch failed") || msg.includes("econn")) return "network";
+    return "other";
+}
+
+function logLlmCall(payload: Record<string, unknown>): void {
+    try {
+        console.log("[llm.telemetry] " + JSON.stringify({ event: "llm_call", ...payload }));
+    } catch {
+        /* never let logging break a request */
+    }
+}
+
 function isRetryableError(err: unknown): boolean {
     const msg = String(err instanceof Error ? err.message : err).toLowerCase();
     return (
@@ -199,6 +221,7 @@ export async function streamChatWithTools(params: StreamChatParams): Promise<Str
     const chain = orderByHealth(resolveModelChain());
     console.log(`[llm] model fallback chain: ${chain.join(" -> ")}`);
 
+    const startedAt = Date.now();
     let lastError: unknown;
     for (let i = 0; i < chain.length; i++) {
         const model = chain[i];
@@ -219,6 +242,7 @@ export async function streamChatWithTools(params: StreamChatParams): Promise<Str
             if (!result.providerMetadata) {
                 result.providerMetadata = { provider_name: providerForModel(model), model_name: model };
             }
+            logLlmCall({ surface: "stream", ok: true, answered: model, fallback_depth: i, attempted: chain.slice(0, i + 1), empty: isEmptyResult(result.fullText), latency_ms: Date.now() - startedAt });
             return result;
         } catch (err) {
             lastError = err;
@@ -227,9 +251,11 @@ export async function streamChatWithTools(params: StreamChatParams): Promise<Str
                 console.warn(`[llm] ${model} failed (${err instanceof Error ? err.message : String(err)}); falling back to ${chain[i + 1]}`);
                 continue;
             }
+            logLlmCall({ surface: "stream", ok: false, failed_model: model, fallback_depth: i, attempted: chain.slice(0, i + 1), error_class: classifyLlmError(err), latency_ms: Date.now() - startedAt });
             throw err;
         }
     }
+    logLlmCall({ surface: "stream", ok: false, error_class: "chain_exhausted", attempted: chain, latency_ms: Date.now() - startedAt });
     throw lastError instanceof Error ? lastError : new Error("all models in the fallback chain failed");
 }
 
@@ -242,6 +268,7 @@ export async function completeText(params: {
 }): Promise<string> {
     const chain = orderByHealth(resolveModelChain());
 
+    const startedAt = Date.now();
     let lastError: unknown;
     for (let i = 0; i < chain.length; i++) {
         const model = chain[i];
@@ -259,6 +286,7 @@ export async function completeText(params: {
                 markModelHealthy(model);
             }
             if (i > 0) console.log(`[llm] completeText answered via fallback model ${model}`);
+            logLlmCall({ surface: "complete", ok: true, answered: model, fallback_depth: i, attempted: chain.slice(0, i + 1), empty: isEmptyResult(result), latency_ms: Date.now() - startedAt });
             return result;
         } catch (err) {
             lastError = err;
@@ -267,8 +295,10 @@ export async function completeText(params: {
                 console.warn(`[llm] ${model} failed in completeText (${err instanceof Error ? err.message : String(err)}); falling back to ${chain[i + 1]}`);
                 continue;
             }
+            logLlmCall({ surface: "complete", ok: false, failed_model: model, fallback_depth: i, attempted: chain.slice(0, i + 1), error_class: classifyLlmError(err), latency_ms: Date.now() - startedAt });
             throw err;
         }
     }
+    logLlmCall({ surface: "complete", ok: false, error_class: "chain_exhausted", attempted: chain, latency_ms: Date.now() - startedAt });
     throw lastError instanceof Error ? lastError : new Error("all models in the fallback chain failed");
 }
