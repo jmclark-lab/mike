@@ -142,6 +142,9 @@ export async function streamChatWithTools(params: StreamChatParams): Promise<Str
                 continue;
             }
             if (i > 0) console.log(`[llm] answered via fallback model ${model}`);
+            if (!result.providerMetadata) {
+                result.providerMetadata = { provider_name: providerForModel(model), model_name: model };
+            }
             return result;
         } catch (err) {
             lastError = err;

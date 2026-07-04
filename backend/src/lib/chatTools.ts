@@ -3947,6 +3947,7 @@ export async function runLLMStream(params: {
   fullText: string;
   events: AssistantEvent[];
   annotations: unknown[];
+  providerMetadata?: import("./llm").ProviderMetadata;
 }> {
   const {
     apiMessages,
@@ -4105,10 +4106,11 @@ export async function runLLMStream(params: {
   };
 
   const selectedModel = resolveModel(model, DEFAULT_MAIN_MODEL);
+  let streamResult: import("./llm").StreamChatResult | undefined;
 
   try {
     throwIfAborted(signal);
-    await streamChatWithTools({
+    streamResult = await streamChatWithTools({
       model: selectedModel,
       systemPrompt,
       messages: chatMessages,
@@ -4309,7 +4311,7 @@ export async function runLLMStream(params: {
   );
   write("data: [DONE]\n\n");
 
-  return { fullText, events, annotations: citations };
+  return { fullText, events, annotations: citations, providerMetadata: streamResult?.providerMetadata };
 }
 
 // ---------------------------------------------------------------------------

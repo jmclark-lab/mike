@@ -588,7 +588,7 @@ chatRouter.post("/", requireAuth, async (req, res) => {
     try {
         write(`data: ${JSON.stringify({ type: "chat_id", chatId })}\n\n`);
 
-        const { fullText, events, annotations } = await runLLMStream({
+        const { fullText, events, annotations, providerMetadata } = await runLLMStream({
             apiMessages,
             docStore,
             docIndex,
@@ -614,7 +614,9 @@ chatRouter.post("/", requireAuth, async (req, res) => {
             role: "assistant",
             content: persistedEvents.length ? persistedEvents : null,
             annotations: annotations.length ? annotations : null,
-            provider_metadata: SAKANA_PROVIDER_METADATA,
+            provider_metadata: providerMetadata
+                ? { provider_name: providerMetadata.provider_name, model_name: providerMetadata.model_name }
+                : SAKANA_PROVIDER_METADATA,
         });
 
         if (!chatTitle && lastUser?.content) {
