@@ -35,7 +35,6 @@ __name(mintJwt, "mintJwt");
 async function callMike(env, prompt, opts) {
   const idleMs = (opts && opts.idleMs) || 9e4;    // 90s of silence => abort
   const maxMs = (opts && opts.maxMs) || 15e5;     // 25 min absolute ceiling
-  const jwt = await mintJwt(env);
   const controller = new AbortController();
   let idleTimer = null;
   const armIdle = () => {
@@ -47,7 +46,7 @@ async function callMike(env, prompt, opts) {
   try {
     const r = await fetch(env.MIKE_BACKEND_URL + "/chat", {
       method: "POST",
-      headers: { authorization: "Bearer " + jwt, "content-type": "application/json" },
+      headers: { "x-connector-key": env.CONNECTOR_API_KEY, "content-type": "application/json" },
       body: JSON.stringify({ messages: [{ role: "user", content: prompt }] }),
       signal: controller.signal
     });
@@ -157,7 +156,7 @@ var worker_default = {
   async fetch(request, env) {
     const url = new URL(request.url);
     if (request.method === "GET" && (url.pathname === "/" || url.pathname === "/health")) {
-      return new Response("Mike Legal AI — MCP connector v1.4.0.", {
+      return new Response("Mike Legal AI — MCP connector v1.5.0.", {
         headers: { "content-type": "text/plain" }
       });
     }
@@ -266,7 +265,7 @@ var worker_default = {
       }), "ok");
       if (method === "initialize") {
         const pv = rpc.params && rpc.params.protocolVersion || "2024-11-05";
-        return ok({ protocolVersion: pv, capabilities: { tools: {} }, serverInfo: { name: "mike-legal", version: "1.4.0" } });
+        return ok({ protocolVersion: pv, capabilities: { tools: {} }, serverInfo: { name: "mike-legal", version: "1.5.0" } });
       }
       if (typeof method === "string" && method.startsWith("notifications/")) {
         return new Response(null, { status: 202 });

@@ -27,13 +27,14 @@ migration, KV binding (fugu), and cron (fugu) so they are not dropped on deploy.
 
 ## Secrets (set via `wrangler secret put <NAME>`, never committed)
 
-- **mike-assistant:** `MCP_API_KEY`, `MIKE_SUPABASE_URL`, `MIKE_SUPABASE_ANON_KEY`, `MIKE_EMAIL`, `MIKE_PASSWORD`, `MIKE_BACKEND_URL`
+- **mike-assistant:** `MCP_API_KEY`, `MIKE_BACKEND_URL`, `CONNECTOR_API_KEY` (service key sent as `X-Connector-Key` to the backend; must match the backend's `CONNECTOR_API_KEY`). As of v1.5.0 the Worker no longer logs in to Supabase, so `MIKE_SUPABASE_URL`, `MIKE_SUPABASE_ANON_KEY`, `MIKE_EMAIL`, and `MIKE_PASSWORD` are obsolete and should be removed.
 - **fugu-assistant:** `MCP_API_KEY`, `SAKANA_API_KEY`, `ASSISTANT_PASSPHRASE`
 
 ## Known follow-ups
 
-- **Auth hardening:** `mike-assistant` authenticates to the backend with a
-  Supabase email+password (`MIKE_EMAIL`/`MIKE_PASSWORD`). Replace with a scoped
-  service token (least privilege) and cache the JWT until near expiry.
+- **Auth hardening (done, v1.5.0):** `mike-assistant` now authenticates to the
+  backend with a rotatable `CONNECTOR_API_KEY` (`X-Connector-Key`) mapped to a
+  service user on the backend (`connectorOrAuth`); no Supabase password in the Worker.
+  Follow-up: rotate the old Supabase account password, since it previously lived here.
 - **Timeouts (done):** both alarms use idle-based aborts — mike-assistant
   90s idle / 25-min ceiling; fugu-assistant streams with 90s idle / 20-min ceiling.
