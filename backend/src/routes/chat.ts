@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { requireAuth } from "../middleware/auth";
+import { requireAuth, connectorOrAuth } from "../middleware/auth";
 import { createServerSupabase } from "../lib/supabase";
 import {
     buildDocContext,
@@ -424,7 +424,7 @@ chatRouter.post("/:chatId/generate-title", requireAuth, async (req, res) => {
 });
 
 // POST /chat — streaming
-chatRouter.post("/", requireAuth, async (req, res) => {
+chatRouter.post("/", connectorOrAuth, async (req, res) => {
     const userId = res.locals.userId as string;
     const body =
         req.body && typeof req.body === "object" && !Array.isArray(req.body)

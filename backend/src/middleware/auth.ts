@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from "express";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import { timingSafeEqual } from "node:crypto";
 
 const isDev = process.env.NODE_ENV !== "production";
 const devLog = (...args: Parameters<typeof console.log>) => {
@@ -199,4 +200,36 @@ export async function requireMfaIfEnrolled(
   }
 
   next();
+}
+
+
+function safeKeyEqual(a: string, b: string): boolean {
+  const ab = Buffer.from(a);
+  const bb = Buffer.from(b);
+  if (ab.length !== bb.length) return false;
+  return timingSafeEqual(ab, bb);
+}
+
+// Service-to-service auth for the MCP connector. If a valid X-Connector-Key is
+// presented, act as the configured service user and skip the Supabase user JWT
+// and MFA. Active only when BOTH CONNECTOR_API_KEY and CONNECTOR_USER_ID env
+// vars are set AND the header matches; otherwise it falls back to requireAuth,
+// so human/JWT auth is completely unchanged. Intended for the chat endpoint.
+export async function connectorOrAuth(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  const expectedKey = process.env.CONNECTOR_API_KEY?.trim();
+  const serviceUserId = process.env.CONNECTOR_USER_ID?.trim();
+  const header = req.headers["x-connector-key"];
+  const provided = (Array.isArray(header) ? header[0] : header)?.trim() ?? "";
+  if (expectedKey && serviceUserId && provided && safeKeyEqual(provided, expectedKey)) {
+    res.locals.userId = serviceUserId;
+    res.locals.userEmail = process.env.CONNECTOR_USER_EMAIL?.trim() ?? "";
+    res.locals.token = "";
+    next();
+    return;
+  }
+  await requireAuth(req, res, next);
 }
