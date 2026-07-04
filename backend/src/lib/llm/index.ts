@@ -96,15 +96,30 @@ function isRetryableError(err: unknown): boolean {
 // per-process; self-heals after MODEL_COOLDOWN_MS. A cooling-down model is only
 // deprioritised, never removed -- it is still tried last if every other model
 // is also unhealthy.
-const MODEL_COOLDOWN_MS = 3 * 60 * 1000;
+// Cooldown with exponential backoff + jitter. Base 60s, doubling per consecutive
+// failure, capped at 15 min; resets on success. When a cooldown expires the next
+// request naturally re-probes the model (half-open) and either resets it or
+// escalates the backoff. In-memory/per-process: resets on deploy/restart and is
+// not shared across instances -- externalize to Postgres/Redis if that matters.
+const MODEL_COOLDOWN_BASE_MS = 60 * 1000;
+const MODEL_COOLDOWN_MAX_MS = 15 * 60 * 1000;
 const modelCooldownUntil = new Map<string, number>();
+const modelFailureStreak = new Map<string, number>();
 
 function markModelUnhealthy(model: string): void {
-    modelCooldownUntil.set(model, Date.now() + MODEL_COOLDOWN_MS);
+    const streak = (modelFailureStreak.get(model) ?? 0) + 1;
+    modelFailureStreak.set(model, streak);
+    const backoff = Math.min(
+        MODEL_COOLDOWN_BASE_MS * 2 ** (streak - 1),
+        MODEL_COOLDOWN_MAX_MS,
+    );
+    const jitter = Math.floor(Math.random() * backoff * 0.2); // up to +20%
+    modelCooldownUntil.set(model, Date.now() + backoff + jitter);
 }
 
 function markModelHealthy(model: string): void {
     modelCooldownUntil.delete(model);
+    modelFailureStreak.delete(model);
 }
 
 function isModelCoolingDown(model: string): boolean {
@@ -125,6 +140,22 @@ function orderByHealth(chain: string[]): string[] {
     if (healthy.length === 0) return chain;
     const cooling = chain.filter((m) => isModelCoolingDown(m));
     return [...healthy, ...cooling];
+}
+
+// Snapshot of the routing/cooldown state for /healthz and telemetry.
+export function getRoutingHealth(): {
+    chain: string[];
+    coolingDown: { model: string; ms_remaining: number; failures: number }[];
+} {
+    const now = Date.now();
+    const coolingDown = [...modelCooldownUntil.entries()]
+        .filter(([, until]) => until > now)
+        .map(([model, until]) => ({
+            model,
+            ms_remaining: until - now,
+            failures: modelFailureStreak.get(model) ?? 0,
+        }));
+    return { chain: resolveModelChain(), coolingDown };
 }
 
 async function invokeStream(

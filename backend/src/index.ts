@@ -12,6 +12,8 @@ import { workflowsRouter } from "./routes/workflows";
 import { userRouter } from "./routes/user";
 import { downloadsRouter } from "./routes/downloads";
 import { caseLawRouter } from "./routes/caseLaw";
+import { createServerSupabase } from "./lib/supabase";
+import { getRoutingHealth } from "./lib/llm";
 
 // ---------------------------------------------------------------------------
 // Required environment variable check — fail fast before binding the port.
@@ -169,6 +171,28 @@ app.use("/download", downloadsRouter);
 app.use("/case-law", caseLawRouter);
 
 app.get("/health", (_req, res) => res.json({ ok: true }));
+
+// Deeper health probe for external monitors: checks DB connectivity and reports
+// live LLM routing/cooldown state. Returns 503 if the DB check fails.
+app.get("/healthz", async (_req, res) => {
+  const started = Date.now();
+  let db = "ok";
+  try {
+    const supa = createServerSupabase();
+    const { error } = await supa.from("chats").select("id").limit(1);
+    if (error) db = "error";
+  } catch {
+    db = "error";
+  }
+  const ok = db === "ok";
+  res.status(ok ? 200 : 503).json({
+    status: ok ? "ok" : "degraded",
+    db,
+    uptime_s: Math.round(process.uptime()),
+    latency_ms: Date.now() - started,
+    routing: getRoutingHealth(),
+  });
+});
 
 app.listen(PORT, () => {
   console.log(`Mike backend running on port ${PORT}`);
