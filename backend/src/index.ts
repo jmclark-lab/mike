@@ -187,6 +187,7 @@ app.get("/healthz", async (_req, res) => {
   const ok = db === "ok";
   res.status(ok ? 200 : 503).json({
     status: ok ? "ok" : "degraded",
+    commit: process.env.RAILWAY_GIT_COMMIT_SHA ?? null,
     db,
     uptime_s: Math.round(process.uptime()),
     latency_ms: Date.now() - started,

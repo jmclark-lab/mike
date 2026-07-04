@@ -1,0 +1,42 @@
+name: Staging smoke test
+
+# On every push to the staging branch, wait for the Railway staging deploy and
+# verify /healthz reports ok ON THE PUSHED COMMIT. This is the gate to check
+# before opening a staging -> main PR. (It does not block the staging deploy
+# itself, which Railway runs independently; it marks the commit's status.)
+
+on:
+  push:
+    branches: [staging]
+
+jobs:
+  smoke:
+    name: staging /healthz on pushed commit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Poll staging /healthz
+        env:
+          HEALTHZ_URL: https://loyal-acceptance-staging.up.railway.app/healthz
+        run: |
+          set -uo pipefail
+          echo "Expecting deployed commit: ${GITHUB_SHA}"
+          for i in $(seq 1 40); do
+            sleep 15
+            body="$(curl -fsS --max-time 10 "$HEALTHZ_URL" 2>/dev/null || true)"
+            echo "attempt $i: ${body:-<no response>}"
+            status="$(printf '%s' "$body" | jq -r '.status // empty' 2>/dev/null || true)"
+            commit="$(printf '%s' "$body" | jq -r '.commit // empty' 2>/dev/null || true)"
+            if [ "$status" = "ok" ]; then
+              if [ -z "$commit" ] || [ "$commit" = "null" ]; then
+                echo "WARNING: /healthz exposes no commit (RAILWAY_GIT_COMMIT_SHA unset); accepting on status=ok."
+                exit 0
+              fi
+              if printf '%s' "$GITHUB_SHA" | grep -q "^${commit}"; then
+                echo "Staging healthy on the pushed commit ($commit)."
+                exit 0
+              fi
+              echo "status=ok but deployed commit ($commit) != pushed SHA; likely old build still live, retrying..."
+            fi
+          done
+          echo "::error::Staging did not report healthy on the pushed commit within ~10 minutes."
+          exit 1
