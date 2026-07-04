@@ -1,5 +1,7 @@
 import { streamSakana, completeSakanaText } from "./sakana";
 import { streamClaude, completeClaudeText } from "./claude";
+import { completeGeminiText } from "./gemini";
+import { completeOpenAIText } from "./openai";
 import { DEFAULT_SAKANA_MODEL, providerForModel } from "./models";
 import type { StreamChatParams, StreamChatResult, UserApiKeys } from "./types";
 import {
@@ -195,6 +197,8 @@ async function invokeComplete(
 ): Promise<string> {
     const provider = providerForModel(model);
     if (provider === "claude") return completeClaudeText({ ...params, model });
+    if (provider === "gemini") return completeGeminiText({ ...params, model });
+    if (provider === "openai") return completeOpenAIText({ ...params, model });
     return completeSakanaText({ ...params, model });
 }
 
@@ -266,7 +270,14 @@ export async function completeText(params: {
     maxTokens?: number;
     apiKeys?: UserApiKeys;
 }): Promise<string> {
-    const chain = orderByHealth(resolveModelChain());
+    // Honor the caller's requested model (e.g. a cheap low-tier title model) as
+    // the primary, with the standard fallback chain behind it. Previously the
+    // passed model was ignored and every completion ran the frontier chain.
+    const requested = params.model?.trim();
+    const fallbackChain = orderByHealth(resolveModelChain());
+    const chain = requested
+        ? [requested, ...fallbackChain.filter((m) => m !== requested)]
+        : fallbackChain;
 
     const startedAt = Date.now();
     let lastError: unknown;
