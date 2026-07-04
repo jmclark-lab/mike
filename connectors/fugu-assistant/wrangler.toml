@@ -1,0 +1,30 @@
+name = "fugu-assistant"
+main = "worker.js"
+compatibility_date = "2024-11-01"
+account_id = "4a6ee759ca55f608f82c2cbd2c12d4e2"
+
+# Durable Object that runs the async ask_fugu_ultra job (submit -> poll pattern).
+[[durable_objects.bindings]]
+name = "FUGU_JOBS"
+class_name = "FuguJob"
+
+[[migrations]]
+tag = "v1"
+new_classes = ["FuguJob"]
+
+# KV namespace holding the cached Sakana health check (populated by the 15-min cron).
+[[kv_namespaces]]
+binding = "HEALTH_KV"
+id = "0c2da8d2f5f54a1592f4b35592a09000"
+
+# Cron: refresh the Sakana health check every 15 minutes.
+[triggers]
+crons = ["*/15 * * * *"]
+
+[observability]
+enabled = true
+
+# Secrets are NOT stored here. Set them with `wrangler secret put <NAME>`:
+#   MCP_API_KEY          - bearer key clients use to call /mcp
+#   SAKANA_API_KEY       - Sakana Fugu API key
+#   ASSISTANT_PASSPHRASE - passphrase for the /assistant web chat UI

@@ -1,0 +1,24 @@
+name = "mike-assistant"
+main = "worker.js"
+compatibility_date = "2024-11-01"
+account_id = "4a6ee759ca55f608f82c2cbd2c12d4e2"
+
+# Durable Object that runs the async ask_mike job (submit -> poll pattern).
+[[durable_objects.bindings]]
+name = "MIKE_JOBS"
+class_name = "MikeJob"
+
+[[migrations]]
+tag = "v1"
+new_classes = ["MikeJob"]
+
+[observability]
+enabled = true
+
+# Secrets are NOT stored here. Set them with `wrangler secret put <NAME>`:
+#   MCP_API_KEY            - bearer key clients use to call /mcp
+#   MIKE_SUPABASE_URL      - Supabase project URL
+#   MIKE_SUPABASE_ANON_KEY - Supabase anon key
+#   MIKE_EMAIL             - service login (candidate for a scoped token; see README)
+#   MIKE_PASSWORD          - service login password
+#   MIKE_BACKEND_URL       - Railway backend base URL (e.g. https://.../ )
