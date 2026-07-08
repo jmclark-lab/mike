@@ -320,7 +320,7 @@ export const WEBSITE_AUDIT_TOOLS = [
           max_pages: {
             type: "integer",
             description:
-              "Maximum number of pages to crawl (default 12, hard cap 30). Use a small value for a quick look, larger for deeper coverage.",
+              "Maximum number of pages to crawl (default 12, hard cap 100). Use a small value for a quick look, larger (e.g. 80) for deep, near-full-site coverage.",
           },
         },
         required: ["url"],
