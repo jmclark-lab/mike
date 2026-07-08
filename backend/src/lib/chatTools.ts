@@ -43,6 +43,11 @@ import {
   type OpenAIToolSchema,
 } from "./llm";
 import { safeErrorMessage } from "./safeError";
+import {
+  runWebsiteAudit,
+  formatAuditForModel,
+  isWebsiteAuditEnabled,
+} from "./websiteAudit";
 
 const STANDARD_FONT_DATA_URL = (() => {
   try {
@@ -292,6 +297,33 @@ export const WORKFLOW_TOOLS = [
           },
         },
         required: ["workflow_id"],
+      },
+    },
+  },
+];
+
+export const WEBSITE_AUDIT_TOOLS = [
+  {
+    type: "function",
+    function: {
+      name: "audit_website",
+      description:
+        "Crawl a website (multiple pages) and collect SEO, structure, trust and technical signals for a comprehensive website audit. Use this when the user asks to audit, review, or analyze a website — covering positioning, crawlability, SEO fundamentals, AI-answer readiness, trust signals, content gaps, conversion flow, and technical risks. Returns collected signals; you then write the audit from them. Only audit sites the user is authorized to audit; the crawler respects robots.txt.",
+      parameters: {
+        type: "object",
+        properties: {
+          url: {
+            type: "string",
+            description:
+              "The website URL to audit (e.g. 'https://bioaccessla.com'). A bare domain is accepted and defaults to https.",
+          },
+          max_pages: {
+            type: "integer",
+            description:
+              "Maximum number of pages to crawl (default 12, hard cap 30). Use a small value for a quick look, larger for deeper coverage.",
+          },
+        },
+        required: ["url"],
       },
     },
   },
@@ -2391,6 +2423,25 @@ export async function runToolCalls(
       continue;
     }
 
+    if (tc.function.name === "audit_website") {
+      const auditUrl = typeof args.url === "string" ? args.url : "";
+      const maxPages =
+        typeof args.max_pages === "number" ? args.max_pages : undefined;
+      // Progress is emitted as SSE comments (": ...") — ignored by all SSE
+      // consumers but they reset the connector's idle timer during the
+      // potentially multi-minute crawl.
+      write(`: audit_website starting for ${auditUrl}\n\n`);
+      const result = await runWebsiteAudit(auditUrl, maxPages, (m) => {
+        write(`: audit ${m}\n\n`);
+      });
+      toolResults.push({
+        role: "tool",
+        tool_call_id: tc.id,
+        content: formatAuditForModel(result),
+      });
+      continue;
+    }
+
     if (tc.function.name === "read_document") {
       const rawDocId = args.doc_id as string;
       const docId = resolveDocLabel(rawDocId, docStore, docIndex) ?? rawDocId;
@@ -3967,8 +4018,9 @@ export async function runLLMStream(params: {
     projectId,
   } = params;
   const researchTools = includeResearchTools ? COURTLISTENER_TOOLS : [];
+  const auditTools = isWebsiteAuditEnabled() ? WEBSITE_AUDIT_TOOLS : [];
   const mcpTools = await buildUserMcpTools(userId, db);
-  const baseTools = [...TOOLS, ...researchTools, ...WORKFLOW_TOOLS];
+  const baseTools = [...TOOLS, ...researchTools, ...WORKFLOW_TOOLS, ...auditTools];
   const activeTools = extraTools?.length
     ? [...baseTools, ...mcpTools, ...extraTools]
     : [...baseTools, ...mcpTools];
