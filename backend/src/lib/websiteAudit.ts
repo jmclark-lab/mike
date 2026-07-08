@@ -21,10 +21,10 @@
 
 const FIRECRAWL_BASE = "https://api.firecrawl.dev/v2";
 const DEFAULT_MAX_PAGES = 12;
-const HARD_MAX_PAGES = 30;
+const HARD_MAX_PAGES = 100;
 const SUBMIT_TIMEOUT_MS = 30_000;
 const POLL_INTERVAL_MS = 3_000;
-const CRAWL_BUDGET_MS = 8 * 60_000; // 8 min ceiling; backend keepalive holds the connector open
+const CRAWL_BUDGET_MS = 15 * 60_000; // 15 min ceiling; backend keepalive holds the connector open
 const FETCH_TIMEOUT_MS = 12_000;
 const HOMEPAGE_MARKDOWN_CHARS = 3_000;
 
