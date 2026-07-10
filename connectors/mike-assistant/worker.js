@@ -177,7 +177,7 @@ var worker_default = {
       return new Response(null, { status: 204, headers: CORS });
     }
     if (request.method === "GET" && (url.pathname === "/" || url.pathname === "/health")) {
-      return new Response("Mike Legal AI — MCP connector v1.6.1.", {
+      return new Response("Mike Legal AI — MCP connector v1.6.2.", {
         headers: { "content-type": "text/plain", ...CORS }
       });
     }
@@ -313,10 +313,13 @@ var worker_default = {
             },
             {
               name: "get_mike_answer",
-              description: "Retrieve the result of a Mike Legal job started with ask_mike. Returns STATUS: completed (with full analysis), STATUS: working (still processing — wait 60 seconds and call again with the same job_id), or STATUS: failed. For long reviews the job retries automatically; keep polling for up to 2 hours before giving up.",
+              description: "Retrieve the result of a Mike Legal job started with ask_mike. Returns STATUS: completed (with the analysis), STATUS: working (still processing — wait 60 seconds and call again with the same job_id), or STATUS: failed. Long answers are returned in numbered parts; the header says 'part X of N' and, when more remains, tells you to call again with the next part number. Always fetch every part. For long reviews the job retries automatically; keep polling for up to 2 hours.",
               inputSchema: {
                 type: "object",
-                properties: { job_id: { type: "string", description: "The job_id returned by ask_mike." } },
+                properties: {
+                  job_id: { type: "string", description: "The job_id returned by ask_mike." },
+                  part: { type: "integer", description: "Optional. For long answers split into multiple parts, the 1-based part number to retrieve (default 1). The completed response reports the total number of parts." }
+                },
                 required: ["job_id"]
               }
             }
@@ -348,8 +351,22 @@ var worker_default = {
           const s = await r.json();
           if (s.status === "done") {
             const elapsedMin = s.elapsed != null ? " (completed in " + Math.floor(s.elapsed / 60) + "m " + s.elapsed % 60 + "s)" : "";
+            const full = s.text || "(no content returned)";
+            // Some MCP clients (e.g. Perplexity ~19k, ChatGPT) cap tool-result size and
+            // silently truncate long answers. Return the answer in numbered parts that
+            // stay under that ceiling; the client fetches subsequent parts via `part`.
+            const CHUNK = 15000;
+            const total = Math.max(1, Math.ceil(full.length / CHUNK));
+            let part = parseInt(args.part, 10);
+            if (!Number.isFinite(part) || part < 1) part = 1;
+            if (part > total) part = total;
+            const slice = full.slice((part - 1) * CHUNK, part * CHUNK);
+            const header = "STATUS: completed" + elapsedMin + (total > 1 ? " — part " + part + " of " + total : "");
+            const footer = total > 1 && part < total
+              ? "\n\n[Response continues — call get_mike_answer again with job_id=\"" + jobId + "\" and part=" + (part + 1) + " to get the next part (" + (part + 1) + " of " + total + ").]"
+              : "";
             return ok({
-              content: [{ type: "text", text: "STATUS: completed" + elapsedMin + "\n\n" + (s.text || "(no content returned)") }],
+              content: [{ type: "text", text: header + "\n\n" + slice + footer }],
               isError: false
             });
           }
