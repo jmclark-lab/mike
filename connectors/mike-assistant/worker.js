@@ -108,6 +108,17 @@ async function computeAuthCode(secret, codeChallenge) {
   return toBase64url(sig);
 }
 __name(computeAuthCode, "computeAuthCode");
+function validMcpKeys(env) {
+  const out = [];
+  const add = /* @__PURE__ */ __name((v) => {
+    const t = (v || "").trim();
+    if (t && !out.includes(t)) out.push(t);
+  }, "add");
+  add(env.MCP_API_KEY);
+  for (const k of (env.MCP_API_KEYS || "").split(",")) add(k);
+  return out;
+}
+__name(validMcpKeys, "validMcpKeys");
 function oauthAuthPage(redirectUri, state, codeChallenge) {
   const esc = /* @__PURE__ */ __name((s) => s.replace(/&/g, "&amp;").replace(/"/g, "&quot;"), "esc");
   return `<!doctype html>
@@ -156,7 +167,7 @@ var worker_default = {
   async fetch(request, env) {
     const url = new URL(request.url);
     if (request.method === "GET" && (url.pathname === "/" || url.pathname === "/health")) {
-      return new Response("Mike Legal AI — MCP connector v1.5.0.", {
+      return new Response("Mike Legal AI — MCP connector v1.6.0.", {
         headers: { "content-type": "text/plain" }
       });
     }
@@ -201,7 +212,8 @@ var worker_default = {
         const redirectUri = decodeURIComponent(form.get("redirect_uri") || "");
         const state = decodeURIComponent(form.get("state") || "");
         const codeChallenge = decodeURIComponent(form.get("code_challenge") || "");
-        if (!env.MCP_API_KEY || apiKey !== env.MCP_API_KEY) {
+        const keys = validMcpKeys(env);
+        if (!keys.length || !keys.includes(apiKey)) {
           return new Response(
             `<!doctype html><html><body style="font-family:system-ui;padding:40px">
             <p style="color:red">&#10060; Invalid API key. <a href="javascript:history.back()">Try again</a>.</p>
@@ -209,7 +221,7 @@ var worker_default = {
             { status: 401, headers: { "content-type": "text/html; charset=utf-8" } }
           );
         }
-        const code = await computeAuthCode(env.MCP_API_KEY, codeChallenge);
+        const code = await computeAuthCode(apiKey, codeChallenge);
         const dest = new URL(redirectUri);
         dest.searchParams.set("code", code);
         if (state) dest.searchParams.set("state", state);
@@ -229,24 +241,31 @@ var worker_default = {
         return json({ error: "invalid_request", error_description: "code and code_verifier required" }, 400);
       }
       const codeChallenge = await sha256base64url(codeVerifier);
-      const expectedCode = await computeAuthCode(env.MCP_API_KEY, codeChallenge);
-      if (code !== expectedCode) {
+      let matchedKey = null;
+      for (const k of validMcpKeys(env)) {
+        if (code === await computeAuthCode(k, codeChallenge)) {
+          matchedKey = k;
+          break;
+        }
+      }
+      if (!matchedKey) {
         return json({ error: "invalid_grant", error_description: "Invalid authorization code" }, 400);
       }
       return json({
-        access_token: env.MCP_API_KEY,
+        access_token: matchedKey,
         token_type: "Bearer",
         expires_in: 86400
       });
     }
     if (url.pathname === "/mcp" && request.method === "POST") {
-      if (!env.MCP_API_KEY) {
+      const mcpKeys = validMcpKeys(env);
+      if (!mcpKeys.length) {
         return json({ jsonrpc: "2.0", id: null, error: { code: -32e3, message: "Server missing MCP_API_KEY secret." } }, 500);
       }
       const authHeader = request.headers.get("authorization") || "";
       const bearer = authHeader.toLowerCase().startsWith("bearer ") ? authHeader.slice(7).trim() : "";
       const provided = bearer || request.headers.get("x-api-key") || "";
-      if (provided !== env.MCP_API_KEY) {
+      if (!mcpKeys.includes(provided)) {
         return new Response(
           JSON.stringify({ jsonrpc: "2.0", id: null, error: { code: -32001, message: "Unauthorized." } }),
           { status: 401, headers: { "content-type": "application/json" } }

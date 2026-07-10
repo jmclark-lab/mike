@@ -17,6 +17,8 @@ enabled = true
 
 # Secrets are NOT stored here. Set them with `wrangler secret put <NAME>`:
 #   MCP_API_KEY            - bearer key clients use to call /mcp
+#   MCP_API_KEYS           - OPTIONAL comma-separated additional valid keys
+#                            (per-client, independently revocable; any listed key works)
 #   MIKE_SUPABASE_URL      - Supabase project URL
 #   MIKE_SUPABASE_ANON_KEY - Supabase anon key
 #   MIKE_EMAIL             - service login (candidate for a scoped token; see README)
