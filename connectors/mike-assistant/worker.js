@@ -7,10 +7,17 @@ var __name = (target, value) => __defProp(target, "name", { value, configurable:
 // generation (dense multi-section reviews) is no longer killed mid-stream.
 //   - MIKE_IDLE_TIMEOUT_MS: abort only if NO bytes arrive for this long.
 //   - MIKE_MAX_MS: absolute ceiling per attempt.
+var CORS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+  "Access-Control-Allow-Headers": "authorization, content-type, mcp-protocol-version, mcp-session-id, accept",
+  "Access-Control-Expose-Headers": "mcp-session-id, mcp-protocol-version",
+  "Access-Control-Max-Age": "86400"
+};
 function json(obj, status) {
   return new Response(JSON.stringify(obj), {
     status: status || 200,
-    headers: { "content-type": "application/json; charset=utf-8" }
+    headers: { "content-type": "application/json; charset=utf-8", ...CORS }
   });
 }
 __name(json, "json");
@@ -166,9 +173,12 @@ __name(oauthAuthPage, "oauthAuthPage");
 var worker_default = {
   async fetch(request, env) {
     const url = new URL(request.url);
+    if (request.method === "OPTIONS") {
+      return new Response(null, { status: 204, headers: CORS });
+    }
     if (request.method === "GET" && (url.pathname === "/" || url.pathname === "/health")) {
-      return new Response("Mike Legal AI — MCP connector v1.6.0.", {
-        headers: { "content-type": "text/plain" }
+      return new Response("Mike Legal AI — MCP connector v1.6.1.", {
+        headers: { "content-type": "text/plain", ...CORS }
       });
     }
     if (url.pathname === "/.well-known/oauth-authorization-server") {
@@ -268,7 +278,7 @@ var worker_default = {
       if (!mcpKeys.includes(provided)) {
         return new Response(
           JSON.stringify({ jsonrpc: "2.0", id: null, error: { code: -32001, message: "Unauthorized." } }),
-          { status: 401, headers: { "content-type": "application/json" } }
+          { status: 401, headers: { "content-type": "application/json", ...CORS } }
         );
       }
       let rpc;
@@ -280,14 +290,14 @@ var worker_default = {
       const method = rpc && rpc.method;
       const id = rpc ? rpc.id : null;
       const ok = /* @__PURE__ */ __name((result) => new Response(JSON.stringify({ jsonrpc: "2.0", id, result }), {
-        headers: { "content-type": "application/json" }
+        headers: { "content-type": "application/json", ...CORS }
       }), "ok");
       if (method === "initialize") {
         const pv = rpc.params && rpc.params.protocolVersion || "2024-11-05";
         return ok({ protocolVersion: pv, capabilities: { tools: {} }, serverInfo: { name: "mike-legal", version: "1.5.0" } });
       }
       if (typeof method === "string" && method.startsWith("notifications/")) {
-        return new Response(null, { status: 202 });
+        return new Response(null, { status: 202, headers: CORS });
       }
       if (method === "tools/list") {
         return ok({
