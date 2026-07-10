@@ -52,7 +52,14 @@ import {
   searchKnowledge,
   formatKnowledgeForModel,
   isKnowledgeBaseConfigured,
+  ingestDocument,
 } from "./knowledgeBase";
+import {
+  saveObligations,
+  listObligations,
+  formatObligationsForModel,
+  type ObligationInput,
+} from "./obligations";
 import {
   listPlaybooks,
   getPlaybook,
@@ -421,6 +428,82 @@ export const DRAFTING_TOOLS = [
             type: "string",
             description: "Free-text deal parameters to fold into the draft: counterparty name/entity, role, governing law, term, fees/budget, country, product, effective date, and any special terms. Anything omitted becomes a marked placeholder.",
           },
+        },
+        required: [],
+      },
+    },
+  },
+];
+
+export const OBLIGATION_TOOLS = [
+  {
+    type: "function",
+    function: {
+      name: "save_obligations",
+      description:
+        "Persist key dates and obligations extracted from a contract into bioaccess®'s obligation tracker so they can be surfaced and reminded on later. First read the contract (read_document / the document in the conversation), then call this with the obligations you found — renewals, termination-notice windows, insurance expirations, records-retention deadlines, payment milestones, auto-renewal dates, deliverable due dates, etc. Use ISO dates (YYYY-MM-DD); leave trigger_date null if a real calendar date can't be determined.",
+      parameters: {
+        type: "object",
+        properties: {
+          source_title: { type: "string", description: "Human-readable name of the source contract (e.g. 'PROCEPT MSA 2026')." },
+          source_ref: { type: "string", description: "Optional stable reference/id for the source document." },
+          obligations: {
+            type: "array",
+            description: "The obligations/dates extracted from the contract.",
+            items: {
+              type: "object",
+              properties: {
+                obligation_type: { type: "string", description: "renewal | termination_notice | insurance_expiry | records_retention | payment | deliverable | auto_renewal | other" },
+                description: { type: "string", description: "What must happen / what the date means, in plain language." },
+                trigger_date: { type: "string", description: "The key calendar date in YYYY-MM-DD, or omit if not determinable." },
+                notice_window: { type: "string", description: "Any advance-notice requirement, e.g. '90 days prior'." },
+                recurring: { type: "boolean", description: "True if it repeats (e.g. annual renewal)." },
+                severity: { type: "string", description: "low | medium | high" },
+                counterparty: { type: "string", description: "The other party, if known." },
+                agreement_type: { type: "string", description: "NDA | CDA | CTA | MSA | WO | ICA | Services | other." },
+              },
+              required: ["obligation_type", "description"],
+            },
+          },
+        },
+        required: ["obligations"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "list_obligations",
+      description:
+        "List tracked contract obligations/deadlines from bioaccess®'s obligation tracker. Use when the user asks what's coming up, what's due, what renewals/notice deadlines are approaching, or what's overdue. Returns items soonest-first; overdue items are flagged.",
+      parameters: {
+        type: "object",
+        properties: {
+          within_days: { type: "integer", description: "Only return items due on or before today + N days (overdue items are always included). Omit for all open items." },
+          status: { type: "string", description: "open (default) | done | dismissed." },
+          counterparty: { type: "string", description: "Optional filter by counterparty name (substring match)." },
+        },
+        required: [],
+      },
+    },
+  },
+];
+
+export const INGEST_TOOLS = [
+  {
+    type: "function",
+    function: {
+      name: "ingest_document",
+      description:
+        "Add a document to bioaccess®'s private knowledge base so it can be retrieved later by search_knowledge and used as drafting precedent. Use when the user wants to save/add/ingest a contract, template, or reference into Mike's knowledge base. Pass a doc_id to ingest an attached document, or pass title + text directly. Choose an accurate doc_type. Ingestion chunks and embeds the text (owner-scoped).",
+      parameters: {
+        type: "object",
+        properties: {
+          doc_id: { type: "string", description: "ID of an attached document in the conversation (e.g. 'doc-0') to ingest. Either this or text is required." },
+          title: { type: "string", description: "Title to store the document under (required if no doc_id, recommended otherwise)." },
+          text: { type: "string", description: "The raw document text to ingest, if not using doc_id." },
+          doc_type: { type: "string", description: "contract | template | regulatory | other (default contract)." },
+          source_ref: { type: "string", description: "Optional stable reference/id to dedupe re-ingestion of the same document." },
         },
         required: [],
       },
@@ -2742,6 +2825,110 @@ export async function runToolCalls(
       continue;
     }
 
+    if (tc.function.name === "save_obligations") {
+      let content: string;
+      try {
+        const items = Array.isArray(args.obligations)
+          ? (args.obligations as ObligationInput[])
+          : [];
+        const sourceTitle =
+          typeof args.source_title === "string" ? args.source_title : null;
+        const sourceRef =
+          typeof args.source_ref === "string" ? args.source_ref : null;
+        const { saved } = await saveObligations({
+          db,
+          ownerId: userId,
+          items,
+          sourceTitle,
+          sourceRef,
+        });
+        content = saved
+          ? `Saved ${saved} obligation(s) to the tracker${sourceTitle ? ` from "${sourceTitle}"` : ""}. Use list_obligations to review upcoming/overdue items.`
+          : "No valid obligations were provided (each needs at least an obligation_type and a description).";
+      } catch (err) {
+        content = `Saving obligations failed — ${(err as Error).message}`;
+      }
+      toolResults.push({ role: "tool", tool_call_id: tc.id, content });
+      continue;
+    }
+
+    if (tc.function.name === "list_obligations") {
+      let content: string;
+      try {
+        const withinDays =
+          typeof args.within_days === "number" ? args.within_days : null;
+        const status = typeof args.status === "string" ? args.status : null;
+        const counterparty =
+          typeof args.counterparty === "string" ? args.counterparty : null;
+        const rows = await listObligations({
+          db,
+          ownerId: userId,
+          withinDays,
+          status,
+          counterparty,
+        });
+        content = formatObligationsForModel(rows, withinDays);
+      } catch (err) {
+        content = `Listing obligations failed — ${(err as Error).message}`;
+      }
+      toolResults.push({ role: "tool", tool_call_id: tc.id, content });
+      continue;
+    }
+
+    if (tc.function.name === "ingest_document") {
+      let content: string;
+      try {
+        const rawDocId = typeof args.doc_id === "string" ? args.doc_id : "";
+        const docType =
+          typeof args.doc_type === "string" ? args.doc_type : "contract";
+        let title = typeof args.title === "string" ? args.title : "";
+        let text = typeof args.text === "string" ? args.text : "";
+        let sourceRef =
+          typeof args.source_ref === "string" ? args.source_ref : null;
+        if (rawDocId) {
+          const docId =
+            resolveDocLabel(rawDocId, docStore, docIndex) ?? rawDocId;
+          text = await readDocumentContent(
+            docId,
+            docStore,
+            write,
+            docIndex,
+            db,
+          );
+          if (!title) title = docStore.get(docId)?.filename ?? rawDocId;
+          if (!sourceRef) sourceRef = `conv:${docId}`;
+        }
+        if (!text.trim()) {
+          content =
+            "Nothing to ingest — provide a doc_id of an attached document, or the text to ingest.";
+        } else {
+          if (!title) title = "Untitled document";
+          if (sourceRef) {
+            await db
+              .from("kb_documents")
+              .delete()
+              .eq("owner_id", userId)
+              .eq("source_ref", sourceRef);
+          }
+          const r = await ingestDocument({
+            db,
+            ownerId: userId,
+            title,
+            text,
+            docType,
+            source: "mike-chat",
+            sourceRef: sourceRef ?? undefined,
+            apiKeys,
+          });
+          content = `Ingested "${title}" into the knowledge base (${r.chunks} chunk(s), type: ${docType}). It's now searchable via search_knowledge and usable as drafting precedent.`;
+        }
+      } catch (err) {
+        content = `Ingestion failed — ${(err as Error).message}`;
+      }
+      toolResults.push({ role: "tool", tool_call_id: tc.id, content });
+      continue;
+    }
+
     if (tc.function.name === "read_document") {
       const rawDocId = args.doc_id as string;
       const docId = resolveDocLabel(rawDocId, docStore, docIndex) ?? rawDocId;
@@ -4320,6 +4507,7 @@ export async function runLLMStream(params: {
   const researchTools = includeResearchTools ? COURTLISTENER_TOOLS : [];
   const auditTools = isWebsiteAuditEnabled() ? WEBSITE_AUDIT_TOOLS : [];
   const kbTools = isKnowledgeBaseConfigured() ? KNOWLEDGE_TOOLS : [];
+  const ingestTools = isKnowledgeBaseConfigured() ? INGEST_TOOLS : [];
   const mcpTools = await buildUserMcpTools(userId, db);
   const baseTools = [
     ...TOOLS,
@@ -4329,6 +4517,8 @@ export async function runLLMStream(params: {
     ...kbTools,
     ...PLAYBOOK_TOOLS,
     ...DRAFTING_TOOLS,
+    ...OBLIGATION_TOOLS,
+    ...ingestTools,
   ];
   const activeTools = extraTools?.length
     ? [...baseTools, ...mcpTools, ...extraTools]
