@@ -50,7 +50,7 @@ export interface IngestParams {
   docType?: string;
   source?: string;
   sourceRef?: string;
-  apiKeys?: { openai?: string | null };
+  apiKeys?: { gemini?: string | null };
 }
 
 /** Chunk + embed + store a document. Returns the new document id and chunk count. */
@@ -77,7 +77,7 @@ export async function ingestDocument(p: IngestParams): Promise<{ documentId: str
   let stored = 0;
   for (let i = 0; i < chunks.length; i += BATCH) {
     const slice = chunks.slice(i, i + BATCH);
-    const vectors = await embedTexts(slice, p.apiKeys?.openai);
+    const vectors = await embedTexts(slice, p.apiKeys?.gemini);
     const rows = slice.map((content, j) => ({
       document_id: documentId,
       owner_id: p.ownerId,
@@ -98,12 +98,12 @@ export interface SearchParams {
   query: string;
   k?: number;
   docType?: string | null;
-  apiKeys?: { openai?: string | null };
+  apiKeys?: { gemini?: string | null };
 }
 
 export async function searchKnowledge(p: SearchParams): Promise<KbHit[]> {
   if (!isEmbeddingConfigured()) return [];
-  const embedding = await embedText(p.query, p.apiKeys?.openai);
+  const embedding = await embedText(p.query, p.apiKeys?.gemini);
   const { data, error } = await p.db.rpc("match_kb_chunks", {
     query_embedding: embedding as unknown as number[],
     match_owner: p.ownerId,

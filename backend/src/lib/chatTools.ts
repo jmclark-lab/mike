@@ -57,6 +57,8 @@ import {
   listPlaybooks,
   getPlaybook,
   formatPlaybookForModel,
+  formatPlaybookForRedlines,
+  formatPlaybookForDrafting,
 } from "./playbooks";
 
 const STANDARD_FONT_DATA_URL = (() => {
@@ -370,6 +372,57 @@ export const PLAYBOOK_TOOLS = [
           },
         },
         required: ["playbook_name"],
+      },
+    },
+  },
+];
+
+export const DRAFTING_TOOLS = [
+  {
+    type: "function",
+    function: {
+      name: "draft_redlines",
+      description:
+        "Generate ready-to-paste REDLINES for a contract against one of bioaccess®'s playbooks. Use when the user wants suggested edits / replacement clause language (not just a list of issues). Fetches the named playbook plus the document text and returns redline instructions; you then write, for each deviating clause, the current language, an assessment (MEETS/FALLBACK/DEALBREAKER/MISSING), and an exact proposed replacement clause. Pass a doc_id to redline an attached document; otherwise redline the document already in the conversation.",
+      parameters: {
+        type: "object",
+        properties: {
+          playbook_name: {
+            type: "string",
+            description: "The playbook to redline against (e.g. 'Standard Mutual NDA', 'Standard Master Services Agreement (MSA)'). Use list_playbooks if unsure.",
+          },
+          doc_id: {
+            type: "string",
+            description: "Optional document ID (e.g. 'doc-0') to redline; if omitted, redline the document in the conversation.",
+          },
+        },
+        required: ["playbook_name"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "draft_contract",
+      description:
+        "Generate a first-draft agreement on bioaccess® paper from bioaccess®'s standard positions and templates. Use when the user asks to draft/create a new NDA, CDA, CTA, MSA, Work Order, Independent Contractor Agreement, or Services Agreement. Provide the playbook_name (or agreement_type) and any known deal parameters (counterparty, governing law, term, fees, country, etc.). The tool returns bioaccess®'s preferred positions plus the most relevant precedent language from the knowledge base; you then write the full draft, using clearly-marked [PLACEHOLDERS] for anything not supplied.",
+      parameters: {
+        type: "object",
+        properties: {
+          playbook_name: {
+            type: "string",
+            description: "The playbook whose positions to draft to (e.g. 'Standard Mutual NDA'). If unsure, pass agreement_type instead and/or call list_playbooks.",
+          },
+          agreement_type: {
+            type: "string",
+            description: "The kind of agreement to draft (e.g. NDA, CDA, CTA, MSA, WO, ICA, Services) — used to find the matching playbook and precedent if playbook_name is not given.",
+          },
+          parameters: {
+            type: "string",
+            description: "Free-text deal parameters to fold into the draft: counterparty name/entity, role, governing law, term, fees/budget, country, product, effective date, and any special terms. Anything omitted becomes a marked placeholder.",
+          },
+        },
+        required: [],
       },
     },
   },
@@ -2591,6 +2644,104 @@ export async function runToolCalls(
       continue;
     }
 
+    if (tc.function.name === "draft_redlines") {
+      const pbName =
+        typeof args.playbook_name === "string" ? args.playbook_name : "";
+      let content: string;
+      try {
+        const pb = await getPlaybook(db, userId, pbName);
+        if (!pb) {
+          content = `No playbook named "${pbName}" was found. Use list_playbooks to see available playbooks.`;
+        } else {
+          content = formatPlaybookForRedlines(pb);
+          const rawDocId = typeof args.doc_id === "string" ? args.doc_id : "";
+          if (rawDocId) {
+            const docId =
+              resolveDocLabel(rawDocId, docStore, docIndex) ?? rawDocId;
+            const docText = await readDocumentContent(
+              docId,
+              docStore,
+              write,
+              docIndex,
+              db,
+            );
+            content += `\n\n== DOCUMENT UNDER REVIEW (${docStore.get(docId)?.filename ?? rawDocId}) ==\n${docText}`;
+          } else {
+            content +=
+              "\n\nProduce the redlines for the document already provided in this conversation, following the OUTPUT FORMAT above.";
+          }
+        }
+      } catch (err) {
+        content = `Redline drafting failed — ${(err as Error).message}`;
+      }
+      toolResults.push({ role: "tool", tool_call_id: tc.id, content });
+      continue;
+    }
+
+    if (tc.function.name === "draft_contract") {
+      const pbName =
+        typeof args.playbook_name === "string" ? args.playbook_name : "";
+      const agType =
+        typeof args.agreement_type === "string" ? args.agreement_type : "";
+      const dealParams =
+        typeof args.parameters === "string" ? args.parameters : "";
+      let content: string;
+      try {
+        let pb = pbName ? await getPlaybook(db, userId, pbName) : null;
+        if (!pb && agType) {
+          const all = await listPlaybooks(db, userId);
+          const match = all.find(
+            (p) =>
+              (p.agreement_type ?? "").toLowerCase() ===
+                agType.toLowerCase() ||
+              p.name.toLowerCase().includes(agType.toLowerCase()),
+          );
+          if (match) pb = await getPlaybook(db, userId, match.name);
+        }
+        const parts: string[] = [];
+        if (pb) {
+          parts.push(formatPlaybookForDrafting(pb));
+        } else {
+          parts.push(
+            `No matching playbook found for "${pbName || agType}". Draft from bioaccess®'s general standards and note that no playbook was on file.`,
+          );
+        }
+        if (isKnowledgeBaseConfigured()) {
+          try {
+            const kbQuery = `${pb?.agreement_type ?? agType ?? pbName} template standard clauses bioaccess`;
+            const hits = await searchKnowledge({
+              db,
+              ownerId: userId,
+              query: kbQuery,
+              k: 6,
+              docType: null,
+              apiKeys,
+            });
+            if (hits.length) {
+              parts.push(
+                "",
+                "PRECEDENT FROM THE KNOWLEDGE BASE (use as the drafting base; adapt, don't copy blindly):",
+                formatKnowledgeForModel(kbQuery, hits),
+              );
+            }
+          } catch {
+            /* KB grounding is best-effort */
+          }
+        }
+        parts.push(
+          "",
+          `DEAL PARAMETERS (fold these into the draft; mark anything missing as a clearly-labeled [PLACEHOLDER]):\n${dealParams || "(none provided — use placeholders throughout)"}`,
+          "",
+          "Now write the FULL first-draft agreement on bioaccess® paper: numbered sections, defined terms, signature blocks, and any needed exhibits/schedules. Keep every clause at the playbook's preferred position (note any fallback used). End with a short 'Drafting notes' list of the placeholders and any positions that will likely need negotiation. This is a draft for internal review, not legal advice.",
+        );
+        content = parts.join("\n");
+      } catch (err) {
+        content = `Contract drafting failed — ${(err as Error).message}`;
+      }
+      toolResults.push({ role: "tool", tool_call_id: tc.id, content });
+      continue;
+    }
+
     if (tc.function.name === "read_document") {
       const rawDocId = args.doc_id as string;
       const docId = resolveDocLabel(rawDocId, docStore, docIndex) ?? rawDocId;
@@ -4177,6 +4328,7 @@ export async function runLLMStream(params: {
     ...auditTools,
     ...kbTools,
     ...PLAYBOOK_TOOLS,
+    ...DRAFTING_TOOLS,
   ];
   const activeTools = extraTools?.length
     ? [...baseTools, ...mcpTools, ...extraTools]
