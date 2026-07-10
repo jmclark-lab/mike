@@ -48,6 +48,16 @@ import {
   formatAuditForModel,
   isWebsiteAuditEnabled,
 } from "./websiteAudit";
+import {
+  searchKnowledge,
+  formatKnowledgeForModel,
+  isKnowledgeBaseConfigured,
+} from "./knowledgeBase";
+import {
+  listPlaybooks,
+  getPlaybook,
+  formatPlaybookForModel,
+} from "./playbooks";
 
 const STANDARD_FONT_DATA_URL = (() => {
   try {
@@ -297,6 +307,69 @@ export const WORKFLOW_TOOLS = [
           },
         },
         required: ["workflow_id"],
+      },
+    },
+  },
+];
+
+export const KNOWLEDGE_TOOLS = [
+  {
+    type: "function",
+    function: {
+      name: "search_knowledge",
+      description:
+        "Search bioaccess®'s private knowledge base (its own executed contracts, templates, and reference material) for passages relevant to a question, and ground the answer in them. Use this before answering questions about our standard terms, past agreements, our templates, or how we've handled a clause before. Returns cited passages ([KB1], [KB2], …) — cite them in your answer and don't invent content that isn't returned.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: {
+            type: "string",
+            description: "What to look for (a question or topic, e.g. 'our standard indemnification cap in MSAs').",
+          },
+          doc_type: {
+            type: "string",
+            description: "Optional filter: contract | template | regulatory | other.",
+          },
+          k: {
+            type: "integer",
+            description: "Number of passages to retrieve (default 6).",
+          },
+        },
+        required: ["query"],
+      },
+    },
+  },
+];
+
+export const PLAYBOOK_TOOLS = [
+  {
+    type: "function",
+    function: {
+      name: "list_playbooks",
+      description:
+        "List bioaccess®'s available negotiation playbooks (standard positions per agreement type). Call this to discover which playbooks exist before reviewing a document against one.",
+      parameters: { type: "object", properties: {} },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "review_against_playbook",
+      description:
+        "Fetch a named playbook's standard positions so you can review a contract against them clause-by-clause and flag deviations with severity. Use when the user asks to review/redline a document against our standard positions. Optionally pass a doc_id to pull an attached document's text; otherwise compare against the document already in the conversation.",
+      parameters: {
+        type: "object",
+        properties: {
+          playbook_name: {
+            type: "string",
+            description: "The playbook to use (e.g. 'Standard NDA', 'CRO Work Order'). Use list_playbooks if unsure.",
+          },
+          doc_id: {
+            type: "string",
+            description: "Optional document ID (e.g. 'doc-0') to review; if omitted, review the document in the conversation.",
+          },
+        },
+        required: ["playbook_name"],
       },
     },
   },
@@ -2442,6 +2515,82 @@ export async function runToolCalls(
       continue;
     }
 
+    if (tc.function.name === "search_knowledge") {
+      const kbQuery = typeof args.query === "string" ? args.query : "";
+      const docType = typeof args.doc_type === "string" ? args.doc_type : null;
+      const k = typeof args.k === "number" ? args.k : undefined;
+      let content: string;
+      try {
+        const hits = await searchKnowledge({
+          db,
+          ownerId: userId,
+          query: kbQuery,
+          k,
+          docType,
+          apiKeys,
+        });
+        content = formatKnowledgeForModel(kbQuery, hits);
+      } catch (err) {
+        content = `KNOWLEDGE BASE: search failed — ${(err as Error).message}`;
+      }
+      toolResults.push({ role: "tool", tool_call_id: tc.id, content });
+      continue;
+    }
+
+    if (tc.function.name === "list_playbooks") {
+      let content: string;
+      try {
+        const pbs = await listPlaybooks(db, userId);
+        content = pbs.length
+          ? "Available playbooks:\n" +
+            pbs
+              .map(
+                (p) =>
+                  `- ${p.name}${p.agreement_type ? ` (${p.agreement_type})` : ""}${p.description ? ` — ${p.description}` : ""}`,
+              )
+              .join("\n")
+          : "No playbooks have been defined yet.";
+      } catch (err) {
+        content = `Could not list playbooks — ${(err as Error).message}`;
+      }
+      toolResults.push({ role: "tool", tool_call_id: tc.id, content });
+      continue;
+    }
+
+    if (tc.function.name === "review_against_playbook") {
+      const pbName =
+        typeof args.playbook_name === "string" ? args.playbook_name : "";
+      let content: string;
+      try {
+        const pb = await getPlaybook(db, userId, pbName);
+        if (!pb) {
+          content = `No playbook named "${pbName}" was found. Use list_playbooks to see available playbooks.`;
+        } else {
+          content = formatPlaybookForModel(pb);
+          const rawDocId = typeof args.doc_id === "string" ? args.doc_id : "";
+          if (rawDocId) {
+            const docId =
+              resolveDocLabel(rawDocId, docStore, docIndex) ?? rawDocId;
+            const docText = await readDocumentContent(
+              docId,
+              docStore,
+              write,
+              docIndex,
+              db,
+            );
+            content += `\n\n== DOCUMENT UNDER REVIEW (${docStore.get(docId)?.filename ?? rawDocId}) ==\n${docText}`;
+          } else {
+            content +=
+              "\n\nReview the document already provided in this conversation against the positions above. For each relevant clause state: the playbook topic, what the document says, whether it MEETS / is a FALLBACK / is a DEALBREAKER deviation, the severity, and a suggested redline.";
+          }
+        }
+      } catch (err) {
+        content = `Playbook review failed — ${(err as Error).message}`;
+      }
+      toolResults.push({ role: "tool", tool_call_id: tc.id, content });
+      continue;
+    }
+
     if (tc.function.name === "read_document") {
       const rawDocId = args.doc_id as string;
       const docId = resolveDocLabel(rawDocId, docStore, docIndex) ?? rawDocId;
@@ -4019,8 +4168,16 @@ export async function runLLMStream(params: {
   } = params;
   const researchTools = includeResearchTools ? COURTLISTENER_TOOLS : [];
   const auditTools = isWebsiteAuditEnabled() ? WEBSITE_AUDIT_TOOLS : [];
+  const kbTools = isKnowledgeBaseConfigured() ? KNOWLEDGE_TOOLS : [];
   const mcpTools = await buildUserMcpTools(userId, db);
-  const baseTools = [...TOOLS, ...researchTools, ...WORKFLOW_TOOLS, ...auditTools];
+  const baseTools = [
+    ...TOOLS,
+    ...researchTools,
+    ...WORKFLOW_TOOLS,
+    ...auditTools,
+    ...kbTools,
+    ...PLAYBOOK_TOOLS,
+  ];
   const activeTools = extraTools?.length
     ? [...baseTools, ...mcpTools, ...extraTools]
     : [...baseTools, ...mcpTools];
