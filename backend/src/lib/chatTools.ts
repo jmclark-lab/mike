@@ -67,6 +67,7 @@ import {
   formatPlaybookForRedlines,
   formatPlaybookForDrafting,
 } from "./playbooks";
+import { conveneCouncil } from "./llm/council";
 
 const STANDARD_FONT_DATA_URL = (() => {
   try {
@@ -506,6 +507,35 @@ export const INGEST_TOOLS = [
           source_ref: { type: "string", description: "Optional stable reference/id to dedupe re-ingestion of the same document." },
         },
         required: [],
+      },
+    },
+  },
+];
+
+export const COUNCIL_TOOLS = [
+  {
+    type: "function",
+    function: {
+      name: "convene_council",
+      description:
+        "Convene a 3-model COUNCIL — Fable 5, Fugu Ultra, and GPT-5.6 Sol each answer the SAME matter independently, then a neutral judge (Opus 4.8, not a member) reconciles them into one opinion that makes agreement AND disagreement explicit. Use for HIGH-STAKES legal/regulatory questions where a second and third opinion materially reduce risk — e.g. is this clause a dealbreaker, which LATAM regulatory pathway to take, how to interpret an ambiguous term, a go/no-go call. Do NOT use for routine lookups or simple drafting — it is ~3x slower and costlier. IMPORTANT: gather the facts FIRST (search_knowledge, read the contract with read_document, review_against_playbook) and pass them in `context` so all members reason over identical evidence; the disagreements the judge surfaces are the items to route to a human.",
+      parameters: {
+        type: "object",
+        properties: {
+          question: {
+            type: "string",
+            description: "The precise matter for the council to deliberate (a specific legal/regulatory question or decision).",
+          },
+          context: {
+            type: "string",
+            description: "The evidence the members should reason over — assembled from search_knowledge results, the contract text, the applicable playbook, etc. Strongly recommended; without it the council answers from general knowledge only.",
+          },
+          doc_id: {
+            type: "string",
+            description: "Optional attached-document id (e.g. 'doc-0'); its text is added to the context automatically.",
+          },
+        },
+        required: ["question"],
       },
     },
   },
@@ -2929,6 +2959,49 @@ export async function runToolCalls(
       continue;
     }
 
+    if (tc.function.name === "convene_council") {
+      const question =
+        typeof args.question === "string" ? args.question : "";
+      let context = typeof args.context === "string" ? args.context : "";
+      const rawDocId = typeof args.doc_id === "string" ? args.doc_id : "";
+      let content: string;
+      try {
+        if (!question.trim()) {
+          content =
+            "convene_council needs a 'question' — the specific matter for the council to deliberate.";
+        } else {
+          if (rawDocId) {
+            const docId =
+              resolveDocLabel(rawDocId, docStore, docIndex) ?? rawDocId;
+            const docText = await readDocumentContent(
+              docId,
+              docStore,
+              write,
+              docIndex,
+              db,
+            );
+            context =
+              (context ? context + "\n\n" : "") +
+              `== DOCUMENT (${docStore.get(docId)?.filename ?? rawDocId}) ==\n${docText}`;
+          }
+          write(`: convening 3-model council…\n\n`);
+          const res = await conveneCouncil({
+            question,
+            context,
+            apiKeys,
+            onProgress: (m) => write(`: ${m}\n\n`),
+          });
+          content =
+            res.finalAnswer +
+            "\n\n(Relay this council opinion to the user, preserving the agreement/disagreement notes verbatim — the disagreements are the items that warrant human review. Do not silently drop dissent.)";
+        }
+      } catch (err) {
+        content = `Council deliberation failed — ${(err as Error).message}`;
+      }
+      toolResults.push({ role: "tool", tool_call_id: tc.id, content });
+      continue;
+    }
+
     if (tc.function.name === "read_document") {
       const rawDocId = args.doc_id as string;
       const docId = resolveDocLabel(rawDocId, docStore, docIndex) ?? rawDocId;
@@ -4519,6 +4592,7 @@ export async function runLLMStream(params: {
     ...DRAFTING_TOOLS,
     ...OBLIGATION_TOOLS,
     ...ingestTools,
+    ...COUNCIL_TOOLS,
   ];
   const activeTools = extraTools?.length
     ? [...baseTools, ...mcpTools, ...extraTools]
