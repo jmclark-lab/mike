@@ -1,12 +1,12 @@
 /**
- * Model "council" for Mike Legal AI — fan a matter out to three independent
- * frontier models in parallel, then have a neutral judge (Opus 4.8, which is
+ * Model "council" for Mike Legal AI — fan a matter out to several independent
+ * frontier models (across different providers) in parallel, then have a neutral judge (Opus 4.8, which is
  * NOT a council member) reconcile them into one answer that makes agreement and
  * — critically for legal work — DISAGREEMENT explicit.
  *
  * This is deliberately single-shot per member (no per-member tool loops): the
  * caller gathers evidence once (KB passages, playbook, contract text) and passes
- * it in as `context`, so all three members reason over identical facts.
+ * it in as `context`, so all members reason over identical facts.
  */
 import { completeText } from "./index";
 import type { UserApiKeys } from "./types";
@@ -15,6 +15,7 @@ export const COUNCIL_MEMBERS = [
   "claude-fable-5",
   "fugu-ultra-20260615",
   "gpt-5.6-sol",
+  "gemini-3.1-pro-preview",
 ] as const;
 export const COUNCIL_JUDGE = "claude-opus-4-8";
 
