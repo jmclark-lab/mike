@@ -15,6 +15,12 @@ const DEFAULT_FABLE_MODEL = "claude-fable-5";
 // Stable Anthropic model used as the final safety net in the fallback chain
 // while the Fable 5 rollout stabilizes (per Anthropic interim guidance, Jul 2026).
 const INTERIM_STABLE_MODEL = "claude-opus-4-8";
+// Final tail fallback: OpenAI GPT-5.6 Sol. Only reached if Fable, Fugu, AND
+// Opus all fail on a request. Requires the OpenAI account to have billing/quota;
+// until funded it returns insufficient_quota (429) and the chain simply ends
+// here exactly as it did before this entry existed — so it's safe to ship now
+// and activates automatically once the account is funded.
+const FINAL_OPENAI_FALLBACK = "gpt-5.6-sol";
 
 function resolveActiveModel(): string {
     const explicit = process.env.LLM_MODEL?.trim();
@@ -26,10 +32,11 @@ function resolveActiveModel(): string {
 }
 
 /**
- * Ordered model fallback chain. Default is a three-way chain:
- *   1. Fable 5   (primary)   — claude-fable-5
- *   2. Fugu Ultra (fallback) — Sakana multi-model orchestrator
- *   3. Opus 4.8  (final net) — stable Anthropic model
+ * Ordered model fallback chain. Default is a four-way chain:
+ *   1. Fable 5    (primary)   — claude-fable-5
+ *   2. Fugu Ultra (fallback)  — Sakana multi-model orchestrator
+ *   3. Opus 4.8   (net)       — stable Anthropic model
+ *   4. GPT-5.6 Sol (final net) — OpenAI; active once the account has quota
  * Each model is attempted in order until one returns a non-empty result.
  * The primary is whatever resolveActiveModel() picks (LLM_MODEL / LLM_PROVIDER).
  * Override the fallback tail entirely with LLM_FALLBACK_MODEL — a comma-separated
@@ -50,9 +57,10 @@ function resolveModelChain(): string[] {
     if (explicitFallbacks) {
         for (const m of explicitFallbacks.split(",")) push(m);
     } else {
-        // Default three-way tail: Fugu Ultra, then Opus 4.8.
+        // Default tail: Fugu Ultra, then Opus 4.8, then GPT-5.6 Sol (final net).
         push(process.env.SAKANA_MODEL?.trim() || DEFAULT_SAKANA_MODEL);
         push(INTERIM_STABLE_MODEL);
+        push(FINAL_OPENAI_FALLBACK);
     }
 
     return chain;

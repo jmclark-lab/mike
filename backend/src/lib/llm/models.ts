@@ -15,7 +15,7 @@ export const GEMINI_MAIN_MODELS = [
     "gemini-3.1-pro-preview",
     "gemini-3-flash-preview",
 ] as const;
-export const OPENAI_MAIN_MODELS = ["gpt-5.5", "gpt-5.4"] as const;
+export const OPENAI_MAIN_MODELS = ["gpt-5.6-sol", "gpt-5.5", "gpt-5.4"] as const;
 export const FUGU_MAIN_MODELS = [
     "fugu-ultra-20260615",
     "fugu-20260615",
