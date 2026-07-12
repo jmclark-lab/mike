@@ -218,7 +218,7 @@ var worker_default = {
       }
       if (request.method === "POST") {
         const form = await request.formData();
-        const apiKey = form.get("api_key") || "";
+        const apiKey = (form.get("api_key") || "").trim();
         const redirectUri = decodeURIComponent(form.get("redirect_uri") || "");
         const state = decodeURIComponent(form.get("state") || "");
         const codeChallenge = decodeURIComponent(form.get("code_challenge") || "");
@@ -274,7 +274,7 @@ var worker_default = {
       }
       const authHeader = request.headers.get("authorization") || "";
       const bearer = authHeader.toLowerCase().startsWith("bearer ") ? authHeader.slice(7).trim() : "";
-      const provided = bearer || request.headers.get("x-api-key") || "";
+      const provided = (bearer || request.headers.get("x-api-key") || "").trim();
       if (!mcpKeys.includes(provided)) {
         return new Response(
           JSON.stringify({ jsonrpc: "2.0", id: null, error: { code: -32001, message: "Unauthorized." } }),
