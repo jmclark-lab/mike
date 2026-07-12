@@ -12,6 +12,7 @@ import { workflowsRouter } from "./routes/workflows";
 import { userRouter } from "./routes/user";
 import { downloadsRouter } from "./routes/downloads";
 import { caseLawRouter } from "./routes/caseLaw";
+import { kbRouter } from "./routes/kb";
 import { createServerSupabase } from "./lib/supabase";
 import { getRoutingHealth } from "./lib/llm";
 
@@ -169,6 +170,7 @@ app.use("/user", userRouter);
 app.use("/users", userRouter);
 app.use("/download", downloadsRouter);
 app.use("/case-law", caseLawRouter);
+app.use("/kb", kbRouter);
 
 app.get("/health", (_req, res) => res.json({ ok: true }));
 

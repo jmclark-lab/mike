@@ -322,6 +322,27 @@ var worker_default = {
                 },
                 required: ["job_id"]
               }
+            },
+            {
+              name: "mike_ingest_document",
+              description: "Add a document to Mike's knowledge base so it becomes searchable by ask_mike with citations — beyond contracts: feasibility analyses, budgets, regulatory texts, competitive/substantiation files, etc. Provide the document as one of: 'text' (raw text/markdown), 'url' (a public link Mike will fetch), or 'file_base64' (+ 'filename') for an uploaded file. IMPORTANT: for a Google Drive file, the caller should first read the file's contents (via its Drive access) and pass them here as 'text' or 'file_base64' — you may also pass 'drive_file_id' and 'source_url' as metadata for dedupe and citation. Optional: 'source_tag' (e.g. feasibility, regulatory, substantiation, contract; default 'manual'), 'title', 'doc_type'. Parses PDF/DOCX/MD/TXT and OCRs scanned PDFs. Dedupes by content hash. Returns the ingest status and chunk count.",
+              inputSchema: {
+                type: "object",
+                properties: {
+                  text: { type: "string", description: "Raw document text or markdown." },
+                  url: { type: "string", description: "Public URL for Mike to fetch and ingest." },
+                  file_base64: { type: "string", description: "Base64-encoded file bytes (PDF/DOCX/etc.)." },
+                  filename: { type: "string", description: "Original filename (helps detect type + set title), e.g. 'Kanjin_Phase1_Feasibility_Budget.pdf'." },
+                  mime_type: { type: "string", description: "Optional MIME type of the file." },
+                  drive_file_id: { type: "string", description: "Optional Google Drive file id, stored as metadata for dedupe/versioning." },
+                  source_url: { type: "string", description: "Optional link back to the source (e.g. the Drive view URL) for citations." },
+                  source_tag: { type: "string", description: "Category tag: feasibility | regulatory | substantiation | competitive | contract | manual (default 'manual')." },
+                  title: { type: "string", description: "Optional human title; defaults to the filename." },
+                  doc_type: { type: "string", description: "Optional: contract | template | regulatory | reference (default 'reference')." },
+                  force: { type: "boolean", description: "Re-ingest even if an identical document already exists." }
+                },
+                required: []
+              }
             }
           ]
         });
@@ -390,6 +411,36 @@ var worker_default = {
             }],
             isError: false
           });
+        }
+        if (name === "mike_ingest_document") {
+          const body = {};
+          for (const k of ["text", "url", "drive_file_id", "file_base64", "filename", "mime_type", "source_tag", "title", "source_url", "doc_type"]) {
+            if (args[k] != null && args[k] !== "") body[k] = args[k];
+          }
+          if (args.force === true) body.force = true;
+          if (!body.text && !body.url && !body.file_base64) {
+            return ok({ content: [{ type: "text", text: "Provide one of: text, url, or file_base64. For a Google Drive file, read its contents first (via your Drive access) and pass them as text or file_base64." }], isError: true });
+          }
+          if (!env.MIKE_BACKEND_URL || !env.CONNECTOR_API_KEY) {
+            return ok({ content: [{ type: "text", text: "Ingestion backend not configured (MIKE_BACKEND_URL / CONNECTOR_API_KEY)." }], isError: true });
+          }
+          try {
+            const r = await fetch(env.MIKE_BACKEND_URL.replace(/\/$/, "") + "/kb/ingest", {
+              method: "POST",
+              headers: { "content-type": "application/json", "x-connector-key": env.CONNECTOR_API_KEY },
+              body: JSON.stringify(body)
+            });
+            const t = await r.text();
+            let out;
+            try { out = JSON.parse(t); } catch (e) { out = null; }
+            if (!r.ok || !out || out.error) {
+              return ok({ content: [{ type: "text", text: "Ingest failed (" + r.status + "): " + ((out && out.error) || t.slice(0, 300)) }], isError: true });
+            }
+            const msg = "Ingested “" + (out.title || "document") + "” into Mike's knowledge base.\nstatus=" + out.status + ", chunks=" + out.chunks + ", source_tag=" + out.source_tag + (out.ocr_used ? ", OCR=yes" : "") + ".\nIt is now retrievable by ask_mike, with citations back to this document.";
+            return ok({ content: [{ type: "text", text: msg }], isError: false });
+          } catch (e) {
+            return ok({ content: [{ type: "text", text: "Ingest request error: " + (e && e.message || String(e)) }], isError: true });
+          }
         }
         return ok({ content: [{ type: "text", text: "Unknown tool: " + name }], isError: true });
       }
