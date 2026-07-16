@@ -518,7 +518,7 @@ export const COUNCIL_TOOLS = [
     function: {
       name: "convene_council",
       description:
-        "Convene a 4-model COUNCIL — Fable 5, Fugu Ultra, GPT-5.6 Sol, and Gemini 3.1 Pro each answer the SAME matter independently (four different providers), then a neutral judge (Opus 4.8, not a member) reconciles them into one opinion that makes agreement AND disagreement explicit. Use for HIGH-STAKES legal/regulatory questions where a second and third opinion materially reduce risk — e.g. is this clause a dealbreaker, which LATAM regulatory pathway to take, how to interpret an ambiguous term, a go/no-go call. Do NOT use for routine lookups or simple drafting — it is ~3x slower and costlier. IMPORTANT: gather the facts FIRST (search_knowledge, read the contract with read_document, review_against_playbook) and pass them in `context` so all members reason over identical evidence; the disagreements the judge surfaces are the items to route to a human.",
+        "Convene a mandatory 4/4 model COUNCIL — Fable 5, Fugu Ultra, GPT-5.6 Sol Ultra (xhigh reasoning), and the configured Gemini Pro seat each answer the SAME matter independently (four different providers). Opus 4.8, which is not a member, reconciles only after all four opinions are received. Failed members are retried without model substitution; an incomplete quorum fails explicitly and never produces a degraded council opinion. Use for HIGH-STAKES legal/regulatory questions where independent opinions materially reduce risk. IMPORTANT: gather the facts FIRST and pass them in `context` so every member reasons over identical evidence.",
       parameters: {
         type: "object",
         properties: {
@@ -2984,7 +2984,7 @@ export async function runToolCalls(
               (context ? context + "\n\n" : "") +
               `== DOCUMENT (${docStore.get(docId)?.filename ?? rawDocId}) ==\n${docText}`;
           }
-          write(`: convening 3-model council…\n\n`);
+          write(`: convening mandatory 4/4 model council…\n\n`);
           const res = await conveneCouncil({
             question,
             context,
@@ -2996,7 +2996,9 @@ export async function runToolCalls(
             "\n\n(Relay this council opinion to the user, preserving the agreement/disagreement notes verbatim — the disagreements are the items that warrant human review. Do not silently drop dissent.)";
         }
       } catch (err) {
-        content = `Council deliberation failed — ${(err as Error).message}`;
+        content =
+          `Council deliberation failed and no council opinion was produced — ${(err as Error).message}. ` +
+          "All four named member opinions are mandatory; retry the council after the unavailable provider/model recovers.";
       }
       toolResults.push({ role: "tool", tool_call_id: tc.id, content });
       continue;

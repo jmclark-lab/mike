@@ -45,6 +45,14 @@ export type UserApiKeys = {
     sakana?: string | null;
 };
 
+export type ReasoningEffort =
+    | "none"
+    | "minimal"
+    | "low"
+    | "medium"
+    | "high"
+    | "xhigh";
+
 export type ProviderMetadata = {
     provider_name: string;
     model_name: string;

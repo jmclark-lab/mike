@@ -3,7 +3,7 @@ import { streamClaude, completeClaudeText } from "./claude";
 import { completeGeminiText } from "./gemini";
 import { completeOpenAIText } from "./openai";
 import { DEFAULT_SAKANA_MODEL, providerForModel } from "./models";
-import type { StreamChatParams, StreamChatResult, UserApiKeys } from "./types";
+import type { ReasoningEffort, StreamChatParams, StreamChatResult, UserApiKeys } from "./types";
 import {
     isSerpEnabled, needsWebSearch, buildSearchQuery, serpSearch, formatSearchContext,
 } from "../serpSearch";
@@ -201,7 +201,13 @@ async function invokeStream(
 
 async function invokeComplete(
     model: string,
-    params: { systemPrompt?: string; user: string; maxTokens?: number; apiKeys?: UserApiKeys },
+    params: {
+        systemPrompt?: string;
+        user: string;
+        maxTokens?: number;
+        apiKeys?: UserApiKeys;
+        reasoningEffort?: ReasoningEffort;
+    },
 ): Promise<string> {
     const provider = providerForModel(model);
     if (provider === "claude") return completeClaudeText({ ...params, model });
@@ -337,6 +343,7 @@ export async function completeTextStrict(params: {
     user: string;
     maxTokens?: number;
     apiKeys?: UserApiKeys;
+    reasoningEffort?: ReasoningEffort;
 }): Promise<string> {
     const model = params.model?.trim();
     if (!model) throw new Error("A model is required for strict completion.");

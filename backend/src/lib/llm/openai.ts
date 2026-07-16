@@ -6,6 +6,7 @@ import type {
   StreamChatParams,
   StreamChatResult,
 } from "./types";
+import type { ReasoningEffort } from "./types";
 import { createRawLlmStreamRecorder, logRawLlmStream } from "./rawStreamLog";
 
 const OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses";
@@ -170,6 +171,7 @@ async function createResponse(params: {
   maxTokens?: number;
   previousResponseId?: string;
   reasoningSummary?: boolean;
+  reasoningEffort?: ReasoningEffort;
   apiKey: string;
   signal?: AbortSignal;
 }): Promise<Response> {
@@ -187,7 +189,15 @@ async function createResponse(params: {
       stream: params.stream,
       max_output_tokens: params.maxTokens ?? MAX_OUTPUT_TOKENS,
       previous_response_id: params.previousResponseId,
-      reasoning: params.reasoningSummary ? { summary: "auto" } : undefined,
+      reasoning:
+        params.reasoningSummary || params.reasoningEffort
+          ? {
+              ...(params.reasoningSummary ? { summary: "auto" } : {}),
+              ...(params.reasoningEffort
+                ? { effort: params.reasoningEffort }
+                : {}),
+            }
+          : undefined,
     }),
     signal: params.signal,
   });
@@ -371,12 +381,14 @@ export async function completeOpenAIText(params: {
   user: string;
   maxTokens?: number;
   apiKeys?: { openai?: string | null };
+  reasoningEffort?: ReasoningEffort;
 }): Promise<string> {
   const response = await createResponse({
     model: params.model,
     instructions: params.systemPrompt,
     input: [{ role: "user", content: params.user }],
     maxTokens: params.maxTokens ?? 512,
+    reasoningEffort: params.reasoningEffort,
     apiKey: apiKey(params.apiKeys?.openai),
   });
   const json = (await response.json()) as {
