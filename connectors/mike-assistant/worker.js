@@ -2,11 +2,9 @@ var __defProp = Object.defineProperty;
 var __name = (target, value) => __defProp(target, "name", { value, configurable: true });
 
 // worker.js  — mike-assistant MCP connector
-// TIMEOUT FIX (v1.3.0): replaced the hard 110s per-attempt abort with an
-// idle-based abort + generous absolute cap, so a long-but-progressing
-// generation (dense multi-section reviews) is no longer killed mid-stream.
-//   - MIKE_IDLE_TIMEOUT_MS: abort only if NO bytes arrive for this long.
-//   - MIKE_MAX_MS: absolute ceiling per attempt.
+// Long-running generations are owned by Railway async jobs. This Worker only
+// starts or polls them with bounded requests, so Cloudflare request lifetime
+// limits cannot duplicate a council or discard its completed result.
 var CORS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
@@ -14,9 +12,6 @@ var CORS = {
   "Access-Control-Expose-Headers": "mcp-session-id, mcp-protocol-version",
   "Access-Control-Max-Age": "86400"
 };
-var DEFAULT_MIKE_IDLE_TIMEOUT_MS = 9e4;
-var DEFAULT_MIKE_MAX_MS = 15e5;
-var DEFAULT_RETRY_DELAY_MS = 15e3;
 var DEFAULT_MAX_JOB_AGE_MS = 2 * 60 * 60 * 1e3;
 function json(obj, status) {
   return new Response(JSON.stringify(obj), {
@@ -25,76 +20,30 @@ function json(obj, status) {
   });
 }
 __name(json, "json");
-// Idle-aware call: resets the abort timer on every streamed chunk. A response
-// that keeps producing tokens will run up to MIKE_MAX_MS; a stalled connection
-// aborts after MIKE_IDLE_TIMEOUT_MS of silence.
+// Start-or-poll a Railway-owned async job. Each Worker request is short-lived;
+// the long council execution stays in Railway and is never duplicated merely
+// because Cloudflare ends a request after its platform lifetime limit.
 async function callMike(env, prompt, opts) {
-  const idleMs = (opts && opts.idleMs) || DEFAULT_MIKE_IDLE_TIMEOUT_MS;
-  const maxMs = (opts && opts.maxMs) || DEFAULT_MIKE_MAX_MS;
+  const jobId = opts && opts.jobId;
+  if (!jobId) throw new Error("missing Railway connector job id");
   const controller = new AbortController();
-  let idleTimer = null;
-  let hardTimer = null;
-  let reader = null;
-  let rejectTimeout;
-  let timedOut = false;
-  const timeoutPromise = new Promise((_, reject) => {
-    rejectTimeout = reject;
-  });
-  const failTimeout = (message) => {
-    if (timedOut) return;
-    timedOut = true;
-    controller.abort();
-    rejectTimeout(new Error(message));
-  };
-  const armIdle = () => {
-    if (idleTimer) clearTimeout(idleTimer);
-    idleTimer = setTimeout(() => failTimeout("Mike backend stream idle timeout after " + idleMs + "ms"), idleMs);
-  };
-  hardTimer = setTimeout(() => failTimeout("Mike backend absolute timeout after " + maxMs + "ms"), maxMs);
-  armIdle();
+  const requestMs = (opts && opts.requestMs) || 6e4;
+  const timer = setTimeout(() => controller.abort(), requestMs);
   try {
-    const run = async () => {
-      const r = await fetch(env.MIKE_BACKEND_URL + "/chat", {
-        method: "POST",
-        headers: { "x-connector-key": env.CONNECTOR_API_KEY, "content-type": "application/json" },
-        body: JSON.stringify({ messages: [{ role: "user", content: prompt }] }),
-        signal: controller.signal
-      });
-      if (!r.ok) {
-        const t = await r.text();
-        throw new Error("Mike /chat " + r.status + ": " + t.slice(0, 300));
-      }
-      if (!r.body) throw new Error("Mike backend response had no body");
-      reader = r.body.getReader();
-      const dec = new TextDecoder();
-      let buf = "", text = "";
-      while (true) {
-        const rr = await reader.read();
-        if (rr.done) break;
-        armIdle();
-        buf += dec.decode(rr.value, { stream: true });
-        const parts = buf.split("\n");
-        buf = parts.pop();
-        for (const l of parts) {
-          const line = l.trim();
-          if (!line.startsWith("data:")) continue;
-          const d = line.slice(5).trim();
-          if (d === "[DONE]" || d === "") continue;
-          try {
-            const o = JSON.parse(d);
-            if (o && o.text) text += o.text;
-          } catch (e) {
-          }
-        }
-      }
-      return text || "";
-    };
-    return await Promise.race([run(), timeoutPromise]);
+    const base = env.MIKE_BACKEND_URL.replace(/\/$/, "");
+    const r = await fetch(base + "/connector/jobs/" + encodeURIComponent(jobId), {
+      method: "POST",
+      headers: { "x-connector-key": env.CONNECTOR_API_KEY, "content-type": "application/json" },
+      body: JSON.stringify({ prompt }),
+      signal: controller.signal
+    });
+    const payload = await r.json().catch(() => ({}));
+    if (!r.ok && r.status !== 202) {
+      throw new Error("Mike connector job " + r.status + ": " + ((payload && payload.detail) || "unknown error"));
+    }
+    return payload;
   } finally {
-    controller.abort();
-    if (reader) reader.cancel().catch(() => {});
-    if (idleTimer) clearTimeout(idleTimer);
-    if (hardTimer) clearTimeout(hardTimer);
+    clearTimeout(timer);
   }
 }
 __name(callMike, "callMike");
@@ -447,7 +396,7 @@ var worker_default = {
           if (idempotencyKey.length > 128) return ok({ content: [{ type: "text", text: "idempotency_key exceeds 128 characters." }], isError: true });
           const jobId = idempotencyKey ? "idem_" + await sha256base64url(auth.principal + ":" + idempotencyKey) : crypto.randomUUID();
           const stub = env.MIKE_JOBS.get(env.MIKE_JOBS.idFromName(jobId));
-          const started = await stub.fetch("https://do/start", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ prompt, principal: auth.principal, idempotencyKey: idempotencyKey || null }) });
+          const started = await stub.fetch("https://do/start", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ prompt, principal: auth.principal, idempotencyKey: idempotencyKey || null, jobId }) });
           if (!started.ok) return ok({ content: [{ type: "text", text: "Unable to start Mike Legal job (" + started.status + ")." }], isError: true });
           const structuredContent = { job_id: jobId, status: "working", retry_after_seconds: 20 };
           return ok({
@@ -568,6 +517,7 @@ var MikeJob = class {
         prompt: (body.prompt || "").toString(),
         principal: (body.principal || "").toString(),
         idempotencyKey: body.idempotencyKey || null,
+        backendJobId: (body.jobId || "").toString() || null,
         created: now,
         startedAt: now
       });
@@ -631,21 +581,31 @@ var MikeJob = class {
       if (job.expiresAt && Date.now() >= job.expiresAt) await this.state.storage.deleteAll();
       return;
     }
-    const attempt = (job.attempt || 0) + 1;
-    // TIMEOUT FIX: idle-based abort (no bytes for 90s) + 25-min absolute ceiling,
-    // instead of a flat 110s cap that killed long-but-progressing generations.
-    const MIKE_IDLE_TIMEOUT_MS = Number(this.env.MIKE_IDLE_TIMEOUT_MS) || DEFAULT_MIKE_IDLE_TIMEOUT_MS;
-    const MIKE_MAX_MS = Number(this.env.MIKE_MAX_MS) || DEFAULT_MIKE_MAX_MS;
-    const RETRY_DELAY_MS = Number(this.env.RETRY_DELAY_MS) || DEFAULT_RETRY_DELAY_MS;
+    const attempt = job.attempt || 1;
+    const RETRY_DELAY_MS = Number(this.env.RETRY_DELAY_MS) || 2e4;
     const MAX_JOB_AGE_MS = Number(this.env.MAX_JOB_AGE_MS) || DEFAULT_MAX_JOB_AGE_MS;
     const jobAge = Date.now() - (job.startedAt || job.created || Date.now());
+    const backendJobId = job.backendJobId || crypto.randomUUID();
     const activeJob = Object.assign({}, job, {
       attempt,
+      backendJobId,
       attemptStartedAt: (/* @__PURE__ */ new Date()).toISOString()
     });
     await this.state.storage.put("job", activeJob);
     try {
-      const text = await callMike(this.env, job.prompt, { idleMs: MIKE_IDLE_TIMEOUT_MS, maxMs: MIKE_MAX_MS });
+      const result = await callMike(this.env, job.prompt, { jobId: backendJobId });
+      if (result && result.status === "working") {
+        await this.state.storage.put("job", Object.assign({}, activeJob, {
+          status: "working",
+          lastProgress: (/* @__PURE__ */ new Date()).toISOString()
+        }));
+        await this.state.storage.setAlarm(Date.now() + RETRY_DELAY_MS);
+        return;
+      }
+      if (result && result.status === "error") {
+        throw new Error(result.error || "Mike backend job failed");
+      }
+      const text = result && result.status === "done" ? result.text : "";
       if (!text || text.trim() === "") {
         throw new Error("empty response from Mike backend (possible upstream timeout)");
       }

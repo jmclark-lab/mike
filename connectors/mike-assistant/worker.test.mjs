@@ -131,12 +131,21 @@ test("stale working jobs are finalized instead of remaining stuck forever", asyn
   assert.equal(stored.prompt, null);
 });
 
-test("absolute timeout rejects a stalled stream and records a retry", async () => {
+test("long jobs are polled by stable backend id without duplicating execution", async () => {
   const originalFetch = globalThis.fetch;
-  globalThis.fetch = async () => new Response(new ReadableStream({ start() {} }), {
-    status: 200,
-    headers: { "content-type": "text/event-stream" },
-  });
+  const urls = [];
+  let calls = 0;
+  globalThis.fetch = async (input) => {
+    calls += 1;
+    urls.push(String(input));
+    const payload = calls < 3
+      ? { status: "working" }
+      : { status: "done", text: "mandatory 4/4 opinion" };
+    return new Response(JSON.stringify(payload), {
+      status: calls < 3 ? 202 : 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
   const jobState = state({
     job: {
       status: "working",
@@ -149,19 +158,29 @@ test("absolute timeout rejects a stalled stream and records a retry", async () =
   const job = new workerModule.MikeJob(jobState, {
     MIKE_BACKEND_URL: "https://backend.test",
     CONNECTOR_API_KEY: "test-key",
-    MIKE_IDLE_TIMEOUT_MS: "1000",
-    MIKE_MAX_MS: "20",
     RETRY_DELAY_MS: "1",
   });
 
   try {
     await job.alarm();
-    const stored = await jobState.storage.get("job");
-    assert.equal(stored.status, "working");
-    assert.equal(stored.attempt, 1);
-    assert.ok(stored.attemptStartedAt);
-    assert.match(stored.lastError, /absolute timeout/i);
+    const first = await jobState.storage.get("job");
+    assert.equal(first.status, "working");
+    assert.equal(first.attempt, 1);
+    assert.ok(first.backendJobId);
     assert.ok(jobState.storage.alarm);
+
+    await job.alarm();
+    const second = await jobState.storage.get("job");
+    assert.equal(second.status, "working");
+    assert.equal(second.backendJobId, first.backendJobId);
+
+    await job.alarm();
+    const done = await jobState.storage.get("job");
+    assert.equal(done.status, "done");
+    assert.equal(done.attempt, 1);
+    assert.equal(await jobState.storage.get("result:1"), "mandatory 4/4 opinion");
+    assert.equal(calls, 3);
+    assert.ok(urls.every((url) => url.endsWith("/connector/jobs/" + first.backendJobId)));
   } finally {
     globalThis.fetch = originalFetch;
   }

@@ -15,17 +15,19 @@ import { caseLawRouter } from "./routes/caseLaw";
 import { kbRouter } from "./routes/kb";
 import { createServerSupabase } from "./lib/supabase";
 import { getRoutingHealth } from "./lib/llm";
+import { ConnectorJobManager, readMikeSseText } from "./lib/connectorJobs";
+import { requireConnectorKey } from "./middleware/auth";
 
 // ---------------------------------------------------------------------------
 // Required environment variable check — fail fast before binding the port.
 // ---------------------------------------------------------------------------
 
 if (!process.env.SAKANA_API_KEY?.trim()) {
-    console.error(
-        "FATAL: SAKANA_API_KEY is required. " +
-        "Add it to your Railway environment variables (Settings → Variables).",
-    );
-    process.exit(1);
+  console.error(
+    "FATAL: SAKANA_API_KEY is required. " +
+      "Add it to your Railway environment variables (Settings → Variables).",
+  );
+  process.exit(1);
 }
 
 const app = express();
@@ -59,8 +61,7 @@ function makeLimiter(options: {
     legacyHeaders: false,
     skip: (req) => req.method === "OPTIONS",
     message: {
-      detail:
-        options.message ?? "Too many requests. Please try again later.",
+      detail: options.message ?? "Too many requests. Please try again later.",
     },
   });
 }
@@ -159,6 +160,40 @@ app.delete("/user/tabular-reviews", dataDeleteLimiter);
 app.use((req, res, next) =>
   express.json({ limit: jsonLimitForPath(req.path) })(req, res, next),
 );
+
+const connectorJobManager = new ConnectorJobManager(async (prompt) => {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), hours(2));
+  try {
+    const response = await fetch(`http://127.0.0.1:${PORT}/chat`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-connector-key": process.env.CONNECTOR_API_KEY?.trim() ?? "",
+      },
+      body: JSON.stringify({
+        messages: [{ role: "user", content: prompt }],
+      }),
+      signal: controller.signal,
+    });
+    return await readMikeSseText(response);
+  } finally {
+    clearTimeout(timeout);
+  }
+});
+
+app.post("/connector/jobs/:jobId", requireConnectorKey, (req, res) => {
+  const jobId = req.params.jobId ?? "";
+  const prompt = typeof req.body?.prompt === "string" ? req.body.prompt : "";
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(jobId)) {
+    return void res.status(400).json({ detail: "Invalid connector job id" });
+  }
+  if (!prompt || prompt.length > 500000) {
+    return void res.status(400).json({ detail: "Invalid connector prompt" });
+  }
+  const snapshot = connectorJobManager.startOrGet(jobId, prompt);
+  res.status(snapshot.status === "working" ? 202 : 200).json(snapshot);
+});
 
 app.use("/chat", chatRouter);
 app.use("/projects", projectsRouter);
