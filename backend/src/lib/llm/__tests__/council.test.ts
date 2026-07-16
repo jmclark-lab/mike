@@ -137,6 +137,7 @@ test("council seats are configurable and Sol Ultra always uses xhigh reasoning",
     COUNCIL_ANTHROPIC_MODEL: "claude-required",
     COUNCIL_SAKANA_MODEL: "fugu-required",
     COUNCIL_OPENAI_MODEL: "gpt-5.6-sol",
+    COUNCIL_OPENAI_MAX_TOKENS: "32000",
     COUNCIL_GEMINI_MODEL: "gemini-3.5-pro",
     COUNCIL_GEMINI_LABEL: "Gemini 3.5 Pro",
   });
@@ -147,7 +148,10 @@ test("council seats are configurable and Sol Ultra always uses xhigh reasoning",
   );
   assert.equal(seats[2].label, "GPT-5.6 Sol Ultra");
   assert.equal(seats[2].reasoningEffort, "xhigh");
-  assert.equal(seats[2].maxTokens, 12000);
+  assert.equal(seats[0].maxTokens, 8000);
+  assert.equal(seats[1].maxTokens, 6000);
+  assert.equal(seats[2].maxTokens, 32000);
+  assert.equal(seats[3].maxTokens, 6000);
   assert.equal(seats[3].label, "Gemini 3.5 Pro");
 });
 
@@ -162,7 +166,7 @@ test("the OpenAI council call receives the Sol Ultra reasoning and token budget"
     noDelay,
   );
 
-  assert.deepEqual(observed, { reasoningEffort: "xhigh", maxTokens: 12000 });
+  assert.deepEqual(observed, { reasoningEffort: "xhigh", maxTokens: 16384 });
 });
 
 test("duplicate model configuration is rejected before any provider call", async () => {
