@@ -8,10 +8,13 @@ const devLog = (...args: Parameters<typeof console.log>) => {
 };
 
 function summarizeMfaFactors(
-  factors: Array<{
-    factor_type?: string;
-    status?: string;
-  }> | null | undefined,
+  factors:
+    | Array<{
+        factor_type?: string;
+        status?: string;
+      }>
+    | null
+    | undefined,
 ) {
   return (factors ?? []).map((factor) => ({
     type: factor.factor_type ?? "unknown",
@@ -175,7 +178,8 @@ export async function requireMfaIfEnrolled(
   });
 
   if (isDev) {
-    const { data: userData, error: userError } = await admin.auth.getUser(token);
+    const { data: userData, error: userError } =
+      await admin.auth.getUser(token);
     devLog("[auth/mfa] user factors", {
       method: req.method,
       path: req.originalUrl,
@@ -202,7 +206,6 @@ export async function requireMfaIfEnrolled(
   next();
 }
 
-
 function safeKeyEqual(a: string, b: string): boolean {
   const ab = Buffer.from(a);
   const bb = Buffer.from(b);
@@ -224,7 +227,12 @@ export async function connectorOrAuth(
   const serviceUserId = process.env.CONNECTOR_USER_ID?.trim();
   const header = req.headers["x-connector-key"];
   const provided = (Array.isArray(header) ? header[0] : header)?.trim() ?? "";
-  if (expectedKey && serviceUserId && provided && safeKeyEqual(provided, expectedKey)) {
+  if (
+    expectedKey &&
+    serviceUserId &&
+    provided &&
+    safeKeyEqual(provided, expectedKey)
+  ) {
     res.locals.userId = serviceUserId;
     res.locals.userEmail = process.env.CONNECTOR_USER_EMAIL?.trim() ?? "";
     res.locals.token = "";
@@ -232,4 +240,19 @@ export async function connectorOrAuth(
     return;
   }
   await requireAuth(req, res, next);
+}
+
+export function requireConnectorKey(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): void {
+  const expectedKey = process.env.CONNECTOR_API_KEY?.trim();
+  const header = req.headers["x-connector-key"];
+  const provided = (Array.isArray(header) ? header[0] : header)?.trim() ?? "";
+  if (expectedKey && provided && safeKeyEqual(provided, expectedKey)) {
+    next();
+    return;
+  }
+  res.status(401).json({ detail: "Invalid connector credentials" });
 }
