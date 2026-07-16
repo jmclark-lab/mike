@@ -4,6 +4,7 @@
 -- newer than the version of Mike they currently have deployed.
 
 create extension if not exists "pgcrypto";
+create extension if not exists "vector";
 
 -- ---------------------------------------------------------------------------
 -- User profiles
@@ -789,6 +790,116 @@ create table if not exists public.courtlistener_opinion_cluster_index (
 alter table public.courtlistener_opinion_cluster_index enable row level security;
 
 -- ---------------------------------------------------------------------------
+-- Mike Legal AI knowledge base, playbooks, and obligation tracker
+-- ---------------------------------------------------------------------------
+
+create table if not exists public.kb_documents (
+  id uuid primary key default gen_random_uuid(),
+  owner_id uuid not null,
+  title text not null,
+  doc_type text not null default 'contract',
+  source text,
+  source_ref text,
+  source_tag text,
+  source_url text,
+  content_hash text,
+  drive_file_id text,
+  drive_version text,
+  mime_type text,
+  superseded_at timestamptz,
+  supersedes_document_id uuid references public.kb_documents(id) on delete set null,
+  created_at timestamptz not null default now()
+);
+create index if not exists kb_documents_owner_idx on public.kb_documents(owner_id);
+create index if not exists kb_documents_owner_hash_idx on public.kb_documents(owner_id, content_hash);
+create index if not exists kb_documents_active_drive_idx
+  on public.kb_documents(owner_id, drive_file_id)
+  where drive_file_id is not null and superseded_at is null;
+
+create table if not exists public.kb_chunks (
+  id uuid primary key default gen_random_uuid(),
+  document_id uuid not null references public.kb_documents(id) on delete cascade,
+  owner_id uuid not null,
+  chunk_index integer not null,
+  content text not null,
+  embedding vector(1536),
+  created_at timestamptz not null default now()
+);
+create index if not exists kb_chunks_document_idx on public.kb_chunks(document_id);
+create index if not exists kb_chunks_embedding_idx on public.kb_chunks using hnsw (embedding vector_cosine_ops);
+
+create or replace function public.match_kb_chunks(
+  query_embedding vector(1536), match_owner uuid, match_count int default 6, filter_doc_type text default null
+)
+returns table (
+  chunk_id uuid, document_id uuid, title text, doc_type text,
+  chunk_index int, content text, similarity float
+)
+language sql stable
+as $$
+  select c.id, c.document_id, d.title, d.doc_type, c.chunk_index, c.content,
+         1 - (c.embedding <=> query_embedding) as similarity
+  from public.kb_chunks c
+  join public.kb_documents d on d.id = c.document_id
+  where c.owner_id = match_owner
+    and c.embedding is not null
+    and d.superseded_at is null
+    and (filter_doc_type is null or d.doc_type = filter_doc_type)
+  order by c.embedding <=> query_embedding
+  limit greatest(1, match_count);
+$$;
+
+create table if not exists public.playbooks (
+  id uuid primary key default gen_random_uuid(),
+  owner_id uuid not null,
+  name text not null,
+  agreement_type text,
+  description text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (owner_id, name)
+);
+create index if not exists playbooks_owner_idx on public.playbooks(owner_id);
+
+create table if not exists public.playbook_rules (
+  id uuid primary key default gen_random_uuid(),
+  playbook_id uuid not null references public.playbooks(id) on delete cascade,
+  position int not null default 0,
+  topic text not null,
+  preferred text,
+  acceptable_fallback text,
+  dealbreaker text,
+  severity text not null default 'medium',
+  notes text
+);
+create index if not exists playbook_rules_playbook_idx on public.playbook_rules(playbook_id);
+
+create table if not exists public.contract_obligations (
+  id uuid primary key default gen_random_uuid(),
+  owner_id uuid not null,
+  source_ref text,
+  source_title text,
+  agreement_type text,
+  counterparty text,
+  obligation_type text not null,
+  description text not null,
+  trigger_date date,
+  notice_window text,
+  recurring boolean default false,
+  severity text default 'medium',
+  status text default 'open',
+  created_at timestamptz default now()
+);
+create index if not exists contract_obligations_owner_idx on public.contract_obligations(owner_id);
+create index if not exists contract_obligations_trigger_idx on public.contract_obligations(owner_id, trigger_date);
+
+alter table public.kb_documents enable row level security;
+alter table public.kb_chunks enable row level security;
+alter table public.playbooks enable row level security;
+alter table public.playbook_rules enable row level security;
+alter table public.contract_obligations enable row level security;
+
+-- ---------------------------------------------------------------------------
 -- Direct client grant hardening
 -- ---------------------------------------------------------------------------
 --
@@ -820,3 +931,8 @@ revoke all on public.user_mcp_connector_tools from anon, authenticated;
 revoke all on public.user_mcp_tool_audit_logs from anon, authenticated;
 revoke all on public.courtlistener_citation_index from anon, authenticated;
 revoke all on public.courtlistener_opinion_cluster_index from anon, authenticated;
+revoke all on public.kb_documents from anon, authenticated;
+revoke all on public.kb_chunks from anon, authenticated;
+revoke all on public.playbooks from anon, authenticated;
+revoke all on public.playbook_rules from anon, authenticated;
+revoke all on public.contract_obligations from anon, authenticated;

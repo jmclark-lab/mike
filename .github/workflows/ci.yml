@@ -23,3 +23,34 @@ jobs:
       - run: npm ci
       - name: TypeScript typecheck (no emit)
         run: npx tsc --noEmit
+      - name: Backend security and council tests
+        run: npm test
+      - name: Production dependency audit
+        run: npm audit --omit=dev --audit-level=high
+
+  connector-tests:
+    name: Mike connector tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node --test connectors/mike-assistant/worker.test.mjs
+
+  frontend-checks:
+    name: Frontend typecheck and audit
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npx tsc --noEmit
+      - run: npm audit --omit=dev --audit-level=high

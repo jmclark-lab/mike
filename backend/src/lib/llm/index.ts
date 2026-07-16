@@ -321,3 +321,45 @@ export async function completeText(params: {
     logLlmCall({ surface: "complete", ok: false, error_class: "chain_exhausted", attempted: chain, latency_ms: Date.now() - startedAt });
     throw lastError instanceof Error ? lastError : new Error("all models in the fallback chain failed");
 }
+
+/**
+ * Invoke exactly the requested model once. This is intentionally separate from
+ * completeText's resilience fallback: callers such as the model council depend
+ * on provider/model diversity and must never silently substitute a member.
+ */
+export async function completeTextStrict(params: {
+    model: string;
+    systemPrompt?: string;
+    user: string;
+    maxTokens?: number;
+    apiKeys?: UserApiKeys;
+}): Promise<string> {
+    const model = params.model?.trim();
+    if (!model) throw new Error("A model is required for strict completion.");
+    const startedAt = Date.now();
+    try {
+        const result = await invokeComplete(model, params);
+        if (isEmptyResult(result)) throw new Error(`empty response from ${model}`);
+        logLlmCall({
+            surface: "complete_strict",
+            ok: true,
+            answered: model,
+            fallback_depth: 0,
+            attempted: [model],
+            empty: false,
+            latency_ms: Date.now() - startedAt,
+        });
+        return result;
+    } catch (error) {
+        logLlmCall({
+            surface: "complete_strict",
+            ok: false,
+            failed_model: model,
+            fallback_depth: 0,
+            attempted: [model],
+            error_class: classifyLlmError(error),
+            latency_ms: Date.now() - startedAt,
+        });
+        throw error;
+    }
+}

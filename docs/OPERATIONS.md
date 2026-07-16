@@ -2,7 +2,7 @@
 
 Operational reference for the bioaccess® **Mike Legal AI** platform. Covers topology, deploy flow, rollback, auth/security, observability, and the gotchas learned in production.
 
-_Last updated: 2026-07-04._
+_Last updated: 2026-07-15._
 
 ---
 
@@ -24,10 +24,12 @@ _Last updated: 2026-07-04._
 
 ## 3. Deploy flow
 
-1. Branch off `main`, push to **`staging`**. Railway auto-deploys staging.
-2. GitHub Actions run: **CI** (`tsc --noEmit`) and **Staging smoke test** (polls staging `/healthz` until `status:ok` on the pushed commit).
+1. Branch off `main`, open a pull request, and require **CI** before merge. CI typechecks, runs backend and connector tests, and blocks high-severity production dependency advisories.
+2. Push the accepted commit to **`staging`**. With Railway's **Wait for CI** setting enabled, staging deploys only after GitHub checks pass; the staging smoke test then polls `/healthz` until it reports `status:ok` on that commit.
 3. Open a PR **`staging → main`**; CI typechecks it.
 4. Merge to **`main`** → Railway auto-deploys production.
+
+**Backend (Railway)** uses `/backend/railway.toml` and a checked-in Dockerfile. The config selects the Docker builder, `/healthz`, bounded restart behavior, and graceful overlap/draining. The service's Railway config-file path must be `/backend/railway.toml`.
 
 **Connectors (Cloudflare)** deploy separately: from `/connectors/<worker>/`, run `wrangler deploy --keep-vars` (preserves dashboard vars; secrets always retained). Migrations/KV/cron are declared in each `wrangler.toml`.
 
@@ -43,7 +45,7 @@ _Last updated: 2026-07-04._
 
 ## 5. Connectors (Cloudflare Workers)
 
-- Async **submit → poll** job pattern backed by a Durable Object. `ask_*` returns a `job_id`; poll `get_*_answer`.
+- Async **submit → poll** job pattern backed by Durable Objects. `ask_*` returns a principal-bound `job_id`; poll `get_*_answer`. Mike results are split into 15,000-character parts and expire after 72 hours (failed jobs after 24 hours).
 - **Timeouts:** `mike-assistant` uses idle-based abort (90s of silence) with a 25-min ceiling; `fugu-assistant` streams with 90s idle / 20-min ceiling.
 - **Auth (mike-assistant → backend):** sends header `X-Connector-Key` = `CONNECTOR_API_KEY`. Backend `connectorOrAuth` middleware maps a valid key to the service user `CONNECTOR_USER_ID` and skips the Supabase JWT. **The key must be identical in Cloudflare (Worker secret) and Railway (backend var).**
 - Dense reviews legitimately take up to ~25 min end-to-end; that's expected, not a hang.
@@ -74,7 +76,7 @@ _Last updated: 2026-07-04._
 2. **Forking a Railway env copies all variables** — a staging fork kept the *prod* `SUPABASE_SECRET_KEY` while `SUPABASE_URL` pointed at staging → `db:error`. Override both together.
 3. **`CONNECTOR_API_KEY` must match** on both Cloudflare and Railway, or the connector 401s.
 4. **Pasting a large SQL file into the Supabase editor can apply only part of the trailing block** — after a staging rebuild, verify `select count(*) ... where relrowsecurity` = expected (should be 23).
-5. **The full DB schema is not in the repo** (only one migration). Source of truth is the live DB; `Staging_Schema.sql` (project folder) is a catalog-derived snapshot.
+5. **The repository is the DB schema source of truth.** `backend/schema.sql` is the fresh-database baseline; apply dated files in `backend/migrations/` to existing environments in filename order and record each applied filename.
 6. **`wrangler secret delete` only removes secrets, not plaintext vars** (e.g. `MIKE_SUPABASE_URL` must be deleted in the Cloudflare dashboard).
 7. **`~/mike` on the ops Mac points at upstream `willchen96/mike`, not the deploy repo** — always deploy against `jmclark-lab/mike`.
 
