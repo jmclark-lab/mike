@@ -390,23 +390,49 @@ export async function completeOpenAIText(params: {
     maxTokens: params.maxTokens ?? 512,
     reasoningEffort: params.reasoningEffort,
     apiKey: apiKey(params.apiKeys?.openai),
+    // Council opinions can take longer than Railway's roughly five-minute
+    // outbound time-to-first-byte ceiling. Streaming gets response headers and
+    // deltas flowing immediately while this adapter still returns one complete
+    // opinion to the strict council caller.
+    stream: true,
   });
-  const json = (await response.json()) as {
-    output_text?: string;
-    output?: {
-      content?: { type?: string; text?: string }[];
-    }[];
+  if (!response.body) throw new Error("OpenAI response had no body");
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let text = "";
+  let completedText = "";
+
+  const consume = (events: unknown[]) => {
+    for (const raw of events) {
+      const event = raw as ResponseStreamEvent;
+      const failure = openAIStreamFailureMessage(event);
+      if (failure) throw new Error(failure);
+      if (event.type === "response.output_text.delta" && event.delta) {
+        text += event.delta;
+      }
+      if (
+        event.type === "response.completed" &&
+        typeof event.response?.output_text === "string"
+      ) {
+        completedText = event.response.output_text;
+      }
+    }
   };
 
-  if (typeof json.output_text === "string") return json.output_text;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const parsed = extractSseJson(buffer);
+    buffer = parsed.rest;
+    consume(parsed.events);
+  }
 
-  return (
-    json.output
-      ?.flatMap((item) => item.content ?? [])
-      .filter((content) => content.type === "output_text")
-      .map((content) => content.text ?? "")
-      .join("") ?? ""
-  );
+  buffer += decoder.decode();
+  if (buffer.trim()) consume(extractSseJson(`${buffer}\n\n`).events);
+  return text || completedText;
 }
 
 export type { NormalizedToolResult };
