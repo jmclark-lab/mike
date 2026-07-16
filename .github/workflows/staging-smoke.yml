@@ -1,25 +1,30 @@
 name: Staging smoke test
 
-# On every push to the staging branch, wait for the Railway staging deploy and
-# verify /healthz reports ok ON THE PUSHED COMMIT. This is the gate to check
-# before opening a staging -> main PR. (It does not block the staging deploy
-# itself, which Railway runs independently; it marks the commit's status.)
+# After CI succeeds for the staging branch, wait for the Railway staging deploy
+# and verify /healthz reports ok ON THE TESTED COMMIT. Starting this workflow
+# from workflow_run keeps Railway's optional "Wait for CI" gate from deadlocking
+# with a smoke test that is itself waiting for Railway.
 
 on:
-  push:
-    branches: [staging]
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
 
 jobs:
   smoke:
     name: staging /healthz on pushed commit
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'staging'
     runs-on: ubuntu-latest
     steps:
       - name: Poll staging /healthz
         env:
           HEALTHZ_URL: https://loyal-acceptance-staging.up.railway.app/healthz
+          EXPECTED_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
           set -uo pipefail
-          echo "Expecting deployed commit: ${GITHUB_SHA}"
+          echo "Expecting deployed commit: ${EXPECTED_SHA}"
           for i in $(seq 1 40); do
             sleep 15
             body="$(curl -fsS --max-time 10 "$HEALTHZ_URL" 2>/dev/null || true)"
@@ -31,7 +36,7 @@ jobs:
                 echo "WARNING: /healthz exposes no commit (RAILWAY_GIT_COMMIT_SHA unset); accepting on status=ok."
                 exit 0
               fi
-              if printf '%s' "$GITHUB_SHA" | grep -q "^${commit}"; then
+              if printf '%s' "$EXPECTED_SHA" | grep -q "^${commit}"; then
                 echo "Staging healthy on the pushed commit ($commit)."
                 exit 0
               fi
