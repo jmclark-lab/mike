@@ -42,6 +42,7 @@ _Last updated: 2026-07-15._
 - **Health-aware routing:** a model that returns empty/errors goes on an exponential-backoff cooldown (60s → cap 15min, +jitter, reset on success) and is deprioritised — never removed. In-memory/per-process (resets on deploy).
 - **Completions** (chat titles, tabular): `completeText` uses the caller's requested (cheap) model as primary with the chain as fallback. `invokeComplete` routes Claude/Gemini/OpenAI/Sakana.
 - **Backend streams with a 20s SSE keepalive** so long/dense generations aren't cut by the connector's idle timeout.
+- **Web grounding:** SerpApi is selective by default (`SERP_SEARCH_MODE=selective`). Fresh/current questions and explicit web-research requests can search; confidential or document-heavy prompts do not leave Mike verbatim. Explicit research over confidential material is reduced to public topic terms. `always` expands search for non-confidential prompts; `off` disables it. Results are cached for 10 minutes, bounded by `SERPAPI_MAX_SEARCHES_PER_MINUTE` (default 30 per process), ranked toward official domains, and injected as untrusted evidence.
 
 ## 5. Connectors (Cloudflare Workers)
 
@@ -60,6 +61,7 @@ _Last updated: 2026-07-15._
 
 - **`GET /healthz`** — DB check + uptime + deployed `commit` + live routing/cooldown state; returns 503 if the DB is down. (There's also a trivial `GET /health` → `{ok:true}`.)
 - **Per-call telemetry** — one JSON line per LLM call: `[llm.telemetry] {event:"llm_call", surface, ok, answered, fallback_depth, attempted[], empty, latency_ms, error_class}`. Grep Railway logs, or add a log drain to Axiom/Better Stack and alert when the `fallback_depth>0` share is high.
+- **Search telemetry** — `[serp.telemetry]` records outcome, latency, result count, authoritative-source count, and a one-way query hash. Raw search queries and contract text are not logged.
 - **Scheduled (Cowork):** daily Mike health-check (8:05am); weekly "Mike model usage" report (Mondays) querying `chat_messages.provider_metadata` in Supabase.
 - **Model-usage query:** `select provider_metadata->>'model_name' as model, count(*) from chat_messages where role='assistant' and created_at >= '<date>' group by 1 order by 2 desc;` (only rows after 2026-07-04 reflect the true model).
 
@@ -82,7 +84,7 @@ _Last updated: 2026-07-15._
 
 ## 10. Secrets & key IDs (names only — values in dashboards)
 
-- **Backend (Railway):** `SUPABASE_URL`, `SUPABASE_SECRET_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `OPENAI_API_KEY`, `SAKANA_API_KEY`, `SAKANA_MODEL`, `LLM_MODEL`, `CONNECTOR_API_KEY`, `CONNECTOR_USER_ID`, `FRONTEND_URL`, `USER_API_KEYS_ENCRYPTION_SECRET`, R2/download vars, etc.
+- **Backend (Railway):** `SUPABASE_URL`, `SUPABASE_SECRET_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `OPENAI_API_KEY`, `SAKANA_API_KEY`, `SAKANA_MODEL`, `LLM_MODEL`, `CONNECTOR_API_KEY`, `CONNECTOR_USER_ID`, `FRONTEND_URL`, `USER_API_KEYS_ENCRYPTION_SECRET`, `SERPAPI_KEY`, optional `SERP_SEARCH_MODE` / `SERPAPI_MAX_SEARCHES_PER_MINUTE`, R2/download vars, etc.
 - **mike-assistant (Cloudflare):** `CONNECTOR_API_KEY`, `MCP_API_KEY`, `MIKE_BACKEND_URL`.
 - **fugu-assistant (Cloudflare):** `MCP_API_KEY`, `SAKANA_API_KEY`, `ASSISTANT_PASSPHRASE`.
 - **Prod connector service user id:** `CONNECTOR_USER_ID = c62f4b5c-db2d-44c0-a6ad-5a7cc7c1cf12` (jmclark@bioaccessla.com).

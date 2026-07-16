@@ -217,15 +217,19 @@ export async function streamChatWithTools(params: StreamChatParams): Promise<Str
         const userText = typeof lastUserMsg?.content === "string" ? lastUserMsg.content : JSON.stringify(lastUserMsg?.content ?? "");
         if (userText && needsWebSearch(userText)) {
             const query = buildSearchQuery(userText);
-            try {
-                const searchResult = await serpSearch(query);
-                const contextBlock = formatSearchContext(searchResult);
-                if (contextBlock) {
-                    systemPrompt = `${contextBlock}\n\n${systemPrompt ?? ""}`;
-                    console.log(`[serpSearch] Injected ${searchResult.results.length} results for: "${query.slice(0, 80)}..."`);
+            if (!query) {
+                console.log("[serp.telemetry] " + JSON.stringify({ event: "serp_search", outcome: "privacy_blocked" }));
+            } else {
+                try {
+                    const searchResult = await serpSearch(query);
+                    const contextBlock = formatSearchContext(searchResult);
+                    if (contextBlock) {
+                        systemPrompt = `${contextBlock}\n\n${systemPrompt ?? ""}`;
+                        console.log("[serp.telemetry] " + JSON.stringify({ event: "serp_context", outcome: "injected", results: searchResult.results.length }));
+                    }
+                } catch (err) {
+                    console.warn("[serpSearch] Context injection failed, proceeding without web context:", err);
                 }
-            } catch (err) {
-                console.warn("[serpSearch] Context injection failed, proceeding without web context:", err);
             }
         }
     }
