@@ -23,13 +23,13 @@ const DEFAULT_COUNCIL_SEATS: readonly CouncilSeat[] = [
     provider: "anthropic",
     model: "claude-fable-5",
     label: "Fable 5",
-    maxTokens: 4000,
+    maxTokens: 8000,
   },
   {
     provider: "sakana",
     model: "fugu-ultra-20260615",
     label: "Fugu Ultra",
-    maxTokens: 4000,
+    maxTokens: 6000,
   },
   {
     provider: "openai",
@@ -38,13 +38,13 @@ const DEFAULT_COUNCIL_SEATS: readonly CouncilSeat[] = [
     reasoningEffort: "xhigh",
     // OpenAI reasoning tokens count against max_output_tokens. Xhigh needs a
     // materially larger budget or the response can end before emitting text.
-    maxTokens: 12000,
+    maxTokens: 16384,
   },
   {
     provider: "google",
     model: "gemini-3.1-pro-preview",
     label: "Gemini 3.1 Pro Preview",
-    maxTokens: 4000,
+    maxTokens: 6000,
   },
 ] as const;
 
@@ -94,10 +94,20 @@ const MEMBER_SYSTEM =
 const JUDGE_SYSTEM =
   "You are the presiding judge of a legal AI council for bioaccess®. Exactly four independent models answered the SAME matter over the SAME context. Reconcile all four answers into one authoritative council opinion. You MUST: (1) give the single best final answer; (2) briefly note the points on which the members AGREED; (3) explicitly flag any DISAGREEMENTS, contradictions, or points raised by only one member — these are the items a human should review, so never paper over them; (4) if the members conflict on a material legal/regulatory point, say so plainly and explain the safer position. Do not introduce facts or contract terms that none of the members provided. Keep it tight and decision-useful. This is analysis for internal review, not legal advice.";
 
-function intFromEnv(name: string, fallback: number, min: number, max: number) {
-  const parsed = Number.parseInt(process.env[name] ?? "", 10);
+function intFromRecord(
+  env: NodeJS.ProcessEnv,
+  name: string,
+  fallback: number,
+  min: number,
+  max: number,
+) {
+  const parsed = Number.parseInt(env[name] ?? "", 10);
   if (!Number.isFinite(parsed)) return fallback;
   return Math.min(max, Math.max(min, parsed));
+}
+
+function intFromEnv(name: string, fallback: number, min: number, max: number) {
+  return intFromRecord(process.env, name, fallback, min, max);
 }
 
 export function resolveCouncilSeats(
@@ -108,20 +118,48 @@ export function resolveCouncilSeats(
       ...DEFAULT_COUNCIL_SEATS[0],
       model:
         env.COUNCIL_ANTHROPIC_MODEL?.trim() || DEFAULT_COUNCIL_SEATS[0].model,
+      maxTokens: intFromRecord(
+        env,
+        "COUNCIL_ANTHROPIC_MAX_TOKENS",
+        DEFAULT_COUNCIL_SEATS[0].maxTokens,
+        1000,
+        64000,
+      ),
     },
     {
       ...DEFAULT_COUNCIL_SEATS[1],
       model: env.COUNCIL_SAKANA_MODEL?.trim() || DEFAULT_COUNCIL_SEATS[1].model,
+      maxTokens: intFromRecord(
+        env,
+        "COUNCIL_SAKANA_MAX_TOKENS",
+        DEFAULT_COUNCIL_SEATS[1].maxTokens,
+        1000,
+        64000,
+      ),
     },
     {
       ...DEFAULT_COUNCIL_SEATS[2],
       model: env.COUNCIL_OPENAI_MODEL?.trim() || DEFAULT_COUNCIL_SEATS[2].model,
       reasoningEffort: "xhigh",
+      maxTokens: intFromRecord(
+        env,
+        "COUNCIL_OPENAI_MAX_TOKENS",
+        DEFAULT_COUNCIL_SEATS[2].maxTokens,
+        1000,
+        64000,
+      ),
     },
     {
       ...DEFAULT_COUNCIL_SEATS[3],
       model: env.COUNCIL_GEMINI_MODEL?.trim() || DEFAULT_COUNCIL_SEATS[3].model,
       label: env.COUNCIL_GEMINI_LABEL?.trim() || DEFAULT_COUNCIL_SEATS[3].label,
+      maxTokens: intFromRecord(
+        env,
+        "COUNCIL_GEMINI_MAX_TOKENS",
+        DEFAULT_COUNCIL_SEATS[3].maxTokens,
+        1000,
+        64000,
+      ),
     },
   ];
 }
@@ -307,7 +345,7 @@ export async function conveneCouncilWithCompleter(
     provider: "anthropic",
     model: COUNCIL_JUDGE,
     label: "Opus 4.8 judge",
-    maxTokens: 5000,
+    maxTokens: intFromEnv("COUNCIL_JUDGE_MAX_TOKENS", 8000, 1000, 64000),
   };
   const judgeUser =
     `MATTER:\n${question}\n\n` +
