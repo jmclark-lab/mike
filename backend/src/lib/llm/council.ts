@@ -8,7 +8,7 @@
  * caller gathers evidence once (KB passages, playbook, contract text) and passes
  * it in as `context`, so all members reason over identical facts.
  */
-import { completeText } from "./index";
+import { completeTextStrict } from "./index";
 import type { UserApiKeys } from "./types";
 
 export const COUNCIL_MEMBERS = [
@@ -29,7 +29,7 @@ const MEMBER_SYSTEM =
   "You are one member of a legal AI council for bioaccess® (IMH Assets Corp), a Latin-American clinical-research and regulatory/market-access CRO. Answer the matter rigorously, independently, and concisely, as a careful legal/regulatory analyst would. Prefer the provided CONTEXT as authoritative; use general legal/regulatory knowledge only to fill gaps and flag where you are relying on it. State your degree of confidence and call out any assumptions. Do NOT fabricate contract terms, dates, citations, or facts that are not in the context. This is analysis for internal review, not legal advice.";
 
 const JUDGE_SYSTEM =
-  "You are the presiding judge of a legal AI council for bioaccess®. Three independent models answered the SAME matter over the SAME context. Reconcile their answers into one authoritative council opinion. You MUST: (1) give the single best final answer; (2) briefly note the points on which the members AGREED; (3) explicitly flag any DISAGREEMENTS, contradictions, or points raised by only one member — these are the items a human should review, so never paper over them; (4) if the members conflict on a material legal/regulatory point, say so plainly and explain the safer position. Do not introduce facts or contract terms that none of the members provided. Keep it tight and decision-useful. This is analysis for internal review, not legal advice.";
+  "You are the presiding judge of a legal AI council for bioaccess®. Four independent models answered the SAME matter over the SAME context. Reconcile their answers into one authoritative council opinion. You MUST: (1) give the single best final answer; (2) briefly note the points on which the members AGREED; (3) explicitly flag any DISAGREEMENTS, contradictions, or points raised by only one member — these are the items a human should review, so never paper over them; (4) if the members conflict on a material legal/regulatory point, say so plainly and explain the safer position. Do not introduce facts or contract terms that none of the members provided. Keep it tight and decision-useful. This is analysis for internal review, not legal advice.";
 
 function label(model: string): string {
   return model.replace(/^claude-/, "").replace(/^gpt-/, "gpt-");
@@ -41,6 +41,17 @@ export async function conveneCouncil(params: {
   apiKeys?: UserApiKeys;
   onProgress?: (msg: string) => void;
 }): Promise<CouncilResult> {
+  return conveneCouncilWithCompleter(params, completeTextStrict);
+}
+
+type CouncilCompleter = typeof completeTextStrict;
+
+export async function conveneCouncilWithCompleter(params: {
+  question: string;
+  context?: string | null;
+  apiKeys?: UserApiKeys;
+  onProgress?: (msg: string) => void;
+}, complete: CouncilCompleter): Promise<CouncilResult> {
   const { question, context, apiKeys, onProgress } = params;
   const userBlock =
     `MATTER TO DELIBERATE:\n${question}\n\n` +
@@ -52,7 +63,7 @@ export async function conveneCouncil(params: {
 
   const settled = await Promise.allSettled(
     COUNCIL_MEMBERS.map((m) =>
-      completeText({ model: m, systemPrompt: MEMBER_SYSTEM, user: userBlock, maxTokens: 1600, apiKeys }),
+      complete({ model: m, systemPrompt: MEMBER_SYSTEM, user: userBlock, maxTokens: 1600, apiKeys }),
     ),
   );
 
@@ -69,7 +80,7 @@ export async function conveneCouncil(params: {
   if (respondedCount === 0) {
     return {
       finalAnswer:
-        "The council could not be convened — none of the three member models returned an answer. Try again shortly, or fall back to a single-model answer.",
+        `The council could not be convened — none of the ${COUNCIL_MEMBERS.length} member models returned an answer. Try again shortly, or fall back to a single-model answer.`,
       members,
       respondedCount,
     };
@@ -84,7 +95,7 @@ export async function conveneCouncil(params: {
       .join("\n\n") +
     `\n\nProduce the reconciled council opinion now.`;
 
-  const finalAnswer = await completeText({
+  const finalAnswer = await complete({
     model: COUNCIL_JUDGE,
     systemPrompt: JUDGE_SYSTEM,
     user: judgeUser,

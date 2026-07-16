@@ -217,15 +217,19 @@ export async function streamChatWithTools(params: StreamChatParams): Promise<Str
         const userText = typeof lastUserMsg?.content === "string" ? lastUserMsg.content : JSON.stringify(lastUserMsg?.content ?? "");
         if (userText && needsWebSearch(userText)) {
             const query = buildSearchQuery(userText);
-            try {
-                const searchResult = await serpSearch(query);
-                const contextBlock = formatSearchContext(searchResult);
-                if (contextBlock) {
-                    systemPrompt = `${contextBlock}\n\n${systemPrompt ?? ""}`;
-                    console.log(`[serpSearch] Injected ${searchResult.results.length} results for: "${query.slice(0, 80)}..."`);
+            if (!query) {
+                console.log("[serp.telemetry] " + JSON.stringify({ event: "serp_search", outcome: "privacy_blocked" }));
+            } else {
+                try {
+                    const searchResult = await serpSearch(query);
+                    const contextBlock = formatSearchContext(searchResult);
+                    if (contextBlock) {
+                        systemPrompt = `${contextBlock}\n\n${systemPrompt ?? ""}`;
+                        console.log("[serp.telemetry] " + JSON.stringify({ event: "serp_context", outcome: "injected", results: searchResult.results.length }));
+                    }
+                } catch (err) {
+                    console.warn("[serpSearch] Context injection failed, proceeding without web context:", err);
                 }
-            } catch (err) {
-                console.warn("[serpSearch] Context injection failed, proceeding without web context:", err);
             }
         }
     }
@@ -320,4 +324,46 @@ export async function completeText(params: {
     }
     logLlmCall({ surface: "complete", ok: false, error_class: "chain_exhausted", attempted: chain, latency_ms: Date.now() - startedAt });
     throw lastError instanceof Error ? lastError : new Error("all models in the fallback chain failed");
+}
+
+/**
+ * Invoke exactly the requested model once. This is intentionally separate from
+ * completeText's resilience fallback: callers such as the model council depend
+ * on provider/model diversity and must never silently substitute a member.
+ */
+export async function completeTextStrict(params: {
+    model: string;
+    systemPrompt?: string;
+    user: string;
+    maxTokens?: number;
+    apiKeys?: UserApiKeys;
+}): Promise<string> {
+    const model = params.model?.trim();
+    if (!model) throw new Error("A model is required for strict completion.");
+    const startedAt = Date.now();
+    try {
+        const result = await invokeComplete(model, params);
+        if (isEmptyResult(result)) throw new Error(`empty response from ${model}`);
+        logLlmCall({
+            surface: "complete_strict",
+            ok: true,
+            answered: model,
+            fallback_depth: 0,
+            attempted: [model],
+            empty: false,
+            latency_ms: Date.now() - startedAt,
+        });
+        return result;
+    } catch (error) {
+        logLlmCall({
+            surface: "complete_strict",
+            ok: false,
+            failed_model: model,
+            fallback_depth: 0,
+            attempted: [model],
+            error_class: classifyLlmError(error),
+            latency_ms: Date.now() - startedAt,
+        });
+        throw error;
+    }
 }

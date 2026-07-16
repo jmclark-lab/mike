@@ -10,6 +10,7 @@ import { embedText, embedTexts, isEmbeddingConfigured } from "./llm/embeddings";
 type Db = ReturnType<typeof createServerSupabase>;
 
 export interface KbHit {
+  chunk_id: string;
   document_id: string;
   title: string;
   doc_type: string;
@@ -66,6 +67,8 @@ export interface IngestParams {
   mimeType?: string | null;
   force?: boolean;
   apiKeys?: { gemini?: string | null };
+  /** Injectable for deterministic tests; production uses embedTexts. */
+  embedMany?: typeof embedTexts;
 }
 
 export type IngestStatus =
@@ -85,7 +88,7 @@ export interface IngestResult {
  * supersede. Returns the document id, chunk count, and status.
  */
 export async function ingestDocument(p: IngestParams): Promise<IngestResult> {
-  if (!isEmbeddingConfigured()) throw new Error("Embeddings not configured (GEMINI_API_KEY).");
+  if (!p.embedMany && !isEmbeddingConfigured()) throw new Error("Embeddings not configured (GEMINI_API_KEY).");
   const chunks = chunkText(p.text);
   if (!chunks.length) throw new Error("No text to ingest.");
   const hash = contentHash(p.text);
@@ -103,19 +106,18 @@ export async function ingestDocument(p: IngestParams): Promise<IngestResult> {
     }
   }
 
-  // Supersede a prior version of the same Drive file (different content).
-  let superseded = false;
+  // Record prior active versions, but keep them searchable until the new
+  // document and every embedding have been stored successfully.
+  let priorIds: string[] = [];
   if (p.driveFileId) {
-    const { data: prior } = await p.db
+    const { data: prior, error: priorErr } = await p.db
       .from("kb_documents")
       .select("id")
       .eq("owner_id", p.ownerId)
-      .eq("drive_file_id", p.driveFileId);
-    for (const row of (prior as { id: string }[]) ?? []) {
-      await p.db.from("kb_chunks").delete().eq("document_id", row.id);
-      await p.db.from("kb_documents").delete().eq("id", row.id);
-      superseded = true;
-    }
+      .eq("drive_file_id", p.driveFileId)
+      .is("superseded_at", null);
+    if (priorErr) throw new Error(`prior KB version lookup failed: ${priorErr.message}`);
+    priorIds = ((prior as { id: string }[]) ?? []).map((row) => row.id);
   }
 
   const { data: doc, error: docErr } = await p.db
@@ -132,6 +134,7 @@ export async function ingestDocument(p: IngestParams): Promise<IngestResult> {
       drive_file_id: p.driveFileId ?? null,
       drive_version: p.driveVersion ?? null,
       mime_type: p.mimeType ?? null,
+      supersedes_document_id: priorIds[0] ?? null,
     })
     .select("id")
     .single();
@@ -140,21 +143,35 @@ export async function ingestDocument(p: IngestParams): Promise<IngestResult> {
 
   const BATCH = 96;
   let stored = 0;
-  for (let i = 0; i < chunks.length; i += BATCH) {
-    const slice = chunks.slice(i, i + BATCH);
-    const vectors = await embedTexts(slice, p.apiKeys?.gemini);
-    const rows = slice.map((content, j) => ({
-      document_id: documentId,
-      owner_id: p.ownerId,
-      chunk_index: i + j,
-      content,
-      embedding: vectors[j] as unknown as number[],
-    }));
-    const { error: chErr } = await p.db.from("kb_chunks").insert(rows);
-    if (chErr) throw new Error(`kb_chunks insert failed: ${chErr.message}`);
-    stored += rows.length;
+  try {
+    for (let i = 0; i < chunks.length; i += BATCH) {
+      const slice = chunks.slice(i, i + BATCH);
+      const vectors = await (p.embedMany ?? embedTexts)(slice, p.apiKeys?.gemini);
+      const rows = slice.map((content, j) => ({
+        document_id: documentId,
+        owner_id: p.ownerId,
+        chunk_index: i + j,
+        content,
+        embedding: vectors[j] as unknown as number[],
+      }));
+      const { error: chErr } = await p.db.from("kb_chunks").insert(rows);
+      if (chErr) throw new Error(`kb_chunks insert failed: ${chErr.message}`);
+      stored += rows.length;
+    }
+    if (priorIds.length) {
+      const { error: supersedeErr } = await p.db
+        .from("kb_documents")
+        .update({ superseded_at: new Date().toISOString() })
+        .in("id", priorIds)
+        .eq("owner_id", p.ownerId);
+      if (supersedeErr) throw new Error(`prior KB version update failed: ${supersedeErr.message}`);
+    }
+  } catch (error) {
+    // Best-effort rollback keeps a partially embedded replacement out of search.
+    await p.db.from("kb_documents").delete().eq("id", documentId).eq("owner_id", p.ownerId);
+    throw error;
   }
-  return { documentId, chunks: stored, status: superseded ? "superseded_prior_version" : "ingested", contentHash: hash };
+  return { documentId, chunks: stored, status: priorIds.length ? "superseded_prior_version" : "ingested", contentHash: hash };
 }
 
 export interface SearchParams {
@@ -210,7 +227,7 @@ export function formatKnowledgeForModel(query: string, hits: KbHit[]): string {
   hits.forEach((h, i) => {
     const tag = h.source_tag ? `, ${h.source_tag}` : "";
     const url = h.source_url ? ` — ${h.source_url}` : "";
-    lines.push(`[KB${i + 1}] ${h.title} (${h.doc_type}${tag}, chunk ${h.chunk_index}, similarity ${h.similarity.toFixed(3)})${url}`);
+    lines.push(`[KB${i + 1}] ${h.title} (${h.doc_type}${tag}, source ${h.document_id}:${h.chunk_id}, chunk ${h.chunk_index}, similarity ${h.similarity.toFixed(3)})${url}`);
     lines.push(h.content.trim());
     lines.push("");
   });

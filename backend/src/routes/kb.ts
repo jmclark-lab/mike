@@ -10,6 +10,7 @@ import { connectorOrAuth } from "../middleware/auth";
 import { createServerSupabase } from "../lib/supabase";
 import { ingestDocument, isKnowledgeBaseConfigured } from "../lib/knowledgeBase";
 import { resolveDocument } from "../lib/kbIngest";
+import { RemoteDocumentError } from "../lib/safeRemoteFetch";
 
 export const kbRouter = Router();
 
@@ -68,6 +69,10 @@ kbRouter.post("/ingest", connectorOrAuth, async (req: Request, res: Response) =>
       status: result.status,
     });
   } catch (err) {
-    return res.status(500).json({ error: `ingest failed: ${(err as Error).message}` });
+    if (err instanceof RemoteDocumentError) {
+      return res.status(err.statusCode).json({ error: err.message });
+    }
+    console.error("KB ingest failed", err);
+    return res.status(500).json({ error: "Document ingestion failed." });
   }
 });

@@ -5,9 +5,11 @@
  */
 import { GoogleGenAI } from "@google/genai";
 import { extractPdfText } from "./chatTools";
+import { DEFAULT_REMOTE_DOCUMENT_LIMIT, fetchRemoteDocument, RemoteDocumentError } from "./safeRemoteFetch";
 
 const OCR_MODEL = "gemini-3-flash-preview";
 const MIN_PDF_TEXT = 80; // below this we assume the PDF is scanned/image-only
+const MAX_TEXT_CHARS = 5_000_000;
 
 export interface ResolvedDoc {
   text: string;
@@ -66,6 +68,7 @@ export interface ResolveParams {
 export async function resolveDocument(p: ResolveParams): Promise<ResolvedDoc> {
   // 1) Raw text.
   if (p.text && p.text.trim()) {
+    if (p.text.length > MAX_TEXT_CHARS) throw new RemoteDocumentError("Document text exceeds the 5 million character limit.", 413);
     return { text: p.text, mimeType: "text/plain", title: p.title?.trim() || "Untitled document", ocrUsed: false };
   }
 
@@ -74,13 +77,19 @@ export async function resolveDocument(p: ResolveParams): Promise<ResolvedDoc> {
   let name = p.filename || "";
   let mime = (p.mimeType || "").toLowerCase();
   if (p.url && p.url.trim()) {
-    const res = await fetch(p.url);
-    if (!res.ok) throw new Error(`Fetch failed (${res.status}) for ${p.url}`);
-    buf = Buffer.from(await res.arrayBuffer());
-    mime = mime || (res.headers.get("content-type") || "").split(";")[0].toLowerCase();
-    if (!name) name = p.url;
+    const remote = await fetchRemoteDocument(p.url, { maxBytes: DEFAULT_REMOTE_DOCUMENT_LIMIT });
+    buf = remote.buffer;
+    mime = mime || remote.contentType;
+    if (!name) name = remote.finalUrl;
   } else if (p.fileBase64) {
+    const estimatedBytes = Math.floor((p.fileBase64.length * 3) / 4);
+    if (estimatedBytes > DEFAULT_REMOTE_DOCUMENT_LIMIT) {
+      throw new RemoteDocumentError("Uploaded document exceeds the 25 MB limit.", 413);
+    }
     buf = Buffer.from(p.fileBase64, "base64");
+    if (!buf.length || buf.length > DEFAULT_REMOTE_DOCUMENT_LIMIT) {
+      throw new RemoteDocumentError("Uploaded document is empty or exceeds the 25 MB limit.", 413);
+    }
   } else {
     throw new Error("Provide one of: text, url, or fileBase64.");
   }

@@ -8,9 +8,17 @@ account_id = "4a6ee759ca55f608f82c2cbd2c12d4e2"
 name = "MIKE_JOBS"
 class_name = "MikeJob"
 
+[[durable_objects.bindings]]
+name = "MIKE_AUTH"
+class_name = "MikeAuth"
+
 [[migrations]]
 tag = "v1"
 new_classes = ["MikeJob"]
+
+[[migrations]]
+tag = "v2"
+new_classes = ["MikeAuth"]
 
 [observability]
 enabled = true
@@ -19,8 +27,5 @@ enabled = true
 #   MCP_API_KEY            - bearer key clients use to call /mcp
 #   MCP_API_KEYS           - OPTIONAL comma-separated additional valid keys
 #                            (per-client, independently revocable; any listed key works)
-#   MIKE_SUPABASE_URL      - Supabase project URL
-#   MIKE_SUPABASE_ANON_KEY - Supabase anon key
-#   MIKE_EMAIL             - service login (candidate for a scoped token; see README)
-#   MIKE_PASSWORD          - service login password
-#   MIKE_BACKEND_URL       - Railway backend base URL (e.g. https://.../ )
+#   CONNECTOR_API_KEY      - service key sent to the Railway backend
+#   MIKE_BACKEND_URL       - Railway backend base URL (e.g. https://.../)
