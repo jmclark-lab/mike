@@ -107,6 +107,66 @@ test("jobs are readable only by the principal that created them", async () => {
   assert.equal((await allowed.json()).text, "confidential answer");
 });
 
+test("stale working jobs are finalized instead of remaining stuck forever", async () => {
+  const jobState = state({
+    job: {
+      status: "working",
+      principal: "principal-a",
+      prompt: "confidential prompt",
+      created: Date.now() - 5000,
+      startedAt: Date.now() - 5000,
+    },
+  });
+  const job = new workerModule.MikeJob(jobState, { MAX_JOB_AGE_MS: "1000" });
+
+  const response = await job.fetch(new Request("https://do/status", {
+    headers: { "x-mike-principal": "principal-a" },
+  }));
+  const payload = await response.json();
+  const stored = await jobState.storage.get("job");
+
+  assert.equal(payload.status, "error");
+  assert.match(payload.error, /maximum job age/i);
+  assert.equal(stored.status, "error");
+  assert.equal(stored.prompt, null);
+});
+
+test("absolute timeout rejects a stalled stream and records a retry", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(new ReadableStream({ start() {} }), {
+    status: 200,
+    headers: { "content-type": "text/event-stream" },
+  });
+  const jobState = state({
+    job: {
+      status: "working",
+      principal: "principal-a",
+      prompt: "Analyze",
+      created: Date.now(),
+      startedAt: Date.now(),
+    },
+  });
+  const job = new workerModule.MikeJob(jobState, {
+    MIKE_BACKEND_URL: "https://backend.test",
+    CONNECTOR_API_KEY: "test-key",
+    MIKE_IDLE_TIMEOUT_MS: "1000",
+    MIKE_MAX_MS: "20",
+    RETRY_DELAY_MS: "1",
+  });
+
+  try {
+    await job.alarm();
+    const stored = await jobState.storage.get("job");
+    assert.equal(stored.status, "working");
+    assert.equal(stored.attempt, 1);
+    assert.ok(stored.attemptStartedAt);
+    assert.match(stored.lastError, /absolute timeout/i);
+    assert.ok(jobState.storage.alarm);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("OAuth authorization codes are single-use and access tokens expire independently of the API key", async () => {
   const authState = state();
   const auth = new workerModule.MikeAuth(authState);
