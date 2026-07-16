@@ -41,6 +41,14 @@ type ResponseFunctionCallItem = {
   arguments?: string;
 };
 
+type ResponseOutputItem = {
+  type?: string;
+  content?: Array<{
+    type?: string;
+    text?: string;
+  }>;
+};
+
 type ResponseStreamEvent = {
   type?: string;
   delta?: string;
@@ -48,11 +56,24 @@ type ResponseStreamEvent = {
     id?: string;
     output_text?: string;
     status?: string;
+    incomplete_details?: { reason?: string } | null;
+    output?: ResponseOutputItem[];
     error?: { code?: string; message?: string } | null;
   };
   error?: { code?: string; message?: string } | null;
   item?: ResponseFunctionCallItem;
 };
+
+type ResponseTerminalState = {
+  id?: string;
+  status?: string;
+  incompleteReason?: string;
+  outputText?: string;
+};
+
+const STRICT_COMPLETION_MAX_CONTINUATIONS = 2;
+const STRICT_COMPLETION_CONTINUATION_PROMPT =
+  "Continue from the prior response and deliver the complete final opinion now. Do not repeat prior text. Include every required conclusion, recommendation, and qualification.";
 
 function apiKey(override?: string | null): string {
   const key = override?.trim() || process.env.OPENAI_API_KEY?.trim() || "";
@@ -142,6 +163,15 @@ function openAIStreamFailureMessage(event: ResponseStreamEvent): string | null {
   return code ? `OpenAI error (${code}): ${message}` : message;
 }
 
+function responseOutputText(output?: ResponseOutputItem[]): string {
+  if (!Array.isArray(output)) return "";
+  return output
+    .flatMap((item) => (Array.isArray(item.content) ? item.content : []))
+    .filter((content) => content?.type === "output_text")
+    .map((content) => (typeof content.text === "string" ? content.text : ""))
+    .join("");
+}
+
 function abortError(): Error {
   const err = new Error("Stream aborted.");
   err.name = "AbortError";
@@ -172,6 +202,7 @@ async function createResponse(params: {
   previousResponseId?: string;
   reasoningSummary?: boolean;
   reasoningEffort?: ReasoningEffort;
+  reasoningContext?: "auto" | "current_turn" | "all_turns";
   apiKey: string;
   signal?: AbortSignal;
 }): Promise<Response> {
@@ -190,11 +221,16 @@ async function createResponse(params: {
       max_output_tokens: params.maxTokens ?? MAX_OUTPUT_TOKENS,
       previous_response_id: params.previousResponseId,
       reasoning:
-        params.reasoningSummary || params.reasoningEffort
+        params.reasoningSummary ||
+        params.reasoningEffort ||
+        params.reasoningContext
           ? {
               ...(params.reasoningSummary ? { summary: "auto" } : {}),
               ...(params.reasoningEffort
                 ? { effort: params.reasoningEffort }
+                : {}),
+              ...(params.reasoningContext
+                ? { context: params.reasoningContext }
                 : {}),
             }
           : undefined,
@@ -383,56 +419,118 @@ export async function completeOpenAIText(params: {
   apiKeys?: { openai?: string | null };
   reasoningEffort?: ReasoningEffort;
 }): Promise<string> {
-  const response = await createResponse({
-    model: params.model,
-    instructions: params.systemPrompt,
-    input: [{ role: "user", content: params.user }],
-    maxTokens: params.maxTokens ?? 512,
-    reasoningEffort: params.reasoningEffort,
-    apiKey: apiKey(params.apiKeys?.openai),
-    // Council opinions can take longer than Railway's roughly five-minute
-    // outbound time-to-first-byte ceiling. Streaming gets response headers and
-    // deltas flowing immediately while this adapter still returns one complete
-    // opinion to the strict council caller.
-    stream: true,
-  });
-  if (!response.body) throw new Error("OpenAI response had no body");
+  const key = apiKey(params.apiKeys?.openai);
+  let previousResponseId: string | undefined;
+  let input: ResponseInputItem[] = [{ role: "user", content: params.user }];
+  let fullText = "";
 
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  let text = "";
-  let completedText = "";
+  for (
+    let continuation = 0;
+    continuation <= STRICT_COMPLETION_MAX_CONTINUATIONS;
+    continuation += 1
+  ) {
+    const response = await createResponse({
+      model: params.model,
+      instructions: params.systemPrompt,
+      input,
+      maxTokens: params.maxTokens ?? 512,
+      previousResponseId,
+      reasoningEffort: params.reasoningEffort,
+      reasoningContext: params.model.startsWith("gpt-5.6")
+        ? "all_turns"
+        : undefined,
+      apiKey: key,
+      // Council opinions can take longer than Railway's roughly five-minute
+      // outbound time-to-first-byte ceiling. Streaming gets response headers and
+      // deltas flowing immediately while this adapter still returns one complete
+      // opinion to the strict council caller.
+      stream: true,
+    });
+    if (!response.body) throw new Error("OpenAI response had no body");
 
-  const consume = (events: unknown[]) => {
-    for (const raw of events) {
-      const event = raw as ResponseStreamEvent;
-      const failure = openAIStreamFailureMessage(event);
-      if (failure) throw new Error(failure);
-      if (event.type === "response.output_text.delta" && event.delta) {
-        text += event.delta;
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let text = "";
+    let terminal: ResponseTerminalState = {};
+
+    const consume = (events: unknown[]) => {
+      for (const raw of events) {
+        const event = raw as ResponseStreamEvent;
+        const failure = openAIStreamFailureMessage(event);
+        if (failure) throw new Error(failure);
+        if (event.type === "response.output_text.delta" && event.delta) {
+          text += event.delta;
+        }
+        if (
+          event.type === "response.completed" ||
+          event.type === "response.incomplete"
+        ) {
+          const fallbackText =
+            typeof event.response?.output_text === "string"
+              ? event.response.output_text
+              : responseOutputText(event.response?.output);
+          terminal = {
+            id: event.response?.id,
+            status: event.response?.status,
+            incompleteReason: event.response?.incomplete_details?.reason,
+            outputText: fallbackText,
+          };
+        }
       }
-      if (
-        event.type === "response.completed" &&
-        typeof event.response?.output_text === "string"
-      ) {
-        completedText = event.response.output_text;
-      }
+    };
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const parsed = extractSseJson(buffer);
+      buffer = parsed.rest;
+      consume(parsed.events);
     }
-  };
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const parsed = extractSseJson(buffer);
-    buffer = parsed.rest;
-    consume(parsed.events);
+    buffer += decoder.decode();
+    if (buffer.trim()) consume(extractSseJson(`${buffer}\n\n`).events);
+
+    const responseText = text || terminal.outputText || "";
+    fullText += responseText;
+    if (terminal.status !== "incomplete") {
+      if (!fullText.trim()) {
+        throw new Error(
+          `OpenAI response completed without output text (response ${terminal.id || "unknown"}).`,
+        );
+      }
+      return fullText;
+    }
+
+    const canContinue =
+      terminal.incompleteReason === "max_output_tokens" &&
+      !!terminal.id &&
+      continuation < STRICT_COMPLETION_MAX_CONTINUATIONS;
+    console.info(
+      "[openai.telemetry]",
+      JSON.stringify({
+        event: "strict_completion_incomplete",
+        model: params.model,
+        response_id: terminal.id || null,
+        reason: terminal.incompleteReason || null,
+        continuation,
+        will_continue: canContinue,
+      }),
+    );
+    if (!canContinue) {
+      throw new Error(
+        `OpenAI response incomplete (${terminal.incompleteReason || "unknown reason"}, response ${terminal.id || "unknown"}) after ${continuation} continuation(s).`,
+      );
+    }
+
+    previousResponseId = terminal.id;
+    input = [{ role: "user", content: STRICT_COMPLETION_CONTINUATION_PROMPT }];
   }
 
-  buffer += decoder.decode();
-  if (buffer.trim()) consume(extractSseJson(`${buffer}\n\n`).events);
-  return text || completedText;
+  throw new Error(
+    "OpenAI strict completion exhausted its continuation budget.",
+  );
 }
 
 export type { NormalizedToolResult };
