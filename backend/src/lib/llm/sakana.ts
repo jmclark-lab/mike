@@ -296,7 +296,7 @@ export async function streamSakana(params: StreamChatParams): Promise<StreamChat
 }
 
 // ---------------------------------------------------------------------------
-// One-shot text completion (no streaming, no tools)
+// One-opinion text completion (streaming transport, no tools)
 // ---------------------------------------------------------------------------
 
 export async function completeSakanaText(params: {
@@ -324,7 +324,10 @@ export async function completeSakanaText(params: {
             model,
             messages,
             max_tokens: params.maxTokens ?? 512,
-            stream: false,
+            // A non-streaming Fugu response can exceed Railway's outbound
+            // time-to-first-byte ceiling. Stream transport keeps the request
+            // alive; this function still resolves to one complete string.
+            stream: true,
         }),
     });
 
@@ -333,8 +336,30 @@ export async function completeSakanaText(params: {
         throw new Error(`Sakana request failed (${response.status}): ${errText || response.statusText}`);
     }
 
-    const json = (await response.json()) as {
-        choices?: { message?: { content?: string } }[];
+    if (!response.body) throw new Error("Sakana response had no body");
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let text = "";
+
+    const consume = (events: ChatCompletionsChunk[]) => {
+        for (const chunk of events) {
+            const content = chunk.choices?.[0]?.delta?.content;
+            if (typeof content === "string") text += content;
+        }
     };
-    return json.choices?.[0]?.message?.content ?? "";
+
+    while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const parsed = extractSseEvents(buffer);
+        buffer = parsed.rest;
+        consume(parsed.events);
+    }
+
+    buffer += decoder.decode();
+    if (buffer.trim()) consume(extractSseEvents(`${buffer}\n\n`).events);
+    return text;
 }
