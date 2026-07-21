@@ -340,7 +340,9 @@ var worker_default = {
                   total_parts: { type: "integer" },
                   elapsed_seconds: { type: ["integer", "null"] },
                   retry_after_seconds: { type: "integer" },
-                  error: { type: "string" }
+                  error: { type: "string" },
+                  answer: { type: "string", description: "The analysis text for the requested part (present when status is completed). Concatenate answer across parts 1..total_parts for the full response." },
+                  next_part: { type: ["integer", "null"], description: "The next part number to fetch, or null when this is the last/only part." }
                 },
                 required: ["status", "job_id"]
               },
@@ -427,7 +429,7 @@ var worker_default = {
               : "";
             return ok({
               content: [{ type: "text", text: header + "\n\n" + slice + footer }],
-              structuredContent: { status: "completed", job_id: jobId, part, total_parts: total, elapsed_seconds: s.elapsed },
+              structuredContent: { status: "completed", job_id: jobId, part, total_parts: total, elapsed_seconds: s.elapsed, answer: slice, next_part: total > 1 && part < total ? part + 1 : null },
               isError: false
             });
           }
