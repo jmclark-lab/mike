@@ -4,9 +4,7 @@ import { completeGeminiText } from "./gemini";
 import { completeOpenAIText } from "./openai";
 import { DEFAULT_SAKANA_MODEL, providerForModel } from "./models";
 import type { ReasoningEffort, StreamChatParams, StreamChatResult, UserApiKeys } from "./types";
-import {
-    isSerpEnabled, needsWebSearch, buildSearchQuery, serpSearch, formatSearchContext,
-} from "../serpSearch";
+import { isGroundingEnabled, buildGroundingContext } from "../hybridSearch";
 
 export * from "./types";
 export * from "./models";
@@ -218,24 +216,17 @@ async function invokeComplete(
 
 export async function streamChatWithTools(params: StreamChatParams): Promise<StreamChatResult> {
     let { systemPrompt } = params;
-    if (isSerpEnabled()) {
+    if (isGroundingEnabled()) {
         const lastUserMsg = [...(params.messages ?? [])].reverse().find(m => m.role === "user");
         const userText = typeof lastUserMsg?.content === "string" ? lastUserMsg.content : JSON.stringify(lastUserMsg?.content ?? "");
-        if (userText && needsWebSearch(userText)) {
-            const query = buildSearchQuery(userText);
-            if (!query) {
-                console.log("[serp.telemetry] " + JSON.stringify({ event: "serp_search", outcome: "privacy_blocked" }));
-            } else {
-                try {
-                    const searchResult = await serpSearch(query);
-                    const contextBlock = formatSearchContext(searchResult);
-                    if (contextBlock) {
-                        systemPrompt = `${contextBlock}\n\n${systemPrompt ?? ""}`;
-                        console.log("[serp.telemetry] " + JSON.stringify({ event: "serp_context", outcome: "injected", results: searchResult.results.length }));
-                    }
-                } catch (err) {
-                    console.warn("[serpSearch] Context injection failed, proceeding without web context:", err);
+        if (userText) {
+            try {
+                const contextBlock = await buildGroundingContext(userText);
+                if (contextBlock) {
+                    systemPrompt = `${contextBlock}\n\n${systemPrompt ?? ""}`;
                 }
+            } catch (err) {
+                console.warn("[search-router] grounding injection failed, proceeding without web context:", err);
             }
         }
     }
