@@ -86,7 +86,13 @@ test("get_mike_answer returns one bounded part for a large completed result", as
   const answer = first.result.content[0].text.split("\n\n")[1];
   assert.equal(answer.length, 15000);
   assert.equal(answer, "x".repeat(15000));
-  assert.ok(JSON.stringify(first).length < 20000);
+  // Contract (e9344b2): the same 15k part is in content and structuredContent.answer.
+  // Do not grow the part size; the envelope is two copies of one part, not the full job.
+  assert.equal(first.result.structuredContent.answer, answer);
+  assert.equal(first.result.structuredContent.next_part, 2);
+  const payloadLen = JSON.stringify(first).length;
+  assert.ok(payloadLen < 36000, `expected one 15k part twice plus headers, got ${payloadLen}`);
+  assert.ok(payloadLen < full.length, "must not return the unsliced job in one payload");
   assert.match(first.result.content[0].text, /part 1 of 13/);
 });
 
