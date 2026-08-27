@@ -134,6 +134,7 @@ const SYSTEM_PROMPT_BEFORE_RESEARCH = `You are Mike, an AI legal assistant for l
 CORE RULES:
 - Be precise, professional, and evidence-aware.
 - Do not fabricate document content.
+- Knowledge-base tenants: bioaccess® is the CRO; Amavita is a separate medical practice. Cite which tenant a passage came from. If the user/context is Amavita and only bioaccess® sources are available, say so — do not present CRO playbook positions as Amavita policy.
 - Use at most 10 tool-use rounds per response. Batch independent tool calls and leave room for the final answer.
 - If the user selects a workflow with [Workflow: <title> (id: <id>)], immediately call read_workflow with that id and follow the workflow before doing anything else.
 
@@ -328,7 +329,7 @@ export const KNOWLEDGE_TOOLS = [
     function: {
       name: "search_knowledge",
       description:
-        "Search bioaccess®'s private knowledge base (its own executed contracts, templates, and reference material) for passages relevant to a question, and ground the answer in them. Use this before answering questions about our standard terms, past agreements, our templates, or how we've handled a clause before. Returns cited passages ([KB1], [KB2], …) — cite them in your answer and don't invent content that isn't returned.",
+        "Search the private knowledge base (executed contracts, templates, and reference material) for passages relevant to a question, and ground the answer in them. Use this before answering questions about standard terms, past agreements, templates, or how a clause was handled. Pass tenant=amavita for Amavita practice questions and tenant=bioaccess for bioaccess® CRO questions. Returns cited passages ([KB1], [KB2], …) that name the tenant — cite them and don't invent content that isn't returned. If the question is Amavita and only bioaccess® passages come back, say so; do not treat CRO playbook positions as Amavita policy.",
       parameters: {
         type: "object",
         properties: {
@@ -339,6 +340,10 @@ export const KNOWLEDGE_TOOLS = [
           doc_type: {
             type: "string",
             description: "Optional filter: contract | template | regulatory | other.",
+          },
+          tenant: {
+            type: "string",
+            description: "Optional tenant filter/preference: bioaccess | amavita. Infer from the user's question when omitted.",
           },
           k: {
             type: "integer",
@@ -496,7 +501,7 @@ export const INGEST_TOOLS = [
     function: {
       name: "ingest_document",
       description:
-        "Add a document to bioaccess®'s private knowledge base so it can be retrieved later by search_knowledge and used as drafting precedent. Use when the user wants to save/add/ingest a contract, template, or reference into Mike's knowledge base. Pass a doc_id to ingest an attached document, or pass title + text directly. Choose an accurate doc_type. Ingestion chunks and embeds the text (owner-scoped).",
+        "Add a document to the private knowledge base so it can be retrieved later by search_knowledge and used as drafting precedent. Use when the user wants to save/add/ingest a contract, template, or reference. Pass a doc_id to ingest an attached document, or pass title + text directly. Choose an accurate doc_type and tenant (bioaccess or amavita). Do not ingest patient PHI. Ingestion chunks and embeds the text (owner-scoped).",
       parameters: {
         type: "object",
         properties: {
@@ -504,6 +509,7 @@ export const INGEST_TOOLS = [
           title: { type: "string", description: "Title to store the document under (required if no doc_id, recommended otherwise)." },
           text: { type: "string", description: "The raw document text to ingest, if not using doc_id." },
           doc_type: { type: "string", description: "contract | template | regulatory | other (default contract)." },
+          tenant: { type: "string", description: "bioaccess (CRO, default) | amavita (medical practice)." },
           source_ref: { type: "string", description: "Optional stable reference/id to dedupe re-ingestion of the same document." },
         },
         required: [],
@@ -2684,6 +2690,7 @@ export async function runToolCalls(
     if (tc.function.name === "search_knowledge") {
       const kbQuery = typeof args.query === "string" ? args.query : "";
       const docType = typeof args.doc_type === "string" ? args.doc_type : null;
+      const tenant = typeof args.tenant === "string" ? args.tenant : null;
       const k = typeof args.k === "number" ? args.k : undefined;
       let content: string;
       try {
@@ -2693,6 +2700,7 @@ export async function runToolCalls(
           query: kbQuery,
           k,
           docType,
+          tenant,
           apiKeys,
         });
         content = formatKnowledgeForModel(kbQuery, hits);
@@ -2828,6 +2836,7 @@ export async function runToolCalls(
               query: kbQuery,
               k: 6,
               docType: null,
+              tenant: "bioaccess",
               apiKeys,
             });
             if (hits.length) {
@@ -2911,6 +2920,8 @@ export async function runToolCalls(
         const rawDocId = typeof args.doc_id === "string" ? args.doc_id : "";
         const docType =
           typeof args.doc_type === "string" ? args.doc_type : "contract";
+        const tenant =
+          typeof args.tenant === "string" ? args.tenant : undefined;
         let title = typeof args.title === "string" ? args.title : "";
         let text = typeof args.text === "string" ? args.text : "";
         let sourceRef =
@@ -2946,11 +2957,12 @@ export async function runToolCalls(
             title,
             text,
             docType,
+            tenant,
             source: "mike-chat",
             sourceRef: sourceRef ?? undefined,
             apiKeys,
           });
-          content = `Ingested "${title}" into the knowledge base (${r.chunks} chunk(s), type: ${docType}). It's now searchable via search_knowledge and usable as drafting precedent.`;
+          content = `Ingested "${title}" into the knowledge base (${r.chunks} chunk(s), type: ${docType}, tenant: ${tenant ?? "bioaccess"}). It's now searchable via search_knowledge and usable as drafting precedent.`;
         }
       } catch (err) {
         content = `Ingestion failed — ${(err as Error).message}`;

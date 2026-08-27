@@ -43,9 +43,13 @@ const SERP_ONLY =
 const HIGH_STAKES =
   /\b(require(?:d|ment)s?|must|shall|mandatory|deadline|due\s+date|penalt(?:y|ies)|sanction|fine|liab(?:le|ility)|approval|authoriz(?:ation|e)|prohibit(?:ed|ion)?|banned|non[- ]?compliance|effective\s+date|in\s+force|repealed|amended|statute|regulation|decree|resolution|article\s+\d+)\b/i;
 
-function routerMode(): RouterMode {
+export function getSearchRouterMode(): RouterMode {
   const m = process.env.SEARCH_ROUTER_MODE?.trim().toLowerCase();
   return m === "shadow" || m === "live" ? m : "off";
+}
+
+function routerMode(): RouterMode {
+  return getSearchRouterMode();
 }
 
 export function isGroundingEnabled(): boolean {
@@ -58,7 +62,13 @@ function queryHash(q: string): string {
 }
 
 function logRouter(payload: Record<string, unknown>): void {
-  console.log(`[searchrouter.telemetry] ${JSON.stringify({ event: "search_router", ...payload })}`);
+  console.log(
+    `[searchrouter.telemetry] ${JSON.stringify({
+      event: "search_router",
+      mode: routerMode(),
+      ...payload,
+    })}`,
+  );
 }
 
 function safeText(v: string, max: number): string {
@@ -163,27 +173,69 @@ async function executeRouter(userText: string): Promise<{ block: string; route: 
       const r = await runFirecrawlRoute(query, timestamp);
       if (!r.block) {
         const s = await runSerpRoute(query);
-        logRouter({ route, fallback: "serpapi", query_hash: hash, results: s.count, latency_ms: Date.now() - startedAt });
+        logRouter({
+          route,
+          used_route: "serpapi",
+          fallback: "serpapi",
+          query_hash: hash,
+          results: s.count,
+          latency_ms: Date.now() - startedAt,
+        });
         return { block: s.block, route: "serpapi" };
       }
-      logRouter({ route, query_hash: hash, results: r.count, content_chars: r.chars, latency_ms: Date.now() - startedAt });
+      logRouter({
+        route,
+        used_route: route,
+        query_hash: hash,
+        results: r.count,
+        content_chars: r.chars,
+        latency_ms: Date.now() - startedAt,
+      });
       return { block: r.block, route };
     }
     if (route === "hybrid") {
       const r = await runHybridRoute(query, timestamp);
       if (!r.block) {
         const s = await runSerpRoute(query);
-        logRouter({ route, fallback: "serpapi", query_hash: hash, results: s.count, latency_ms: Date.now() - startedAt });
+        logRouter({
+          route,
+          used_route: "serpapi",
+          fallback: "serpapi",
+          query_hash: hash,
+          results: s.count,
+          latency_ms: Date.now() - startedAt,
+        });
         return { block: s.block, route: "serpapi" };
       }
-      logRouter({ route, query_hash: hash, results: r.count, discovery: r.discovery, content_chars: r.chars, latency_ms: Date.now() - startedAt });
+      logRouter({
+        route,
+        used_route: route,
+        query_hash: hash,
+        results: r.count,
+        discovery: r.discovery,
+        content_chars: r.chars,
+        latency_ms: Date.now() - startedAt,
+      });
       return { block: r.block, route };
     }
     const s = await runSerpRoute(query);
-    logRouter({ route: "serpapi", query_hash: hash, results: s.count, latency_ms: Date.now() - startedAt });
+    logRouter({
+      route: "serpapi",
+      used_route: "serpapi",
+      query_hash: hash,
+      results: s.count,
+      latency_ms: Date.now() - startedAt,
+    });
     return { block: s.block, route: "serpapi" };
   } catch (err) {
-    logRouter({ route, outcome: "error", query_hash: hash, error: (err as Error).message?.slice(0, 200) });
+    logRouter({
+      route,
+      used_route: route,
+      outcome: "error",
+      query_hash: hash,
+      latency_ms: Date.now() - startedAt,
+      error: (err as Error).message?.slice(0, 200),
+    });
     return { block: "", route };
   }
 }
@@ -211,11 +263,27 @@ export async function buildGroundingContext(userText: string): Promise<string> {
   const mode = routerMode();
   if (mode === "live") {
     const r = await executeRouter(userText);
+    logRouter({
+      answer_path: "router",
+      route: r.route,
+      used_route: r.route,
+      block_chars: r.block.length,
+    });
     return r.block;
   }
   if (mode === "shadow") {
+    const shadowStarted = Date.now();
     void executeRouter(userText)
-      .then((r) => logRouter({ mode: "shadow", route: r.route, block_chars: r.block.length }))
+      .then((r) =>
+        logRouter({
+          answer_path: "legacy",
+          shadow: true,
+          route: r.route,
+          used_route: r.route,
+          block_chars: r.block.length,
+          latency_ms: Date.now() - shadowStarted,
+        }),
+      )
       .catch(() => {});
     return legacyGrounding(userText);
   }
