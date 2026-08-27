@@ -350,7 +350,7 @@ var worker_default = {
             },
             {
               name: "mike_ingest_document",
-              description: "Add a document to Mike's knowledge base so it becomes searchable by ask_mike with citations — beyond contracts: feasibility analyses, budgets, regulatory texts, competitive/substantiation files, etc. Provide the document as one of: 'text' (raw text/markdown), 'url' (a public link Mike will fetch), or 'file_base64' (+ 'filename') for an uploaded file. IMPORTANT: for a Google Drive file, the caller should first read the file's contents (via its Drive access) and pass them here as 'text' or 'file_base64' — you may also pass 'drive_file_id' and 'source_url' as metadata for dedupe and citation. Optional: 'source_tag' (e.g. feasibility, regulatory, substantiation, contract; default 'manual'), 'title', 'doc_type'. Parses PDF/DOCX/MD/TXT and OCRs scanned PDFs. Dedupes by content hash. Returns the ingest status and chunk count.",
+              description: "Add a document to Mike's knowledge base so it becomes searchable by ask_mike with citations — beyond contracts: feasibility analyses, budgets, regulatory texts, competitive/substantiation files, etc. Provide the document as one of: 'text' (raw text/markdown), 'url' (a public link Mike will fetch), or 'file_base64' (+ 'filename') for an uploaded file. IMPORTANT: for a Google Drive file, the caller should first read the file's contents (via its Drive access) and pass them here as 'text' or 'file_base64' — you may also pass 'drive_file_id' and 'source_url' as metadata for dedupe and citation. Optional: 'source_tag' (e.g. feasibility, regulatory, substantiation, contract; default 'manual'), 'tenant' (bioaccess CRO default, or amavita), 'title', 'doc_type'. Do not send patient PHI. Parses PDF/DOCX/MD/TXT and OCRs scanned PDFs. Dedupes by content hash. Returns the ingest status and chunk count.",
               inputSchema: {
                 type: "object",
                 properties: {
@@ -362,6 +362,7 @@ var worker_default = {
                   drive_file_id: { type: "string", description: "Optional Google Drive file id, stored as metadata for dedupe/versioning." },
                   source_url: { type: "string", description: "Optional link back to the source (e.g. the Drive view URL) for citations." },
                   source_tag: { type: "string", description: "Category tag: feasibility | regulatory | substantiation | competitive | contract | manual (default 'manual')." },
+                  tenant: { type: "string", description: "Which practice the document belongs to: bioaccess (CRO, default) or amavita (medical practice). Do not send patient PHI." },
                   title: { type: "string", description: "Optional human title; defaults to the filename." },
                   doc_type: { type: "string", description: "Optional: contract | template | regulatory | reference (default 'reference')." },
                   force: { type: "boolean", description: "Re-ingest even if an identical document already exists." }
@@ -376,6 +377,7 @@ var worker_default = {
                   status: { type: "string" },
                   chunks: { type: "integer" },
                   source_tag: { type: "string" },
+                  tenant: { type: "string" },
                   ocr_used: { type: "boolean" }
                 },
                 required: ["document_id", "title", "status", "chunks"]
@@ -459,7 +461,7 @@ var worker_default = {
         }
         if (name === "mike_ingest_document") {
           const body = {};
-          for (const k of ["text", "url", "drive_file_id", "file_base64", "filename", "mime_type", "source_tag", "title", "source_url", "doc_type"]) {
+          for (const k of ["text", "url", "drive_file_id", "file_base64", "filename", "mime_type", "source_tag", "tenant", "title", "source_url", "doc_type"]) {
             if (args[k] != null && args[k] !== "") body[k] = args[k];
           }
           if (args.force === true) body.force = true;
@@ -481,8 +483,8 @@ var worker_default = {
             if (!r.ok || !out || out.error) {
               return ok({ content: [{ type: "text", text: "Ingest failed (" + r.status + "): " + ((out && out.error) || t.slice(0, 300)) }], isError: true });
             }
-            const msg = "Ingested “" + (out.title || "document") + "” into Mike's knowledge base.\nstatus=" + out.status + ", chunks=" + out.chunks + ", source_tag=" + out.source_tag + (out.ocr_used ? ", OCR=yes" : "") + ".\nIt is now retrievable by ask_mike, with citations back to this document.";
-            return ok({ content: [{ type: "text", text: msg }], structuredContent: { document_id: out.document_id, title: out.title || "document", status: out.status, chunks: out.chunks, source_tag: out.source_tag, ocr_used: !!out.ocr_used }, isError: false });
+            const msg = "Ingested “" + (out.title || "document") + "” into Mike's knowledge base.\nstatus=" + out.status + ", chunks=" + out.chunks + ", source_tag=" + out.source_tag + ", tenant=" + (out.tenant || "bioaccess") + (out.ocr_used ? ", OCR=yes" : "") + ".\nIt is now retrievable by ask_mike, with citations back to this document.";
+            return ok({ content: [{ type: "text", text: msg }], structuredContent: { document_id: out.document_id, title: out.title || "document", status: out.status, chunks: out.chunks, source_tag: out.source_tag, tenant: out.tenant || "bioaccess", ocr_used: !!out.ocr_used }, isError: false });
           } catch (e) {
             return ok({ content: [{ type: "text", text: "Ingest request error: " + (e && e.message || String(e)) }], isError: true });
           }

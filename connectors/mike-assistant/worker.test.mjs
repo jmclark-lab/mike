@@ -49,6 +49,8 @@ test("tools expose bounded multipart output schemas and accurate annotations", a
   assert.equal(byName.ask_mike.annotations.destructiveHint, false);
   assert.equal(byName.ask_mike.inputSchema.properties.prompt.maxLength, 500000);
   assert.equal(byName.get_mike_answer.outputSchema.properties.total_parts.type, "integer");
+  assert.equal(byName.mike_ingest_document.inputSchema.properties.tenant.type, "string");
+  assert.equal(byName.mike_ingest_document.inputSchema.required.includes("tenant"), false);
 });
 
 test("get_mike_answer returns one bounded part for a large completed result", async () => {

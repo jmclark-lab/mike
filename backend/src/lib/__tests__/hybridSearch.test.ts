@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test, { afterEach } from "node:test";
-import { classifyRoute, isGroundingEnabled } from "../hybridSearch";
+import { classifyRoute, getSearchRouterMode, isGroundingEnabled } from "../hybridSearch";
 
 const origFirecrawl = process.env.FIRECRAWL_API_KEY;
 const origSerp = process.env.SERPAPI_KEY;
@@ -57,4 +57,15 @@ test("grounding is enabled when SerpApi is on, or when router mode is set with F
 
   process.env.SEARCH_ROUTER_MODE = "off";
   assert.equal(isGroundingEnabled(), false);
+});
+
+test("SEARCH_ROUTER_MODE stays off by default; shadow and live are explicit", () => {
+  delete process.env.SEARCH_ROUTER_MODE;
+  assert.equal(getSearchRouterMode(), "off");
+  process.env.SEARCH_ROUTER_MODE = "shadow";
+  assert.equal(getSearchRouterMode(), "shadow");
+  process.env.SEARCH_ROUTER_MODE = "live";
+  assert.equal(getSearchRouterMode(), "live");
+  process.env.SEARCH_ROUTER_MODE = "unexpected";
+  assert.equal(getSearchRouterMode(), "off");
 });

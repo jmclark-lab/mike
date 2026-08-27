@@ -9,6 +9,7 @@ import { Router, type Request, type Response } from "express";
 import { connectorOrAuth } from "../middleware/auth";
 import { createServerSupabase } from "../lib/supabase";
 import { ingestDocument, isKnowledgeBaseConfigured } from "../lib/knowledgeBase";
+import { resolveIngestTenant } from "../lib/kbTenant";
 import { resolveDocument } from "../lib/kbIngest";
 import { RemoteDocumentError } from "../lib/safeRemoteFetch";
 
@@ -52,6 +53,7 @@ kbRouter.post("/ingest", connectorOrAuth, async (req: Request, res: Response) =>
       source: "kb-ingest",
       sourceRef: str(b.drive_file_id) ? `gdrive:${str(b.drive_file_id)}` : url ? `url:${url}` : undefined,
       sourceTag: str(b.source_tag) ?? "manual",
+      tenant: resolveIngestTenant(str(b.tenant)),
       sourceUrl: str(b.source_url) ?? url,
       driveFileId: str(b.drive_file_id),
       driveVersion: str(b.drive_version),
@@ -63,6 +65,7 @@ kbRouter.post("/ingest", connectorOrAuth, async (req: Request, res: Response) =>
       document_id: result.documentId,
       title: resolved.title,
       source_tag: str(b.source_tag) ?? "manual",
+      tenant: resolveIngestTenant(str(b.tenant)),
       chunks: result.chunks,
       content_hash: result.contentHash,
       ocr_used: resolved.ocrUsed,

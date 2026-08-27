@@ -2,7 +2,7 @@
 
 Operational reference for the bioaccess® **Mike Legal AI** platform. Covers topology, deploy flow, rollback, auth/security, observability, and the gotchas learned in production.
 
-_Last updated: 2026-07-15._
+_Last updated: 2026-08-27._
 
 ---
 
@@ -64,11 +64,15 @@ _Last updated: 2026-07-15._
 - **`GET /healthz`** — DB check + uptime + deployed `commit` + live routing/cooldown state; returns 503 if the DB is down. (There's also a trivial `GET /health` → `{ok:true}`.)
 - **Per-call telemetry** — one JSON line per LLM call: `[llm.telemetry] {event:"llm_call", surface, ok, answered, fallback_depth, attempted[], empty, latency_ms, error_class}`. Grep Railway logs, or add a log drain to Axiom/Better Stack and alert when the `fallback_depth>0` share is high.
 - **Search telemetry** — `[serp.telemetry]` records outcome, latency, result count, authoritative-source count, and a one-way query hash. Raw search queries and contract text are not logged.
+- **Search-router telemetry** — `[searchrouter.telemetry]` records `mode` (`off` / `shadow` / `live`), chosen `route`, `used_route`, `latency_ms`, `query_hash`, and `answer_path` (`legacy` vs `router`). In `shadow`, the answer still uses legacy SerpApi; the router result is logged for A/B. Flip `SEARCH_ROUTER_MODE` to `live` only after shadow logs show hybrid/firecrawl returning non-empty `content_chars` on high-stakes LATAM/gov queries at least as often as legacy snippets, without a latency blow-up. There is no in-repo A/B win yet — do not invent one.
+- **KB tenants** — `kb_documents.tenant` is `bioaccess` (default, CRO) or `amavita` (practice). `search_knowledge` can filter/prefer a tenant and cites it. If an Amavita question only hits bioaccess® chunks, the model is told not to treat the CRO playbook as practice policy.
 - **Scheduled (Cowork):** daily Mike health-check (8:05am); weekly "Mike model usage" report (Mondays) querying `chat_messages.provider_metadata` in Supabase.
 - **Model-usage query:** `select provider_metadata->>'model_name' as model, count(*) from chat_messages where role='assistant' and created_at >= '<date>' group by 1 order by 2 desc;` (only rows after 2026-07-04 reflect the true model).
 
 ## 8. Rollback
 
+- **Search router:** keep `SEARCH_ROUTER_MODE=shadow` (prod) or unset (repo default `off`). If someone flips to `live` and hybrid/Firecrawl is worse, set it back to `shadow` and redeploy — no schema change required.
+- **KB tenant:** new columns/function args are backward compatible (`tenant` defaults to `bioaccess`; `filter_tenant` is optional). Revert the app commit if search citations look wrong; leave the migration in place unless you need a full rollback.
 - **Backend:** revert the commit on `main` (or redeploy a previous Railway deployment) — Railway keeps prior builds; redeploying the last-good one is instant and was used successfully during the connector incident.
 - **Connector:** `cd /connectors/<worker> && wrangler deploy --keep-vars` from a known-good `worker.js` (the repo holds the deployed versions).
 - **RLS (if it ever blocks something):** `alter table public.<table> disable row level security;`.
@@ -86,7 +90,7 @@ _Last updated: 2026-07-15._
 
 ## 10. Secrets & key IDs (names only — values in dashboards)
 
-- **Backend (Railway):** `SUPABASE_URL`, `SUPABASE_SECRET_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `OPENAI_API_KEY`, `SAKANA_API_KEY`, `SAKANA_MODEL`, `LLM_MODEL`, `CONNECTOR_API_KEY`, `CONNECTOR_USER_ID`, `FRONTEND_URL`, `USER_API_KEYS_ENCRYPTION_SECRET`, `SERPAPI_KEY`, optional `SERP_SEARCH_MODE` / `SERPAPI_MAX_SEARCHES_PER_MINUTE`, R2/download vars, etc.
+- **Backend (Railway):** `SUPABASE_URL`, `SUPABASE_SECRET_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `OPENAI_API_KEY`, `SAKANA_API_KEY`, `SAKANA_MODEL`, `LLM_MODEL`, `CONNECTOR_API_KEY`, `CONNECTOR_USER_ID`, `FRONTEND_URL`, `USER_API_KEYS_ENCRYPTION_SECRET`, `SERPAPI_KEY`, optional `SERP_SEARCH_MODE` / `SERPAPI_MAX_SEARCHES_PER_MINUTE` / `SEARCH_ROUTER_MODE`, R2/download vars, etc.
 - **mike-assistant (Cloudflare):** `CONNECTOR_API_KEY`, `MCP_API_KEY`, `MIKE_BACKEND_URL`.
 - **fugu-assistant (Cloudflare):** `MCP_API_KEY`, `SAKANA_API_KEY`, `ASSISTANT_PASSPHRASE`.
 - **Prod connector service user id:** `CONNECTOR_USER_ID = c62f4b5c-db2d-44c0-a6ad-5a7cc7c1cf12` (jmclark@bioaccessla.com).
