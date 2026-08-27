@@ -1,6 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type { Tool } from "@anthropic-ai/sdk/resources/messages/messages";
 import type {
+  LlmUsage,
   StreamChatParams,
   StreamChatResult,
   NormalizedToolCall,
@@ -119,6 +120,7 @@ export async function streamClaude(
 
   const messages: NativeMessage[] = toNativeMessages(params.messages);
   let fullText = "";
+  let usage: LlmUsage | undefined;
   const rawStreamRecorder = createRawLlmStreamRecorder({
     provider: "claude",
     model,
@@ -212,6 +214,19 @@ export async function streamClaude(
       throwIfAborted(params.abortSignal);
       const stopReason = final.stop_reason;
       const assistantBlocks = final.content as ContentBlock[];
+      const finalUsage = (final as { usage?: LlmUsage }).usage;
+      if (finalUsage) {
+        usage = {
+          input_tokens: (usage?.input_tokens ?? 0) + (finalUsage.input_tokens ?? 0),
+          output_tokens: (usage?.output_tokens ?? 0) + (finalUsage.output_tokens ?? 0),
+          cache_read_input_tokens:
+            (usage?.cache_read_input_tokens ?? 0) +
+            (finalUsage.cache_read_input_tokens ?? 0),
+          cache_creation_input_tokens:
+            (usage?.cache_creation_input_tokens ?? 0) +
+            (finalUsage.cache_creation_input_tokens ?? 0),
+        };
+      }
 
       // Extract text content and tool_use calls from the final assistant
       // message so we can accumulate text and drive the tool-call loop.
@@ -258,7 +273,7 @@ export async function streamClaude(
     }
 
     await rawStreamRecorder?.flush("completed");
-    return { fullText };
+    return { fullText, usage };
   } catch (error) {
     await rawStreamRecorder?.flush("error", error);
     throw error;

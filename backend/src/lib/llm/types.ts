@@ -59,6 +59,14 @@ export type ProviderMetadata = {
     provider_response_id?: string;
 };
 
+/** Token fields a provider already returned. No invented dollar amounts. */
+export type LlmUsage = {
+    input_tokens?: number;
+    output_tokens?: number;
+    cache_read_input_tokens?: number;
+    cache_creation_input_tokens?: number;
+};
+
 export type StreamChatParams = {
     model: string;
     systemPrompt: string;
@@ -82,4 +90,6 @@ export type StreamChatResult = {
     fullText: string;
     /** Populated by providers that expose response IDs and model routing metadata. */
     providerMetadata?: ProviderMetadata;
+    /** Present only when the provider response included usage. */
+    usage?: LlmUsage;
 };

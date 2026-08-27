@@ -15,9 +15,9 @@ The server starts on `http://localhost:3001` by default.
 
 ---
 
-## LLM Provider — Sakana Fugu
+## LLM routing
 
-All LLM calls are routed through **Sakana Fugu** (`fugu-ultra-20260615`). This is a straight swap — no feature flag, no per-request routing. Every `streamChatWithTools()` and `completeText()` call in `src/lib/llm/index.ts` targets the Sakana API.
+The default first model is **Sakana Fugu Ultra** (`fugu-ultra-20260615`). A deterministic intent classifier (message / named tool — not an LLM router) starts high-stakes paste-into-contract work (`draft_redlines`, `review_against_playbook`, `draft_contract`, a novel pathway that will be signed) on Opus 4.8. Default, cheap, and unsure questions stay on Fugu Ultra. The health-aware fallback pool is Fugu Ultra → Fable 5 → Opus 4.8 → GPT-5.6 Sol. `convene_council` remains an explicit tool.
 
 ### Why Fugu?
 

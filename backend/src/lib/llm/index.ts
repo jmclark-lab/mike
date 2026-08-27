@@ -1,25 +1,41 @@
 import { streamSakana, completeSakanaText } from "./sakana";
 import { streamClaude, completeClaudeText } from "./claude";
-import { completeGeminiText } from "./gemini";
-import { completeOpenAIText } from "./openai";
+import { completeGeminiText, streamGemini } from "./gemini";
+import { completeOpenAIText, streamOpenAI } from "./openai";
 import { DEFAULT_SAKANA_MODEL, providerForModel } from "./models";
-import type { ReasoningEffort, StreamChatParams, StreamChatResult, UserApiKeys } from "./types";
+import type { LlmUsage, ReasoningEffort, StreamChatParams, StreamChatResult, UserApiKeys } from "./types";
 import { isGroundingEnabled, buildGroundingContext } from "../hybridSearch";
+import {
+    DEFAULT_ROUTE_MODEL,
+    HIGH_ROUTE_MODEL,
+    buildRoutedChain,
+    classifyIntent,
+    firstModelForBucket,
+    lastUserText,
+    type RouteBucket,
+} from "./intentRouter";
 
 export * from "./types";
 export * from "./models";
+export {
+    DEFAULT_ROUTE_MODEL,
+    HIGH_ROUTE_MODEL,
+    classifyIntent,
+    firstModelForBucket,
+    buildRoutedChain,
+    lastUserText,
+} from "./intentRouter";
+export type { RouteBucket, IntentClassification, IntentInput } from "./intentRouter";
 
 const DEFAULT_FABLE_MODEL = "claude-fable-5";
-// Stable Anthropic model used as the final safety net in the fallback chain
-// while the Fable 5 rollout stabilizes (per Anthropic interim guidance, Jul 2026).
-const INTERIM_STABLE_MODEL = "claude-opus-4-8";
-// Final tail fallback: OpenAI GPT-5.6 Sol. Only reached if Fable, Fugu, AND
-// Opus all fail on a request. Requires the OpenAI account to have billing/quota;
-// until funded it returns insufficient_quota (429) and the chain simply ends
-// here exactly as it did before this entry existed — so it's safe to ship now
-// and activates automatically once the account is funded.
+const STRONG_LEGAL_MODEL = HIGH_ROUTE_MODEL;
 const FINAL_OPENAI_FALLBACK = "gpt-5.6-sol";
 
+/**
+ * Configured pool primary. Fugu Ultra remains the default lead (Julio):
+ * Sakana prices Fugu Ultra well below Fable 5 at the same intelligence
+ * class, and Fugu is an orchestrator over a model pool.
+ */
 function resolveActiveModel(): string {
     const explicit = process.env.LLM_MODEL?.trim();
     if (explicit) return explicit;
@@ -30,34 +46,30 @@ function resolveActiveModel(): string {
 }
 
 /**
- * Ordered model fallback chain. Default is a four-way chain:
- *   1. Fable 5    (primary)   — claude-fable-5
- *   2. Fugu Ultra (fallback)  — Sakana multi-model orchestrator
- *   3. Opus 4.8   (net)       — stable Anthropic model
- *   4. GPT-5.6 Sol (final net) — OpenAI; active once the account has quota
- * Each model is attempted in order until one returns a non-empty result.
- * The primary is whatever resolveActiveModel() picks (LLM_MODEL / LLM_PROVIDER).
- * Override the fallback tail entirely with LLM_FALLBACK_MODEL — a comma-separated
- * list of model ids, tried in the order given.
+ * Configured fallback pool. Default when env is unset:
+ *   fugu-ultra-20260615 → claude-fable-5 → claude-opus-4-8 → gpt-5.6-sol
+ *
+ * Intent routing picks the FIRST seat (Fugu for default/cheap, Opus for
+ * signed-document work), then this pool is health-reordered behind it.
+ *
+ * LLM_MODEL overrides the pool primary. LLM_FALLBACK_MODEL replaces the tail.
  */
-function resolveModelChain(): string[] {
+export function resolveModelChain(): string[] {
     const chain: string[] = [];
     const push = (m?: string | null) => {
         const v = m?.trim();
         if (v && !chain.includes(v)) chain.push(v);
     };
 
-    // 1. Primary.
     push(resolveActiveModel());
 
-    // 2+. Fallbacks.
     const explicitFallbacks = process.env.LLM_FALLBACK_MODEL?.trim();
     if (explicitFallbacks) {
         for (const m of explicitFallbacks.split(",")) push(m);
     } else {
-        // Default tail: Fugu Ultra, then Opus 4.8, then GPT-5.6 Sol (final net).
         push(process.env.SAKANA_MODEL?.trim() || DEFAULT_SAKANA_MODEL);
-        push(INTERIM_STABLE_MODEL);
+        push(DEFAULT_FABLE_MODEL);
+        push(STRONG_LEGAL_MODEL);
         push(FINAL_OPENAI_FALLBACK);
     }
 
@@ -172,10 +184,22 @@ function orderByHealth(chain: string[]): string[] {
     return [...healthy, ...cooling];
 }
 
+function providerConfigured(name: "ANTHROPIC" | "SAKANA" | "OPENAI" | "GEMINI"): boolean {
+    return Boolean(process.env[`${name}_API_KEY`]?.trim());
+}
+
 // Snapshot of the routing/cooldown state for /healthz and telemetry.
 export function getRoutingHealth(): {
     chain: string[];
+    first_model_by_bucket: Record<RouteBucket, string>;
     coolingDown: { model: string; ms_remaining: number; failures: number }[];
+    providers_configured: {
+        anthropic: boolean;
+        sakana: boolean;
+        openai: boolean;
+        gemini: boolean;
+    };
+    search_router_mode: string;
 } {
     const now = Date.now();
     const coolingDown = [...modelCooldownUntil.entries()]
@@ -185,7 +209,42 @@ export function getRoutingHealth(): {
             ms_remaining: until - now,
             failures: modelFailureStreak.get(model) ?? 0,
         }));
-    return { chain: resolveModelChain(), coolingDown };
+    return {
+        chain: resolveModelChain(),
+        first_model_by_bucket: {
+            high: firstModelForBucket("high"),
+            cheap: firstModelForBucket("cheap"),
+            default: firstModelForBucket("default"),
+        },
+        coolingDown,
+        providers_configured: {
+            anthropic: providerConfigured("ANTHROPIC"),
+            sakana: providerConfigured("SAKANA"),
+            openai: providerConfigured("OPENAI"),
+            gemini: providerConfigured("GEMINI"),
+        },
+        // Reported only — SEARCH_ROUTER_MODE is not flipped in this change.
+        search_router_mode: process.env.SEARCH_ROUTER_MODE?.trim().toLowerCase() || "off",
+    };
+}
+
+export function resetRoutingHealthForTests(): void {
+    modelCooldownUntil.clear();
+    modelFailureStreak.clear();
+}
+
+function usageFields(usage?: LlmUsage): Record<string, number> {
+    if (!usage) return {};
+    const out: Record<string, number> = {};
+    if (typeof usage.input_tokens === "number") out.input_tokens = usage.input_tokens;
+    if (typeof usage.output_tokens === "number") out.output_tokens = usage.output_tokens;
+    if (typeof usage.cache_read_input_tokens === "number") {
+        out.cache_read_input_tokens = usage.cache_read_input_tokens;
+    }
+    if (typeof usage.cache_creation_input_tokens === "number") {
+        out.cache_creation_input_tokens = usage.cache_creation_input_tokens;
+    }
+    return out;
 }
 
 async function invokeStream(
@@ -194,7 +253,58 @@ async function invokeStream(
 ): Promise<StreamChatResult> {
     const provider = providerForModel(model);
     if (provider === "claude") return streamClaude({ ...params, model });
+    if (provider === "openai") return streamOpenAI({ ...params, model });
+    if (provider === "gemini") return streamGemini({ ...params, model });
     return streamSakana({ ...params, model });
+}
+
+/**
+ * Try models in order. Empty / retryable misses mark the model unhealthy
+ * and continue. Exported so tests can prove fallback still runs after
+ * the intent-picked first model misses.
+ */
+export async function runFallbackChain<T>(opts: {
+    chain: string[];
+    invoke: (model: string) => Promise<T>;
+    isEmpty: (result: T) => boolean;
+}): Promise<{ result: T; answered: string; fallbackDepth: number; attempted: string[] }> {
+    const { chain, invoke, isEmpty } = opts;
+    let lastError: unknown;
+    for (let i = 0; i < chain.length; i++) {
+        const model = chain[i];
+        const isLast = i === chain.length - 1;
+        try {
+            const result = await invoke(model);
+            if (isEmpty(result)) {
+                markModelUnhealthy(model);
+                if (!isLast) {
+                    console.warn(`[llm] ${model} returned an empty response; falling back to ${chain[i + 1]}`);
+                    lastError = new Error(`empty response from ${model}`);
+                    continue;
+                }
+            } else {
+                markModelHealthy(model);
+            }
+            if (i > 0) console.log(`[llm] answered via fallback model ${model}`);
+            return {
+                result,
+                answered: model,
+                fallbackDepth: i,
+                attempted: chain.slice(0, i + 1),
+            };
+        } catch (err) {
+            lastError = err;
+            if (!isLast && isRetryableError(err)) {
+                markModelUnhealthy(model);
+                console.warn(
+                    `[llm] ${model} failed (${err instanceof Error ? err.message : String(err)}); falling back to ${chain[i + 1]}`,
+                );
+                continue;
+            }
+            throw err;
+        }
+    }
+    throw lastError instanceof Error ? lastError : new Error("all models in the fallback chain failed");
 }
 
 async function invokeComplete(
@@ -231,45 +341,59 @@ export async function streamChatWithTools(params: StreamChatParams): Promise<Str
         }
     }
 
-    const chain = orderByHealth(resolveModelChain());
-    console.log(`[llm] model fallback chain: ${chain.join(" -> ")}`);
+    const intent = classifyIntent({ userText: lastUserText(params.messages) });
+    const routed = buildRoutedChain({
+        bucket: intent.bucket,
+        fallbackPool: resolveModelChain(),
+        orderByHealth,
+    });
+    const chain = routed.chain;
+    console.log(
+        `[llm] route=${intent.bucket} first=${routed.firstModel} chain: ${chain.join(" -> ")}`,
+    );
 
     const startedAt = Date.now();
-    let lastError: unknown;
-    for (let i = 0; i < chain.length; i++) {
-        const model = chain[i];
-        const isLast = i === chain.length - 1;
-        try {
-            const result = await invokeStream(model, { ...params, systemPrompt });
-            if (isEmptyResult(result.fullText)) {
-                markModelUnhealthy(model);
-                if (!isLast) {
-                    console.warn(`[llm] ${model} returned an empty response; falling back to ${chain[i + 1]}`);
-                    lastError = new Error(`empty response from ${model}`);
-                    continue;
-                }
-            } else {
-                markModelHealthy(model);
-            }
-            if (i > 0) console.log(`[llm] answered via fallback model ${model}`);
-            if (!result.providerMetadata) {
-                result.providerMetadata = { provider_name: providerForModel(model), model_name: model };
-            }
-            logLlmCall({ surface: "stream", ok: true, answered: model, fallback_depth: i, attempted: chain.slice(0, i + 1), empty: isEmptyResult(result.fullText), latency_ms: Date.now() - startedAt });
-            return result;
-        } catch (err) {
-            lastError = err;
-            if (!isLast && isRetryableError(err)) {
-                markModelUnhealthy(model);
-                console.warn(`[llm] ${model} failed (${err instanceof Error ? err.message : String(err)}); falling back to ${chain[i + 1]}`);
-                continue;
-            }
-            logLlmCall({ surface: "stream", ok: false, failed_model: model, fallback_depth: i, attempted: chain.slice(0, i + 1), error_class: classifyLlmError(err), latency_ms: Date.now() - startedAt });
-            throw err;
+    try {
+        const outcome = await runFallbackChain({
+            chain,
+            invoke: (model) => invokeStream(model, { ...params, systemPrompt }),
+            isEmpty: (result) => isEmptyResult(result.fullText),
+        });
+        if (!outcome.result.providerMetadata) {
+            outcome.result.providerMetadata = {
+                provider_name: providerForModel(outcome.answered),
+                model_name: outcome.answered,
+            };
         }
+        logLlmCall({
+            surface: "stream",
+            ok: true,
+            route_bucket: intent.bucket,
+            route_reason: intent.reason,
+            first_model: routed.firstModel,
+            answered: outcome.answered,
+            fallback_depth: outcome.fallbackDepth,
+            attempted: outcome.attempted,
+            empty: isEmptyResult(outcome.result.fullText),
+            latency_ms: Date.now() - startedAt,
+            ...usageFields(outcome.result.usage),
+        });
+        return outcome.result;
+    } catch (err) {
+        logLlmCall({
+            surface: "stream",
+            ok: false,
+            route_bucket: intent.bucket,
+            route_reason: intent.reason,
+            first_model: routed.firstModel,
+            failed_model: chain[0],
+            fallback_depth: chain.length - 1,
+            attempted: chain,
+            error_class: classifyLlmError(err),
+            latency_ms: Date.now() - startedAt,
+        });
+        throw err;
     }
-    logLlmCall({ surface: "stream", ok: false, error_class: "chain_exhausted", attempted: chain, latency_ms: Date.now() - startedAt });
-    throw lastError instanceof Error ? lastError : new Error("all models in the fallback chain failed");
 }
 
 export async function completeText(params: {
@@ -283,44 +407,50 @@ export async function completeText(params: {
     // the primary, with the standard fallback chain behind it. Previously the
     // passed model was ignored and every completion ran the frontier chain.
     const requested = params.model?.trim();
+    const intent = classifyIntent({ userText: params.user });
     const fallbackChain = orderByHealth(resolveModelChain());
+    const firstModel = requested || firstModelForBucket(intent.bucket);
     const chain = requested
         ? [requested, ...fallbackChain.filter((m) => m !== requested)]
-        : fallbackChain;
+        : buildRoutedChain({
+            bucket: intent.bucket,
+            fallbackPool: resolveModelChain(),
+            orderByHealth,
+        }).chain;
 
     const startedAt = Date.now();
-    let lastError: unknown;
-    for (let i = 0; i < chain.length; i++) {
-        const model = chain[i];
-        const isLast = i === chain.length - 1;
-        try {
-            const result = await invokeComplete(model, params);
-            if (isEmptyResult(result)) {
-                markModelUnhealthy(model);
-                if (!isLast) {
-                    console.warn(`[llm] ${model} returned an empty completion; falling back to ${chain[i + 1]}`);
-                    lastError = new Error(`empty response from ${model}`);
-                    continue;
-                }
-            } else {
-                markModelHealthy(model);
-            }
-            if (i > 0) console.log(`[llm] completeText answered via fallback model ${model}`);
-            logLlmCall({ surface: "complete", ok: true, answered: model, fallback_depth: i, attempted: chain.slice(0, i + 1), empty: isEmptyResult(result), latency_ms: Date.now() - startedAt });
-            return result;
-        } catch (err) {
-            lastError = err;
-            if (!isLast && isRetryableError(err)) {
-                markModelUnhealthy(model);
-                console.warn(`[llm] ${model} failed in completeText (${err instanceof Error ? err.message : String(err)}); falling back to ${chain[i + 1]}`);
-                continue;
-            }
-            logLlmCall({ surface: "complete", ok: false, failed_model: model, fallback_depth: i, attempted: chain.slice(0, i + 1), error_class: classifyLlmError(err), latency_ms: Date.now() - startedAt });
-            throw err;
-        }
+    try {
+        const outcome = await runFallbackChain({
+            chain,
+            invoke: (model) => invokeComplete(model, params),
+            isEmpty: isEmptyResult,
+        });
+        logLlmCall({
+            surface: "complete",
+            ok: true,
+            route_bucket: requested ? "explicit" : intent.bucket,
+            first_model: firstModel,
+            answered: outcome.answered,
+            fallback_depth: outcome.fallbackDepth,
+            attempted: outcome.attempted,
+            empty: isEmptyResult(outcome.result),
+            latency_ms: Date.now() - startedAt,
+        });
+        return outcome.result;
+    } catch (err) {
+        logLlmCall({
+            surface: "complete",
+            ok: false,
+            route_bucket: requested ? "explicit" : intent.bucket,
+            first_model: firstModel,
+            failed_model: chain[0],
+            fallback_depth: chain.length - 1,
+            attempted: chain,
+            error_class: classifyLlmError(err),
+            latency_ms: Date.now() - startedAt,
+        });
+        throw err;
     }
-    logLlmCall({ surface: "complete", ok: false, error_class: "chain_exhausted", attempted: chain, latency_ms: Date.now() - startedAt });
-    throw lastError instanceof Error ? lastError : new Error("all models in the fallback chain failed");
 }
 
 /**
