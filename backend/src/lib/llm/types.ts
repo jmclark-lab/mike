@@ -53,10 +53,23 @@ export type ReasoningEffort =
     | "high"
     | "xhigh";
 
+export type SkippedModel = {
+    provider_name: string;
+    model_name: string;
+    failure_class: string;
+    failure_reason: string;
+};
+
 export type ProviderMetadata = {
     provider_name: string;
     model_name: string;
     provider_response_id?: string;
+    /** 0 = answered by the first attempted model; 1 = second hop; etc. */
+    fallback_depth?: number;
+    /** Model ids attempted for this call, in order, including the answering model. */
+    attempted_models?: string[];
+    /** Hops that failed before the answering model. Empty when fallback_depth is 0. */
+    skipped_models?: SkippedModel[];
 };
 
 export type StreamChatParams = {

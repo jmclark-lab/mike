@@ -14,7 +14,7 @@ import {
     stripTransientAssistantEvents,
     type ChatMessage,
 } from "../lib/chatTools";
-import { completeText } from "../lib/llm";
+import { completeText, persistableProviderMetadata } from "../lib/llm";
 import {
     getUserModelSettings,
 } from "../lib/userSettings";
@@ -615,7 +615,7 @@ chatRouter.post("/", connectorOrAuth, async (req, res) => {
             content: persistedEvents.length ? persistedEvents : null,
             annotations: annotations.length ? annotations : null,
             provider_metadata: providerMetadata
-                ? { provider_name: providerMetadata.provider_name, model_name: providerMetadata.model_name }
+                ? persistableProviderMetadata(providerMetadata)
                 : SAKANA_PROVIDER_METADATA,
         });
 

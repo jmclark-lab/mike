@@ -48,9 +48,9 @@ function sakanaBaseUrl(): string {
 }
 
 /**
- * Resolve the model to use. The caller (index.ts) already overrides with
- * process.env.SAKANA_MODEL, but we apply it again here for robustness in case
- * streamSakana is called directly.
+ * Variant selector for Sakana calls only. `SAKANA_MODEL` picks which Fugu
+ * id is sent to the API when a Sakana model is actually invoked. It must not
+ * be used to compose the chat fallback chain (see resolveActiveModel).
  */
 function sakanaModel(requestedModel: string): string {
     return process.env.SAKANA_MODEL?.trim() || requestedModel || DEFAULT_SAKANA_MODEL;

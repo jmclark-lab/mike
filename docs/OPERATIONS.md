@@ -2,7 +2,7 @@
 
 Operational reference for the bioaccess® **Mike Legal AI** platform. Covers topology, deploy flow, rollback, auth/security, observability, and the gotchas learned in production.
 
-_Last updated: 2026-07-15._
+_Last updated: 2026-09-03._
 
 ---
 
@@ -37,7 +37,10 @@ _Last updated: 2026-07-15._
 
 ## 4. LLM routing
 
-- **Chain (streaming chat):** `claude-fable-5` → `fugu-ultra-20260615` → `claude-opus-4-8`. Configurable via `LLM_MODEL` (primary) and `LLM_FALLBACK_MODEL` (comma-separated tail).
+- **Default chain (streaming chat):** `claude-fable-5` → `claude-opus-4-8` → `gpt-5.6-sol`. Fugu / any Sakana model is **not** in the default chain.
+- **Overrides:** `LLM_MODEL` replaces the primary. `LLM_FALLBACK_MODEL` replaces the tail (comma-separated model ids, tried in order). These are the only env vars that compose the chat chain. To put Fugu back in, name it explicitly in `LLM_MODEL` and/or `LLM_FALLBACK_MODEL`.
+- **`SAKANA_MODEL` is a variant selector only.** When a Sakana model is actually invoked (council seat, explicit `LLM_MODEL`/`LLM_FALLBACK_MODEL` hop, or a direct Sakana adapter call), `SAKANA_MODEL` chooses which Fugu id is sent to the API. It must never become the chat primary as a side effect. Historically, if `LLM_MODEL` was unset and `LLM_PROVIDER` was not `anthropic`, `resolveActiveModel()` fell through to `SAKANA_MODEL` (default `fugu-ultra-20260615`) and production `/healthz` showed Fugu first.
+- **`LLM_PROVIDER` is not a routing lever.** It does not select the primary or add hops.
 - **Empty responses count as failures** and advance the chain (root cause of the original outage: a model returned empty without throwing).
 - **Health-aware routing:** a model that returns empty/errors goes on an exponential-backoff cooldown (60s → cap 15min, +jitter, reset on success) and is deprioritised — never removed. In-memory/per-process (resets on deploy).
 - **Completions** (chat titles, tabular): `completeText` uses the caller's requested (cheap) model as primary with the chain as fallback. `invokeComplete` routes Claude/Gemini/OpenAI/Sakana.
@@ -57,15 +60,30 @@ _Last updated: 2026-07-15._
 
 - Backend does **all** DB access with the Supabase **service-role key** (`SUPABASE_SECRET_KEY`), which bypasses RLS.
 - **RLS is enabled (default-deny, no policies) on all `public` tables** — defense-in-depth; the service role still has full access, and the frontend never queries tables directly. If you add a table, enable RLS on it too.
-- `provider_metadata` on `chat_messages` records the **actual** answering model per message (was previously hardcoded).
+- `provider_metadata` on `chat_messages` records the **actual** answering model per message (was previously hardcoded). Existing keys stay stable: `provider_name`, `model_name`, optional `provider_response_id`. Streaming chat also persists the routing trail: `fallback_depth` (0 = first attempted hop answered), `attempted_models[]` (ids tried, including the answering model), and `skipped_models[]` (each `{ provider_name, model_name, failure_class, failure_reason }`). Abort/error rows that never produced provider metadata still stamp the legacy Sakana placeholder.
 
 ## 7. Observability
 
 - **`GET /healthz`** — DB check + uptime + deployed `commit` + live routing/cooldown state; returns 503 if the DB is down. (There's also a trivial `GET /health` → `{ok:true}`.)
-- **Per-call telemetry** — one JSON line per LLM call: `[llm.telemetry] {event:"llm_call", surface, ok, answered, fallback_depth, attempted[], empty, latency_ms, error_class}`. Grep Railway logs, or add a log drain to Axiom/Better Stack and alert when the `fallback_depth>0` share is high.
+- **Per-call telemetry** — one JSON line per LLM call: `[llm.telemetry] {event:"llm_call", surface, ok, answered, fallback_depth, attempted[], skipped[], empty, latency_ms, error_class}`. Grep Railway logs, or add a log drain to Axiom/Better Stack and alert when the `fallback_depth>0` share is high. The same trail is stored on `chat_messages.provider_metadata` for stream answers so it is queryable in Supabase without logs.
 - **Search telemetry** — `[serp.telemetry]` records outcome, latency, result count, authoritative-source count, and a one-way query hash. Raw search queries and contract text are not logged.
 - **Scheduled (Cowork):** daily Mike health-check (8:05am); weekly "Mike model usage" report (Mondays) querying `chat_messages.provider_metadata` in Supabase.
 - **Model-usage query:** `select provider_metadata->>'model_name' as model, count(*) from chat_messages where role='assistant' and created_at >= '<date>' group by 1 order by 2 desc;` (only rows after 2026-07-04 reflect the true model).
+- **Fallback-analysis query** (rows after this change; older rows lack the trail keys):
+
+```sql
+select
+  created_at,
+  provider_metadata->>'model_name' as answered,
+  (provider_metadata->>'fallback_depth')::int as fallback_depth,
+  provider_metadata->'attempted_models' as attempted_models,
+  provider_metadata->'skipped_models' as skipped_models
+from chat_messages
+where role = 'assistant'
+  and created_at >= now() - interval '7 days'
+  and coalesce((provider_metadata->>'fallback_depth')::int, 0) > 0
+order by created_at desc;
+```
 
 ## 8. Rollback
 
@@ -86,7 +104,7 @@ _Last updated: 2026-07-15._
 
 ## 10. Secrets & key IDs (names only — values in dashboards)
 
-- **Backend (Railway):** `SUPABASE_URL`, `SUPABASE_SECRET_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `OPENAI_API_KEY`, `SAKANA_API_KEY`, `SAKANA_MODEL`, `LLM_MODEL`, `CONNECTOR_API_KEY`, `CONNECTOR_USER_ID`, `FRONTEND_URL`, `USER_API_KEYS_ENCRYPTION_SECRET`, `SERPAPI_KEY`, optional `SERP_SEARCH_MODE` / `SERPAPI_MAX_SEARCHES_PER_MINUTE`, R2/download vars, etc.
+- **Backend (Railway):** `SUPABASE_URL`, `SUPABASE_SECRET_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `OPENAI_API_KEY`, `SAKANA_API_KEY`, `SAKANA_MODEL` (Fugu variant when Sakana is invoked; does not set the chat primary), `LLM_MODEL` (optional primary override), `LLM_FALLBACK_MODEL` (optional comma-separated tail override), `CONNECTOR_API_KEY`, `CONNECTOR_USER_ID`, `FRONTEND_URL`, `USER_API_KEYS_ENCRYPTION_SECRET`, `SERPAPI_KEY`, optional `SERP_SEARCH_MODE` / `SERPAPI_MAX_SEARCHES_PER_MINUTE`, R2/download vars, etc.
 - **mike-assistant (Cloudflare):** `CONNECTOR_API_KEY`, `MCP_API_KEY`, `MIKE_BACKEND_URL`.
 - **fugu-assistant (Cloudflare):** `MCP_API_KEY`, `SAKANA_API_KEY`, `ASSISTANT_PASSPHRASE`.
 - **Prod connector service user id:** `CONNECTOR_USER_ID = c62f4b5c-db2d-44c0-a6ad-5a7cc7c1cf12` (jmclark@bioaccessla.com).
