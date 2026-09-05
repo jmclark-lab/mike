@@ -104,11 +104,11 @@ describe("LLM routing chain", { concurrency: false }, () => {
 
   test("LLM_FALLBACK_MODEL dedupes the primary if it is repeated", () => {
     clearRoutingEnv();
-    process.env.LLM_FALLBACK_MODEL = "claude-fable-5,claude-opus-4-8,gpt-5.6-sol";
+    process.env.LLM_FALLBACK_MODEL = "claude-fable-5-1,claude-opus-5,gpt-6-astra";
     assert.deepEqual(resolveModelChain(), [
-      "claude-fable-5",
-      "claude-opus-4-8",
-      "gpt-5.6-sol",
+      "claude-fable-5-1",
+      "claude-opus-5",
+      "gpt-6-astra",
     ]);
   });
 });
