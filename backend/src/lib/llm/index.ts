@@ -17,14 +17,13 @@ import { isGroundingEnabled, buildGroundingContext } from "../hybridSearch";
 export * from "./types";
 export * from "./models";
 
-const DEFAULT_FABLE_MODEL = "claude-fable-5";
-// Stable Anthropic model used as the final safety net in the fallback chain
-// while the Fable 5 rollout stabilizes (per Anthropic interim guidance, Jul 2026).
-const INTERIM_STABLE_MODEL = "claude-opus-4-8";
-// Final tail fallback: OpenAI GPT-5.6 Sol. Only reached if Fable and Opus
+const DEFAULT_FABLE_MODEL = "claude-fable-5-1";
+// Stable Anthropic fallback after Fable 5.1 (highest-intelligence policy).
+const INTERIM_STABLE_MODEL = "claude-opus-5";
+// Final tail fallback: OpenAI GPT-6 Astra. Only reached if Fable and Opus
 // both fail. Requires the OpenAI account to have billing/quota; until funded
 // it returns insufficient_quota (429) and the chain simply ends here.
-const FINAL_OPENAI_FALLBACK = "gpt-5.6-sol";
+const FINAL_OPENAI_FALLBACK = "gpt-6-astra";
 
 /**
  * Chat primary. `LLM_MODEL` is the only env var that can change this.
@@ -40,9 +39,9 @@ export function resolveActiveModel(): string {
 
 /**
  * Ordered model fallback chain. Default is a three-way chain with no Sakana hop:
- *   1. Fable 5     (primary)    — claude-fable-5
- *   2. Opus 4.8    (fallback)   — stable Anthropic model
- *   3. GPT-5.6 Sol (final net)  — OpenAI; active once the account has quota
+ *   1. Fable 5.1    (primary)    — claude-fable-5-1
+ *   2. Opus 5       (fallback)   — claude-opus-5
+ *   3. GPT-6 Astra  (final net)  — gpt-6-astra
  *
  * `LLM_MODEL` replaces the primary. `LLM_FALLBACK_MODEL` replaces the tail
  * (comma-separated model ids, tried in the order given). To put Fugu back in

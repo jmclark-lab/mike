@@ -37,8 +37,8 @@ _Last updated: 2026-09-03._
 
 ## 4. LLM routing
 
-- **Default chain (streaming chat):** `claude-fable-5` → `claude-opus-4-8` → `gpt-5.6-sol`. Fugu / any Sakana model is **not** in the default chain.
-- **Overrides:** `LLM_MODEL` replaces the primary. `LLM_FALLBACK_MODEL` replaces the tail (comma-separated model ids, tried in order). These are the only env vars that compose the chat chain. To put Fugu back in, name it explicitly in `LLM_MODEL` and/or `LLM_FALLBACK_MODEL`.
+- **Default chain (streaming chat):** `claude-fable-5-1` → `claude-opus-5` → `gpt-6-astra`. Documented env: `LLM_MODEL=claude-fable-5-1`, `LLM_FALLBACK_MODEL=claude-opus-5,gpt-6-astra`. Fugu / any Sakana model is **not** in the default chain.
+- **Overrides:** `LLM_MODEL` replaces the primary. `LLM_FALLBACK_MODEL` replaces the tail (comma-separated model ids, tried in order). These are the only env vars that compose the chat chain. To put Fugu back in, name it explicitly in `LLM_MODEL` and/or `LLM_FALLBACK_MODEL`. Stream chat uses `resolveModelChain()` / `LLM_MODEL`, not ModelToggle.
 - **`SAKANA_MODEL` is a variant selector only.** When a Sakana model is actually invoked (council seat, explicit `LLM_MODEL`/`LLM_FALLBACK_MODEL` hop, or a direct Sakana adapter call), `SAKANA_MODEL` chooses which Fugu id is sent to the API. It must never become the chat primary as a side effect. Historically, if `LLM_MODEL` was unset and `LLM_PROVIDER` was not `anthropic`, `resolveActiveModel()` fell through to `SAKANA_MODEL` (default `fugu-ultra-20260615`) and production `/healthz` showed Fugu first.
 - **`LLM_PROVIDER` is not a routing lever.** It does not select the primary or add hops.
 - **Empty responses count as failures** and advance the chain (root cause of the original outage: a model returned empty without throwing).
