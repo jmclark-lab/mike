@@ -3,6 +3,7 @@ import { streamClaude, completeClaudeText } from "./claude";
 import { completeGeminiText } from "./gemini";
 import { completeOpenAIText } from "./openai";
 import { completeXaiText, streamXai } from "./xai";
+import { completeDeepSeekText, streamDeepSeek } from "./deepseek";
 import { providerForModel } from "./models";
 import type {
     ProviderMetadata,
@@ -255,6 +256,7 @@ async function invokeStream(
     const provider = providerForModel(model);
     if (provider === "claude") return streamClaude({ ...params, model });
     if (provider === "xai") return streamXai({ ...params, model });
+    if (provider === "deepseek") return streamDeepSeek({ ...params, model });
     return streamSakana({ ...params, model });
 }
 
@@ -273,6 +275,7 @@ async function invokeComplete(
     if (provider === "gemini") return completeGeminiText({ ...params, model });
     if (provider === "openai") return completeOpenAIText({ ...params, model });
     if (provider === "xai") return completeXaiText({ ...params, model });
+    if (provider === "deepseek") return completeDeepSeekText({ ...params, model });
     return completeSakanaText({ ...params, model });
 }
 

@@ -260,7 +260,8 @@ export type ApiKeyProvider =
     | "openai"
     | "openrouter"
     | "courtlistener"
-    | "xai";
+    | "xai"
+    | "deepseek";
 export type ApiKeySource = "user" | "env" | null;
 export type ApiKeyState = Record<
     ApiKeyProvider,

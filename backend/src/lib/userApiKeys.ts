@@ -9,7 +9,8 @@ export type ApiKeyProvider =
     | "openai"
     | "openrouter"
     | "courtlistener"
-    | "xai";
+    | "xai"
+    | "deepseek";
 export type ApiKeySource = "user" | "env" | null;
 export type ApiKeyStatus = Record<ApiKeyProvider, boolean> & {
     sources: Record<ApiKeyProvider, ApiKeySource>;
@@ -29,7 +30,7 @@ const USER_STORED_PROVIDERS: ApiKeyProvider[] = [
     "openrouter",
     "courtlistener",
 ];
-const STATUS_PROVIDERS: ApiKeyProvider[] = [...USER_STORED_PROVIDERS, "xai"];
+const STATUS_PROVIDERS: ApiKeyProvider[] = [...USER_STORED_PROVIDERS, "xai", "deepseek"];
 
 function envApiKey(provider: ApiKeyProvider): string | null {
     switch (provider) {
@@ -49,6 +50,8 @@ function envApiKey(provider: ApiKeyProvider): string | null {
             return process.env.COURTLISTENER_API_TOKEN?.trim() || null;
         case "xai":
             return process.env.XAI_API_KEY?.trim() || null;
+        case "deepseek":
+            return process.env.DEEPSEEK_API_KEY?.trim() || null;
         default:
             return null;
     }
@@ -121,6 +124,7 @@ export async function getUserApiKeyStatus(
         openrouter: false,
         courtlistener: false,
         xai: false,
+        deepseek: false,
         sources: {
             claude: null,
             gemini: null,
@@ -128,6 +132,7 @@ export async function getUserApiKeyStatus(
             openrouter: null,
             courtlistener: null,
             xai: null,
+            deepseek: null,
         },
     };
 
@@ -166,6 +171,7 @@ export async function getUserApiKeys(
         openrouter: envApiKey("openrouter"),
         courtlistener: envApiKey("courtlistener"),
         xai: envApiKey("xai"),
+        deepseek: envApiKey("deepseek"),
     };
 
     const { data, error } = await db

@@ -2,7 +2,7 @@
 
 Operational reference for the bioaccess® **Mike Legal AI** platform. Covers topology, deploy flow, rollback, auth/security, observability, and the gotchas learned in production.
 
-_Last updated: 2026-09-03._
+_Last updated: 2026-09-05._
 
 ---
 
@@ -14,7 +14,7 @@ _Last updated: 2026-09-03._
 | **Frontend** | In `/frontend`. Uses Supabase **only for auth** (no direct DB table reads — all data via the backend API). |
 | **Database + auth** | Supabase. Prod project **`mike-legal`** (ref `xpyuygerppzdzgvqpwdj`). Staging project **`mike-legal-staging`** (ref `jogvoukazkjvvghhkgql`). |
 | **MCP connectors** | Cloudflare Workers (account `4a6ee759ca55f608f82c2cbd2c12d4e2`): **`mike-assistant`** (`ask_mike`/`get_mike_answer`) and **`fugu-assistant`** (`ask_fugu`/`ask_fugu_ultra`/`get_fugu_answer`). Source version-controlled in `/connectors`. |
-| **LLM providers** | Anthropic (Fable 5.1, Fable 5, Opus 5, Opus 4.8, Sonnet, Haiku), Sakana (Fugu / Fugu Ultra), plus Gemini/OpenAI adapters. |
+| **LLM providers** | Anthropic (Fable 5.1, Fable 5, Opus 5, Opus 4.8, Sonnet, Haiku), Sakana (Fugu / Fugu Ultra), Gemini/OpenAI/xAI adapters, plus DeepSeek (selectable-only; not on council or the default chat chain). |
 
 ## 2. Environments & branches
 
@@ -43,7 +43,8 @@ _Last updated: 2026-09-03._
 - **`LLM_PROVIDER` is not a routing lever.** It does not select the primary or add hops.
 - **Empty responses count as failures** and advance the chain (root cause of the original outage: a model returned empty without throwing).
 - **Health-aware routing:** a model that returns empty/errors goes on an exponential-backoff cooldown (60s → cap 15min, +jitter, reset on success) and is deprioritised — never removed. In-memory/per-process (resets on deploy).
-- **Completions** (chat titles, tabular): `completeText` uses the caller's requested (cheap) model as primary with the chain as fallback. `invokeComplete` routes Claude/Gemini/OpenAI/Sakana.
+- **Completions** (chat titles, tabular): `completeText` uses the caller's requested (cheap) model as primary with the chain as fallback. `invokeComplete` routes Claude/Gemini/OpenAI/xAI/DeepSeek/Sakana. Selecting DeepSeek from the picker uses `deepseek-v4-flash` / `deepseek-v4-pro` when `DEEPSEEK_API_KEY` is set. DeepSeek is not added to `resolveModelChain()` and is not a council seat.
+- **DeepSeek (selectable-only):** env `DEEPSEEK_API_KEY` (optional `DEEPSEEK_BASE_URL`, default `https://api.deepseek.com`). Chat Completions, not Responses. Missing key greys the picker like other providers. Platform Engineer sets the Railway var after merge and probes; this pack does not deploy or call the live API.
 - **Legal council:** strict 5/5 quorum across Fable 5.1, Fugu Ultra, GPT-6 Astra (`gpt-6-astra` with `xhigh` reasoning), the configured Gemini Pro seat, and Grok 4.6 (`grok-4.6`). Production must set `COUNCIL_ANTHROPIC_MODEL=claude-fable-5-1`, `COUNCIL_OPENAI_MODEL=gpt-6-astra`, and `COUNCIL_XAI_MODEL=grok-4.6` on Railway. Each original model is retried up to `COUNCIL_MEMBER_MAX_ATTEMPTS` (default 3) without substitution. The Opus 5 judge (`COUNCIL_JUDGE=claude-opus-5`, default `COUNCIL_JUDGE_MAX_TOKENS=16000` for adaptive thinking) is never invoked on partial quorum; an incomplete council fails explicitly with model-specific errors. Council seats are configured with `COUNCIL_ANTHROPIC_MODEL`, `COUNCIL_SAKANA_MODEL`, `COUNCIL_OPENAI_MODEL`, `COUNCIL_GEMINI_MODEL`, `COUNCIL_GEMINI_LABEL`, and `COUNCIL_XAI_MODEL`. Provider-specific output budgets can be tuned with `COUNCIL_ANTHROPIC_MAX_TOKENS`, `COUNCIL_SAKANA_MAX_TOKENS`, `COUNCIL_OPENAI_MAX_TOKENS`, `COUNCIL_GEMINI_MAX_TOKENS`, `COUNCIL_XAI_MAX_TOKENS`, and `COUNCIL_JUDGE_MAX_TOKENS`; defaults are sized for reasoning-heavy contract reviews.
 - **Gemini 3.5 Pro cutover:** as of 2026-07-15 Google has not published the exact Gemini 3.5 Pro API identifier. On release, verify the identifier with a direct API call in staging, set `COUNCIL_GEMINI_MODEL` and `COUNCIL_GEMINI_LABEL`, redeploy staging, run a real 5/5 council smoke test, then promote to production. Never guess an unreleased model id in production.
 - **Backend streams with a 20s SSE keepalive** so long/dense generations aren't cut by the connector's idle timeout.
@@ -104,7 +105,7 @@ order by created_at desc;
 
 ## 10. Secrets & key IDs (names only — values in dashboards)
 
-- **Backend (Railway):** `SUPABASE_URL`, `SUPABASE_SECRET_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `OPENAI_API_KEY`, `SAKANA_API_KEY`, `SAKANA_MODEL` (Fugu variant when Sakana is invoked; does not set the chat primary), `LLM_MODEL` (optional primary override), `LLM_FALLBACK_MODEL` (optional comma-separated tail override), `CONNECTOR_API_KEY`, `CONNECTOR_USER_ID`, `FRONTEND_URL`, `USER_API_KEYS_ENCRYPTION_SECRET`, `SERPAPI_KEY`, optional `SERP_SEARCH_MODE` / `SERPAPI_MAX_SEARCHES_PER_MINUTE`, R2/download vars, etc.
+- **Backend (Railway):** `SUPABASE_URL`, `SUPABASE_SECRET_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `OPENAI_API_KEY`, `XAI_API_KEY`, `DEEPSEEK_API_KEY` (required to use selectable DeepSeek V4 Flash / V4 Pro; not in the default chat chain and not on council), `SAKANA_API_KEY`, `SAKANA_MODEL` (Fugu variant when Sakana is invoked; does not set the chat primary), `LLM_MODEL` (optional primary override), `LLM_FALLBACK_MODEL` (optional comma-separated tail override), `CONNECTOR_API_KEY`, `CONNECTOR_USER_ID`, `FRONTEND_URL`, `USER_API_KEYS_ENCRYPTION_SECRET`, `SERPAPI_KEY`, optional `SERP_SEARCH_MODE` / `SERPAPI_MAX_SEARCHES_PER_MINUTE`, R2/download vars, etc.
 - **mike-assistant (Cloudflare):** `CONNECTOR_API_KEY`, `MCP_API_KEY`, `MIKE_BACKEND_URL`.
 - **fugu-assistant (Cloudflare):** `MCP_API_KEY`, `SAKANA_API_KEY`, `ASSISTANT_PASSPHRASE`.
 - **Prod connector service user id:** `CONNECTOR_USER_ID = c62f4b5c-db2d-44c0-a6ad-5a7cc7c1cf12` (jmclark@bioaccessla.com).
