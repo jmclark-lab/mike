@@ -54,8 +54,14 @@ const DEFAULT_COUNCIL_SEATS: readonly CouncilSeat[] = [
   },
 ] as const;
 
-export const COUNCIL_JUDGE = "claude-opus-4-8";
+export const COUNCIL_JUDGE = "claude-opus-5";
 export const COUNCIL_MEMBERS = DEFAULT_COUNCIL_SEATS.map((seat) => seat.model);
+
+export function resolveCouncilJudge(
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  return env.COUNCIL_JUDGE?.trim() || COUNCIL_JUDGE;
+}
 
 export interface CouncilMemberResult {
   model: string;
@@ -357,12 +363,13 @@ export async function conveneCouncilWithCompleter(
     throw new CouncilQuorumError(members);
   }
 
-  onProgress?.(`5/5 opinions received; reconciling via ${COUNCIL_JUDGE}`);
+  const judgeModel = resolveCouncilJudge();
+  onProgress?.(`5/5 opinions received; reconciling via ${judgeModel}`);
   const judgeSeat: CouncilSeat = {
     provider: "anthropic",
-    model: COUNCIL_JUDGE,
-    label: "Opus 4.8 judge",
-    maxTokens: intFromEnv("COUNCIL_JUDGE_MAX_TOKENS", 8000, 1000, 64000),
+    model: judgeModel,
+    label: "Opus 5 judge",
+    maxTokens: intFromEnv("COUNCIL_JUDGE_MAX_TOKENS", 16000, 1000, 64000),
   };
   const judgeUser =
     `MATTER:\n${question}\n\n` +
@@ -392,7 +399,7 @@ export async function conveneCouncilWithCompleter(
     );
   }
 
-  const header = `[Council: mandatory 5/5 opinions received (${members.map((member) => member.label).join(", ")}); reconciled by Opus 4.8]`;
+  const header = `[Council: mandatory 5/5 opinions received (${members.map((member) => member.label).join(", ")}); reconciled by Opus 5]`;
   logCouncil({
     phase: "completed",
     ok: true,

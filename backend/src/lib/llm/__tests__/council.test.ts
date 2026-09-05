@@ -5,6 +5,7 @@ import {
   COUNCIL_MEMBERS,
   CouncilQuorumError,
   conveneCouncilWithCompleter,
+  resolveCouncilJudge,
   resolveCouncilSeats,
 } from "../council";
 
@@ -232,8 +233,28 @@ test("a four-seat configuration is rejected before any provider call", async () 
   assert.equal(calls, 0);
 });
 
-test("the council judge remains Opus 4.8", () => {
-  assert.equal(COUNCIL_JUDGE, "claude-opus-4-8");
+test("the council judge defaults to Opus 5 and is env-overridable", () => {
+  assert.equal(COUNCIL_JUDGE, "claude-opus-5");
+  assert.equal(resolveCouncilJudge({}), "claude-opus-5");
+  assert.equal(
+    resolveCouncilJudge({ COUNCIL_JUDGE: "claude-opus-4-8" }),
+    "claude-opus-4-8",
+  );
+});
+
+test("the council judge call receives the Opus 5 token budget", async () => {
+  let observed: { model?: string; maxTokens?: number } | undefined;
+  const result = await conveneCouncilWithCompleter(
+    { question: "Review this matter." },
+    async ({ model, maxTokens }) => {
+      if (model === COUNCIL_JUDGE) observed = { model, maxTokens };
+      return model === COUNCIL_JUDGE ? "Judge answer" : `Answer from ${model}`;
+    },
+    noDelay,
+  );
+
+  assert.deepEqual(observed, { model: "claude-opus-5", maxTokens: 16000 });
+  assert.match(result.finalAnswer, /reconciled by Opus 5/);
 });
 
 test("duplicate model configuration is rejected before any provider call", async () => {
