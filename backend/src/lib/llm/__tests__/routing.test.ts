@@ -34,25 +34,25 @@ function restoreRoutingEnv() {
 afterEach(restoreRoutingEnv);
 
 describe("LLM routing chain", { concurrency: false }, () => {
-  test("default chain is Fable → Opus → GPT-5.6 Sol with no Fugu hop", () => {
+  test("default chain is Fable 5.1 → Opus 5 → GPT-6 Astra with no Fugu hop", () => {
     clearRoutingEnv();
     assert.deepEqual(resolveModelChain(), [
-      "claude-fable-5",
-      "claude-opus-4-8",
-      "gpt-5.6-sol",
+      "claude-fable-5-1",
+      "claude-opus-5",
+      "gpt-6-astra",
     ]);
-    assert.equal(resolveActiveModel(), "claude-fable-5");
+    assert.equal(resolveActiveModel(), "claude-fable-5-1");
   });
 
   test("SAKANA_MODEL does not become primary or enter the default chain", () => {
     clearRoutingEnv();
     process.env.SAKANA_MODEL = "fugu-ultra-20260615";
     const chain = resolveModelChain();
-    assert.equal(resolveActiveModel(), "claude-fable-5");
+    assert.equal(resolveActiveModel(), "claude-fable-5-1");
     assert.deepEqual(chain, [
-      "claude-fable-5",
-      "claude-opus-4-8",
-      "gpt-5.6-sol",
+      "claude-fable-5-1",
+      "claude-opus-5",
+      "gpt-6-astra",
     ]);
     assert.equal(
       chain.some((id) => id.startsWith("fugu-")),
@@ -64,18 +64,18 @@ describe("LLM routing chain", { concurrency: false }, () => {
     clearRoutingEnv();
     process.env.LLM_PROVIDER = "sakana";
     process.env.SAKANA_MODEL = "fugu-ultra-20260615";
-    assert.equal(resolveActiveModel(), "claude-fable-5");
+    assert.equal(resolveActiveModel(), "claude-fable-5-1");
     assert.deepEqual(resolveModelChain(), [
-      "claude-fable-5",
-      "claude-opus-4-8",
-      "gpt-5.6-sol",
+      "claude-fable-5-1",
+      "claude-opus-5",
+      "gpt-6-astra",
     ]);
   });
 
   test("LLM_PROVIDER=anthropic does not change the Fable default", () => {
     clearRoutingEnv();
     process.env.LLM_PROVIDER = "anthropic";
-    assert.equal(resolveActiveModel(), "claude-fable-5");
+    assert.equal(resolveActiveModel(), "claude-fable-5-1");
   });
 
   test("LLM_MODEL is a deliberate primary override, including Sakana", () => {
@@ -84,8 +84,8 @@ describe("LLM routing chain", { concurrency: false }, () => {
     assert.equal(resolveActiveModel(), "fugu-ultra-20260615");
     assert.deepEqual(resolveModelChain(), [
       "fugu-ultra-20260615",
-      "claude-opus-4-8",
-      "gpt-5.6-sol",
+      "claude-opus-5",
+      "gpt-6-astra",
     ]);
   });
 

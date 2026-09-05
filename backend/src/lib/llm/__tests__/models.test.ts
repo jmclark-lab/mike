@@ -13,7 +13,7 @@ test("CLAUDE_MAIN_MODELS lists Fable 5.1 first and keeps Fable 5 selectable", ()
     resolveModel("claude-fable-5-1", DEFAULT_MAIN_MODEL),
     "claude-fable-5-1",
   );
-  assert.equal(DEFAULT_MAIN_MODEL, "gemini-3-flash-preview");
+  assert.equal(DEFAULT_MAIN_MODEL, "claude-fable-5-1");
 });
 
 test("CLAUDE_MAIN_MODELS lists Opus 5 above Opus 4.8", () => {
@@ -22,5 +22,5 @@ test("CLAUDE_MAIN_MODELS lists Opus 5 above Opus 4.8", () => {
   assert.ok(opus5 >= 0);
   assert.ok(opus48 > opus5);
   assert.equal(resolveModel("claude-opus-5", DEFAULT_MAIN_MODEL), "claude-opus-5");
-  assert.equal(DEFAULT_MAIN_MODEL, "gemini-3-flash-preview");
+  assert.equal(DEFAULT_MAIN_MODEL, "claude-fable-5-1");
 });
