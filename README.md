@@ -149,4 +149,7 @@ Open `http://localhost:3000`.
 npm run build --prefix backend
 npm run build --prefix frontend
 npm run lint --prefix frontend
+npm run eval:golden -- --dry-run
 ```
+
+`eval:golden` is opt-in. `--dry-run` validates the LATAM legal/regulatory fixtures and writes a plan; live/council modes call paid APIs and are not part of default `npm test`. See `evals/golden/README.md`.
