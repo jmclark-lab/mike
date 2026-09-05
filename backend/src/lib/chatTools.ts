@@ -518,7 +518,7 @@ export const COUNCIL_TOOLS = [
     function: {
       name: "convene_council",
       description:
-        "Convene a mandatory 4/4 model COUNCIL — Fable 5, Fugu Ultra, GPT-6 Astra (xhigh reasoning), and the configured Gemini Pro seat each answer the SAME matter independently (four different providers). Opus 4.8, which is not a member, reconciles only after all four opinions are received. Failed members are retried without model substitution; an incomplete quorum fails explicitly and never produces a degraded council opinion. Use for HIGH-STAKES legal/regulatory questions where independent opinions materially reduce risk. IMPORTANT: gather the facts FIRST and pass them in `context` so every member reasons over identical evidence.",
+        "Convene a mandatory 4/4 model COUNCIL — Fable 5.1, Fugu Ultra, GPT-6 Astra (xhigh reasoning), and the configured Gemini Pro seat each answer the SAME matter independently (four different providers). Opus 4.8, which is not a member, reconciles only after all four opinions are received. Failed members are retried without model substitution; an incomplete quorum fails explicitly and never produces a degraded council opinion. Use for HIGH-STAKES legal/regulatory questions where independent opinions materially reduce risk. IMPORTANT: gather the facts FIRST and pass them in `context` so every member reasons over identical evidence.",
       parameters: {
         type: "object",
         properties: {

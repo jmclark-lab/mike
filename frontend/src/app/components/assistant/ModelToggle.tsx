@@ -20,6 +20,7 @@ export interface ModelOption {
 }
 
 export const MODELS: ModelOption[] = [
+    { id: "claude-fable-5-1", label: "Claude Fable 5.1", group: "Anthropic" },
     { id: "claude-fable-5", label: "Claude Fable 5", group: "Anthropic" },
     { id: "claude-opus-4-8", label: "Claude Opus 4.8", group: "Anthropic" },
     { id: "claude-opus-4-7", label: "Claude Opus 4.7", group: "Anthropic" },

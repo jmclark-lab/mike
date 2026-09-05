@@ -5,6 +5,7 @@ import type { Provider } from "./types";
 // ---------------------------------------------------------------------------
 // Main-chat tier (top-end) — user picks one of these per message.
 export const CLAUDE_MAIN_MODELS = [
+    "claude-fable-5-1",
     "claude-fable-5",
     "claude-opus-4-8",
     "claude-opus-4-7",

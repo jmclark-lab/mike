@@ -21,8 +21,8 @@ export interface CouncilSeat {
 const DEFAULT_COUNCIL_SEATS: readonly CouncilSeat[] = [
   {
     provider: "anthropic",
-    model: "claude-fable-5",
-    label: "Fable 5",
+    model: "claude-fable-5-1",
+    label: "Fable 5.1",
     maxTokens: 8000,
   },
   {
