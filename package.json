@@ -1,0 +1,9 @@
+{
+  "name": "mike",
+  "private": true,
+  "description": "Mike legal document assistant",
+  "scripts": {
+    "eval:golden": "npm run eval:golden --prefix backend --",
+    "test": "npm test --prefix backend"
+  }
+}

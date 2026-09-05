@@ -17,3 +17,8 @@ next-env.d.ts
 .DS_Store
 .vercel
 coverage
+
+# Golden eval live/council reports (keep the sample dry-run)
+evals/golden/reports/*
+!evals/golden/reports/.gitkeep
+!evals/golden/reports/sample-dry-run.md
