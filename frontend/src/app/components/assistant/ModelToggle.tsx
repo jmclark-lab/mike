@@ -27,6 +27,8 @@ export const MODELS: ModelOption[] = [
     { id: "gemini-3.5-flash", label: "Gemini 3.5 Flash", group: "Google" },
     { id: "gemini-3.1-pro-preview", label: "Gemini 3.1 Pro", group: "Google" },
     { id: "gemini-3-flash-preview", label: "Gemini 3 Flash", group: "Google" },
+    { id: "gpt-6-astra", label: "GPT-6 Astra", group: "OpenAI" },
+    { id: "gpt-5.6-sol", label: "GPT-5.6 Sol", group: "OpenAI" },
     { id: "gpt-5.5", label: "GPT-5.5", group: "OpenAI" },
     { id: "gpt-5.4", label: "GPT-5.4", group: "OpenAI" },
 ];
