@@ -77,6 +77,7 @@ describe("xAI Grok selectable-only wiring", { concurrency: false }, () => {
       false,
     );
     assert.equal(COUNCIL_MEMBERS.includes("gpt-6-astra"), true);
+    assert.equal(COUNCIL_MEMBERS.includes("claude-fable-5-1"), true);
     assert.equal(COUNCIL_MEMBERS.length, 4);
   });
 

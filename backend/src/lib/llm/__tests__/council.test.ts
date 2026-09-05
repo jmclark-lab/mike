@@ -13,6 +13,18 @@ const noDelay = {
   sleepFn: async () => undefined,
 };
 
+test("default Anthropic council seat is Fable 5.1", () => {
+  const seats = resolveCouncilSeats({});
+  assert.equal(seats[0].model, "claude-fable-5-1");
+  assert.equal(seats[0].label, "Fable 5.1");
+  assert.deepEqual(COUNCIL_MEMBERS, [
+    "claude-fable-5-1",
+    "fugu-ultra-20260615",
+    "gpt-6-astra",
+    "gemini-3.1-pro-preview",
+  ]);
+});
+
 test("the council invokes all four declared members before the judge", async () => {
   const invoked: string[] = [];
   const result = await conveneCouncilWithCompleter(
