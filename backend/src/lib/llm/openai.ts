@@ -436,9 +436,10 @@ export async function completeOpenAIText(params: {
       maxTokens: params.maxTokens ?? 512,
       previousResponseId,
       reasoningEffort: params.reasoningEffort,
-      reasoningContext: params.model.startsWith("gpt-5.6")
-        ? "all_turns"
-        : undefined,
+      reasoningContext:
+        params.model.startsWith("gpt-5.6") || params.model === "gpt-6-astra"
+          ? "all_turns"
+          : undefined,
       apiKey: key,
       // Council opinions can take longer than Railway's roughly five-minute
       // outbound time-to-first-byte ceiling. Streaming gets response headers and

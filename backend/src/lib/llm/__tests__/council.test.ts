@@ -85,7 +85,7 @@ test("an incomplete quorum throws and never invokes the judge", async () => {
       assert.ok(error instanceof CouncilQuorumError);
       assert.equal(error.respondedCount, 3);
       assert.equal(error.requiredCount, 4);
-      assert.match(error.message, /GPT-5\.6 Sol Ultra/);
+      assert.match(error.message, /GPT-6 Astra/);
       return true;
     },
   );
@@ -132,11 +132,11 @@ test("the judge is retried after, and only after, complete quorum", async () => 
   assert.match(result.finalAnswer, /Recovered judge answer/);
 });
 
-test("council seats are configurable and Sol Ultra always uses xhigh reasoning", async () => {
+test("council seats are configurable and the OpenAI seat always uses xhigh reasoning", async () => {
   const seats = resolveCouncilSeats({
     COUNCIL_ANTHROPIC_MODEL: "claude-required",
     COUNCIL_SAKANA_MODEL: "fugu-required",
-    COUNCIL_OPENAI_MODEL: "gpt-5.6-sol",
+    COUNCIL_OPENAI_MODEL: "gpt-6-astra",
     COUNCIL_OPENAI_MAX_TOKENS: "32000",
     COUNCIL_GEMINI_MODEL: "gemini-3.5-pro",
     COUNCIL_GEMINI_LABEL: "Gemini 3.5 Pro",
@@ -144,9 +144,9 @@ test("council seats are configurable and Sol Ultra always uses xhigh reasoning",
 
   assert.deepEqual(
     seats.map((seat) => seat.model),
-    ["claude-required", "fugu-required", "gpt-5.6-sol", "gemini-3.5-pro"],
+    ["claude-required", "fugu-required", "gpt-6-astra", "gemini-3.5-pro"],
   );
-  assert.equal(seats[2].label, "GPT-5.6 Sol Ultra");
+  assert.equal(seats[2].label, "GPT-6 Astra");
   assert.equal(seats[2].reasoningEffort, "xhigh");
   assert.equal(seats[0].maxTokens, 8000);
   assert.equal(seats[1].maxTokens, 6000);
@@ -155,12 +155,12 @@ test("council seats are configurable and Sol Ultra always uses xhigh reasoning",
   assert.equal(seats[3].label, "Gemini 3.5 Pro");
 });
 
-test("the OpenAI council call receives the Sol Ultra reasoning and token budget", async () => {
+test("the OpenAI council call receives the Astra reasoning and token budget", async () => {
   let observed: { reasoningEffort?: string; maxTokens?: number } | undefined;
   await conveneCouncilWithCompleter(
     { question: "Review this matter." },
     async ({ model, reasoningEffort, maxTokens }) => {
-      if (model === "gpt-5.6-sol") observed = { reasoningEffort, maxTokens };
+      if (model === "gpt-6-astra") observed = { reasoningEffort, maxTokens };
       return model === COUNCIL_JUDGE ? "Judge answer" : `Answer from ${model}`;
     },
     noDelay,
