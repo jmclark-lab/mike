@@ -2,7 +2,7 @@
 // Callers always speak OpenAI-style tools + { role, content } messages; each
 // provider translates internally.
 
-export type Provider = "claude" | "gemini" | "openai" | "sakana" | "xai";
+export type Provider = "claude" | "gemini" | "openai" | "sakana" | "xai" | "deepseek";
 
 export type OpenAIToolSchema = {
     type: "function";
@@ -44,6 +44,7 @@ export type UserApiKeys = {
     courtlistener?: string | null;
     sakana?: string | null;
     xai?: string | null;
+    deepseek?: string | null;
 };
 
 export type ReasoningEffort =

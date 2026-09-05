@@ -16,7 +16,7 @@ import type { ApiKeyState } from "@/app/lib/mikeApi";
 export interface ModelOption {
     id: string;
     label: string;
-    group: "Anthropic" | "Google" | "OpenAI" | "xAI";
+    group: "Anthropic" | "Google" | "OpenAI" | "xAI" | "DeepSeek";
 }
 
 export const MODELS: ModelOption[] = [
@@ -34,6 +34,8 @@ export const MODELS: ModelOption[] = [
     { id: "gpt-5.5", label: "GPT-5.5", group: "OpenAI" },
     { id: "gpt-5.4", label: "GPT-5.4", group: "OpenAI" },
     { id: "grok-4.6", label: "Grok 4.6", group: "xAI" },
+    { id: "deepseek-v4-flash", label: "DeepSeek V4 Flash", group: "DeepSeek" },
+    { id: "deepseek-v4-pro", label: "DeepSeek V4 Pro", group: "DeepSeek" },
 ];
 
 export const SETTINGS_MODELS: ModelOption[] = [
@@ -56,6 +58,7 @@ const GROUP_ORDER: ModelOption["group"][] = [
     "Google",
     "OpenAI",
     "xAI",
+    "DeepSeek",
 ];
 
 interface Props {

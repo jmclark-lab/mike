@@ -150,6 +150,7 @@ function ModelPreferenceDropdown({
         "Google",
         "OpenAI",
         "xAI",
+        "DeepSeek",
     ];
 
     return (

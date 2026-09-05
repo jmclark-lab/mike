@@ -28,6 +28,11 @@ export const FUGU_MAIN_MODELS = [
     "fugu-20260615",
 ] as const;
 export const GROK_MAIN_MODELS = ["grok-4.6"] as const;
+// Official OpenAI-compat ids as of 2026-09-05 (V4 Flash + V4 Pro).
+export const DEEPSEEK_MAIN_MODELS = [
+    "deepseek-v4-flash",
+    "deepseek-v4-pro",
+] as const;
 
 // Default Sakana Fugu model.
 export const DEFAULT_SAKANA_MODEL = "fugu-ultra-20260615";
@@ -53,6 +58,7 @@ const ALL_MODELS = new Set<string>([
     ...OPENAI_MAIN_MODELS,
     ...FUGU_MAIN_MODELS,
     ...GROK_MAIN_MODELS,
+    ...DEEPSEEK_MAIN_MODELS,
     ...CLAUDE_MID_MODELS,
     ...GEMINI_MID_MODELS,
     ...OPENAI_MID_MODELS,
@@ -71,6 +77,7 @@ export function providerForModel(model: string): Provider {
     if (model.startsWith("gpt-")) return "openai";
     if (model.startsWith("fugu-")) return "sakana";
     if (model.startsWith("grok-")) return "xai";
+    if (model.startsWith("deepseek-")) return "deepseek";
     throw new Error(`Unknown model id: ${model}`);
 }
 
