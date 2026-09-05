@@ -518,7 +518,7 @@ export const COUNCIL_TOOLS = [
     function: {
       name: "convene_council",
       description:
-        "Convene a mandatory 4/4 model COUNCIL — Fable 5.1, Fugu Ultra, GPT-6 Astra (xhigh reasoning), and the configured Gemini Pro seat each answer the SAME matter independently (four different providers). Opus 4.8, which is not a member, reconciles only after all four opinions are received. Failed members are retried without model substitution; an incomplete quorum fails explicitly and never produces a degraded council opinion. Use for HIGH-STAKES legal/regulatory questions where independent opinions materially reduce risk. IMPORTANT: gather the facts FIRST and pass them in `context` so every member reasons over identical evidence.",
+        "Convene a mandatory 5/5 model COUNCIL — Fable 5.1, Fugu Ultra, GPT-6 Astra (xhigh reasoning), the configured Gemini Pro seat, and Grok 4.6 each answer the SAME matter independently (five different providers). Opus 4.8, which is not a member, reconciles only after all five opinions are received. Failed members are retried without model substitution; an incomplete quorum fails explicitly and never produces a degraded council opinion. Use for HIGH-STAKES legal/regulatory questions where independent opinions materially reduce risk. IMPORTANT: gather the facts FIRST and pass them in `context` so every member reasons over identical evidence.",
       parameters: {
         type: "object",
         properties: {
@@ -2984,7 +2984,7 @@ export async function runToolCalls(
               (context ? context + "\n\n" : "") +
               `== DOCUMENT (${docStore.get(docId)?.filename ?? rawDocId}) ==\n${docText}`;
           }
-          write(`: convening mandatory 4/4 model council…\n\n`);
+          write(`: convening mandatory 5/5 model council…\n\n`);
           const res = await conveneCouncil({
             question,
             context,
@@ -2998,7 +2998,7 @@ export async function runToolCalls(
       } catch (err) {
         content =
           `Council deliberation failed and no council opinion was produced — ${(err as Error).message}. ` +
-          "All four named member opinions are mandatory; retry the council after the unavailable provider/model recovers.";
+          "All five named member opinions are mandatory; retry the council after the unavailable provider/model recovers.";
       }
       toolResults.push({ role: "tool", tool_call_id: tc.id, content });
       continue;

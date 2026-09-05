@@ -13,19 +13,26 @@ const noDelay = {
   sleepFn: async () => undefined,
 };
 
-test("default Anthropic council seat is Fable 5.1", () => {
+test("default council seats are five providers including Fable 5.1 and Grok 4.6", () => {
   const seats = resolveCouncilSeats({});
+  assert.equal(seats.length, 5);
   assert.equal(seats[0].model, "claude-fable-5-1");
   assert.equal(seats[0].label, "Fable 5.1");
+  assert.equal(seats[4].provider, "xai");
+  assert.equal(seats[4].model, "grok-4.6");
+  assert.equal(seats[4].label, "Grok 4.6");
+  assert.equal(seats[4].maxTokens, 8000);
+  assert.equal(COUNCIL_MEMBERS.length, 5);
   assert.deepEqual(COUNCIL_MEMBERS, [
     "claude-fable-5-1",
     "fugu-ultra-20260615",
     "gpt-6-astra",
     "gemini-3.1-pro-preview",
+    "grok-4.6",
   ]);
 });
 
-test("the council invokes all four declared members before the judge", async () => {
+test("the council invokes all five declared members before the judge", async () => {
   const invoked: string[] = [];
   const result = await conveneCouncilWithCompleter(
     {
@@ -47,8 +54,8 @@ test("the council invokes all four declared members before the judge", async () 
   );
   assert.equal(invoked.at(-1), COUNCIL_JUDGE);
   assert.equal(invoked.length, COUNCIL_MEMBERS.length + 1);
-  assert.equal(result.respondedCount, 4);
-  assert.match(result.finalAnswer, /mandatory 4\/4 opinions received/);
+  assert.equal(result.respondedCount, 5);
+  assert.match(result.finalAnswer, /mandatory 5\/5 opinions received/);
   assert.match(result.finalAnswer, /Reconciled answer/);
 });
 
@@ -72,7 +79,7 @@ test("a transient member failure is retried using the same model", async () => {
     result.members.find((member) => member.model === transient)?.attempts,
     3,
   );
-  assert.equal(result.respondedCount, 4);
+  assert.equal(result.respondedCount, 5);
   assert.equal(attempts.get(COUNCIL_JUDGE), 1);
 });
 
@@ -95,8 +102,8 @@ test("an incomplete quorum throws and never invokes the judge", async () => {
       ),
     (error: unknown) => {
       assert.ok(error instanceof CouncilQuorumError);
-      assert.equal(error.respondedCount, 3);
-      assert.equal(error.requiredCount, 4);
+      assert.equal(error.respondedCount, 4);
+      assert.equal(error.requiredCount, 5);
       assert.match(error.message, /GPT-6 Astra/);
       return true;
     },
@@ -152,11 +159,19 @@ test("council seats are configurable and the OpenAI seat always uses xhigh reaso
     COUNCIL_OPENAI_MAX_TOKENS: "32000",
     COUNCIL_GEMINI_MODEL: "gemini-3.5-pro",
     COUNCIL_GEMINI_LABEL: "Gemini 3.5 Pro",
+    COUNCIL_XAI_MODEL: "grok-required",
+    COUNCIL_XAI_MAX_TOKENS: "12000",
   });
 
   assert.deepEqual(
     seats.map((seat) => seat.model),
-    ["claude-required", "fugu-required", "gpt-6-astra", "gemini-3.5-pro"],
+    [
+      "claude-required",
+      "fugu-required",
+      "gpt-6-astra",
+      "gemini-3.5-pro",
+      "grok-required",
+    ],
   );
   assert.equal(seats[2].label, "GPT-6 Astra");
   assert.equal(seats[2].reasoningEffort, "xhigh");
@@ -165,6 +180,23 @@ test("council seats are configurable and the OpenAI seat always uses xhigh reaso
   assert.equal(seats[2].maxTokens, 32000);
   assert.equal(seats[3].maxTokens, 6000);
   assert.equal(seats[3].label, "Gemini 3.5 Pro");
+  assert.equal(seats[4].provider, "xai");
+  assert.equal(seats[4].label, "Grok 4.6");
+  assert.equal(seats[4].maxTokens, 12000);
+});
+
+test("the xAI council call receives the Grok 4.6 token budget", async () => {
+  let observed: { maxTokens?: number } | undefined;
+  await conveneCouncilWithCompleter(
+    { question: "Review this matter." },
+    async ({ model, maxTokens }) => {
+      if (model === "grok-4.6") observed = { maxTokens };
+      return model === COUNCIL_JUDGE ? "Judge answer" : `Answer from ${model}`;
+    },
+    noDelay,
+  );
+
+  assert.deepEqual(observed, { maxTokens: 8000 });
 });
 
 test("the OpenAI council call receives the Astra reasoning and token budget", async () => {
@@ -179,6 +211,29 @@ test("the OpenAI council call receives the Astra reasoning and token budget", as
   );
 
   assert.deepEqual(observed, { reasoningEffort: "xhigh", maxTokens: 16384 });
+});
+
+test("a four-seat configuration is rejected before any provider call", async () => {
+  let calls = 0;
+  const fourSeats = resolveCouncilSeats({}).slice(0, 4);
+
+  await assert.rejects(
+    () =>
+      conveneCouncilWithCompleter(
+        { question: "Review this matter." },
+        async () => {
+          calls += 1;
+          return "answer";
+        },
+        { ...noDelay, seats: fourSeats },
+      ),
+    /exactly 5 seats are required, got 4/,
+  );
+  assert.equal(calls, 0);
+});
+
+test("the council judge remains Opus 4.8", () => {
+  assert.equal(COUNCIL_JUDGE, "claude-opus-4-8");
 });
 
 test("duplicate model configuration is rejected before any provider call", async () => {
