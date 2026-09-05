@@ -259,7 +259,8 @@ export type ApiKeyProvider =
     | "gemini"
     | "openai"
     | "openrouter"
-    | "courtlistener";
+    | "courtlistener"
+    | "xai";
 export type ApiKeySource = "user" | "env" | null;
 export type ApiKeyState = Record<
     ApiKeyProvider,

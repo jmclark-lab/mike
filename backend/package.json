@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
-    "test": "node --import tsx --test src/lib/__tests__/*.test.ts src/lib/llm/__tests__/council.test.ts src/lib/llm/__tests__/routing.test.ts",
+    "test": "node --import tsx --test src/lib/__tests__/*.test.ts src/lib/llm/__tests__/council.test.ts src/lib/llm/__tests__/routing.test.ts src/lib/llm/__tests__/xai.test.ts",
     "start": "node dist/index.js"
   },
   "dependencies": {

@@ -63,6 +63,7 @@ const API_KEY_PROVIDERS: ApiKeyProvider[] = [
     "openai",
     "openrouter",
     "courtlistener",
+    "xai",
 ];
 
 function emptyApiKeys(): ApiKeyState {
@@ -72,6 +73,7 @@ function emptyApiKeys(): ApiKeyState {
         openai: { configured: false, source: null },
         openrouter: { configured: false, source: null },
         courtlistener: { configured: false, source: null },
+        xai: { configured: false, source: null },
     };
 }
 

@@ -25,6 +25,7 @@ export const FUGU_MAIN_MODELS = [
     "fugu-ultra-20260615",
     "fugu-20260615",
 ] as const;
+export const GROK_MAIN_MODELS = ["grok-4.6"] as const;
 
 // Default Sakana Fugu model.
 export const DEFAULT_SAKANA_MODEL = "fugu-ultra-20260615";
@@ -49,6 +50,7 @@ const ALL_MODELS = new Set<string>([
     ...GEMINI_MAIN_MODELS,
     ...OPENAI_MAIN_MODELS,
     ...FUGU_MAIN_MODELS,
+    ...GROK_MAIN_MODELS,
     ...CLAUDE_MID_MODELS,
     ...GEMINI_MID_MODELS,
     ...OPENAI_MID_MODELS,
@@ -66,6 +68,7 @@ export function providerForModel(model: string): Provider {
     if (model.startsWith("gemini")) return "gemini";
     if (model.startsWith("gpt-")) return "openai";
     if (model.startsWith("fugu-")) return "sakana";
+    if (model.startsWith("grok-")) return "xai";
     throw new Error(`Unknown model id: ${model}`);
 }
 
