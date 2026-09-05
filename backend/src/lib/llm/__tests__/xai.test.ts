@@ -71,14 +71,12 @@ describe("xAI Grok selectable-only wiring", { concurrency: false }, () => {
     ]);
   });
 
-  test("Grok is not a legal-council seat (Astra OpenAI slot stays)", () => {
-    assert.equal(
-      COUNCIL_MEMBERS.some((id) => id.startsWith("grok-")),
-      false,
-    );
+  test("Grok is the fifth legal-council seat (Astra OpenAI slot stays)", () => {
+    assert.equal(COUNCIL_MEMBERS.includes("grok-4.6"), true);
     assert.equal(COUNCIL_MEMBERS.includes("gpt-6-astra"), true);
     assert.equal(COUNCIL_MEMBERS.includes("claude-fable-5-1"), true);
-    assert.equal(COUNCIL_MEMBERS.length, 4);
+    assert.equal(COUNCIL_MEMBERS.length, 5);
+    assert.equal(COUNCIL_MEMBERS.at(-1), "grok-4.6");
   });
 
   test("xAI client uses https://api.x.ai/v1 and XAI_API_KEY", () => {
