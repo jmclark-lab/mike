@@ -8,7 +8,8 @@ export type ApiKeyProvider =
     | "gemini"
     | "openai"
     | "openrouter"
-    | "courtlistener";
+    | "courtlistener"
+    | "xai";
 export type ApiKeySource = "user" | "env" | null;
 export type ApiKeyStatus = Record<ApiKeyProvider, boolean> & {
     sources: Record<ApiKeyProvider, ApiKeySource>;
@@ -21,13 +22,14 @@ type EncryptedKeyRow = {
     auth_tag: string;
 };
 
-const PROVIDERS: ApiKeyProvider[] = [
+const USER_STORED_PROVIDERS: ApiKeyProvider[] = [
     "claude",
     "gemini",
     "openai",
     "openrouter",
     "courtlistener",
 ];
+const STATUS_PROVIDERS: ApiKeyProvider[] = [...USER_STORED_PROVIDERS, "xai"];
 
 function envApiKey(provider: ApiKeyProvider): string | null {
     switch (provider) {
@@ -45,6 +47,8 @@ function envApiKey(provider: ApiKeyProvider): string | null {
             return process.env.OPENROUTER_API_KEY?.trim() || null;
         case "courtlistener":
             return process.env.COURTLISTENER_API_TOKEN?.trim() || null;
+        case "xai":
+            return process.env.XAI_API_KEY?.trim() || null;
         default:
             return null;
     }
@@ -99,7 +103,7 @@ function decrypt(row: EncryptedKeyRow): string | null {
 }
 
 function isProvider(value: string): value is ApiKeyProvider {
-    return (PROVIDERS as string[]).includes(value);
+    return (USER_STORED_PROVIDERS as string[]).includes(value);
 }
 
 export function normalizeApiKeyProvider(value: string): ApiKeyProvider | null {
@@ -116,16 +120,18 @@ export async function getUserApiKeyStatus(
         openai: false,
         openrouter: false,
         courtlistener: false,
+        xai: false,
         sources: {
             claude: null,
             gemini: null,
             openai: null,
             openrouter: null,
             courtlistener: null,
+            xai: null,
         },
     };
 
-    for (const provider of PROVIDERS) {
+    for (const provider of STATUS_PROVIDERS) {
         if (hasEnvApiKey(provider)) {
             status[provider] = true;
             status.sources[provider] = "env";
@@ -159,6 +165,7 @@ export async function getUserApiKeys(
         openai: envApiKey("openai"),
         openrouter: envApiKey("openrouter"),
         courtlistener: envApiKey("courtlistener"),
+        xai: envApiKey("xai"),
     };
 
     const { data, error } = await db

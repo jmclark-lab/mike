@@ -2,6 +2,7 @@ import { streamSakana, completeSakanaText } from "./sakana";
 import { streamClaude, completeClaudeText } from "./claude";
 import { completeGeminiText } from "./gemini";
 import { completeOpenAIText } from "./openai";
+import { completeXaiText, streamXai } from "./xai";
 import { providerForModel } from "./models";
 import type {
     ProviderMetadata,
@@ -254,6 +255,7 @@ async function invokeStream(
 ): Promise<StreamChatResult> {
     const provider = providerForModel(model);
     if (provider === "claude") return streamClaude({ ...params, model });
+    if (provider === "xai") return streamXai({ ...params, model });
     return streamSakana({ ...params, model });
 }
 
@@ -271,6 +273,7 @@ async function invokeComplete(
     if (provider === "claude") return completeClaudeText({ ...params, model });
     if (provider === "gemini") return completeGeminiText({ ...params, model });
     if (provider === "openai") return completeOpenAIText({ ...params, model });
+    if (provider === "xai") return completeXaiText({ ...params, model });
     return completeSakanaText({ ...params, model });
 }
 

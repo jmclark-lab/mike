@@ -9,8 +9,33 @@ import type {
 import type { ReasoningEffort } from "./types";
 import { createRawLlmStreamRecorder, logRawLlmStream } from "./rawStreamLog";
 
-const OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses";
+const OPENAI_BASE_URL = "https://api.openai.com/v1";
 const MAX_OUTPUT_TOKENS = 16384;
+
+export type OpenAICompatibleProvider = "openai" | "xai";
+
+export type OpenAICompatibleClient = {
+  provider: OpenAICompatibleProvider;
+  baseUrl: string;
+  apiKey: string;
+};
+
+export function openAICompatibleResponsesUrl(baseUrl: string): string {
+  return `${baseUrl.replace(/\/$/, "")}/responses`;
+}
+
+function providerDisplayName(provider: OpenAICompatibleProvider): string {
+  return provider === "xai" ? "xAI" : "OpenAI";
+}
+
+function defaultOpenAIClient(override?: string | null): OpenAICompatibleClient {
+  return {
+    provider: "openai",
+    baseUrl: OPENAI_BASE_URL,
+    apiKey: apiKey(override),
+  };
+}
+
 const COURTLISTENER_CITATION_REMINDER_TOOL_NAMES = new Set([
   "courtlistener_find_in_case",
   "courtlistener_read_case",
@@ -144,7 +169,10 @@ function parseFunctionCall(item: ResponseFunctionCallItem): NormalizedToolCall {
   };
 }
 
-function openAIStreamFailureMessage(event: ResponseStreamEvent): string | null {
+function openAIStreamFailureMessage(
+  event: ResponseStreamEvent,
+  provider: OpenAICompatibleProvider = "openai",
+): string | null {
   const error = event.response?.error ?? event.error ?? null;
   const failed =
     event.type === "response.failed" ||
@@ -152,15 +180,16 @@ function openAIStreamFailureMessage(event: ResponseStreamEvent): string | null {
     !!error;
   if (!failed) return null;
 
+  const label = providerDisplayName(provider);
   const message =
     typeof error?.message === "string" && error.message.trim()
       ? error.message.trim()
-      : "OpenAI response failed.";
+      : `${label} response failed.`;
   const code =
     typeof error?.code === "string" && error.code.trim()
       ? error.code.trim()
       : null;
-  return code ? `OpenAI error (${code}): ${message}` : message;
+  return code ? `${label} error (${code}): ${message}` : message;
 }
 
 function responseOutputText(output?: ResponseOutputItem[]): string {
@@ -203,13 +232,13 @@ async function createResponse(params: {
   reasoningSummary?: boolean;
   reasoningEffort?: ReasoningEffort;
   reasoningContext?: "auto" | "current_turn" | "all_turns";
-  apiKey: string;
+  client: OpenAICompatibleClient;
   signal?: AbortSignal;
 }): Promise<Response> {
-  const response = await fetch(OPENAI_RESPONSES_URL, {
+  const response = await fetch(openAICompatibleResponsesUrl(params.client.baseUrl), {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${params.apiKey}`,
+      Authorization: `Bearer ${params.client.apiKey}`,
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
@@ -241,7 +270,7 @@ async function createResponse(params: {
   if (!response.ok) {
     const text = await response.text().catch(() => "");
     const err = new Error(
-      `OpenAI request failed (${response.status}): ${text || response.statusText}`,
+      `${providerDisplayName(params.client.provider)} request failed (${response.status}): ${text || response.statusText}`,
     );
     (err as { status?: number }).status = response.status;
     throw err;
@@ -252,6 +281,7 @@ async function createResponse(params: {
 
 export async function streamOpenAI(
   params: StreamChatParams,
+  client?: OpenAICompatibleClient,
 ): Promise<StreamChatResult> {
   const {
     model,
@@ -263,14 +293,15 @@ export async function streamOpenAI(
     enableThinking,
   } = params;
   const maxIter = params.maxIterations ?? 10;
-  const key = apiKey(apiKeys?.openai);
+  const resolvedClient = client ?? defaultOpenAIClient(apiKeys?.openai);
+  const provider = resolvedClient.provider;
   const responseTools = toResponseTools(tools);
   let input = toResponseInput(params.messages);
   let previousResponseId: string | undefined;
   let fullText = "";
   let needsCourtlistenerCitationReminder = false;
   const rawStreamRecorder = createRawLlmStreamRecorder({
-    provider: "openai",
+    provider,
     model,
   });
 
@@ -288,10 +319,10 @@ export async function streamOpenAI(
         stream: true,
         previousResponseId,
         reasoningSummary: !!enableThinking,
-        apiKey: key,
+        client: resolvedClient,
         signal: params.abortSignal,
       });
-      if (!response.body) throw new Error("OpenAI response had no body");
+      if (!response.body) throw new Error(`${providerDisplayName(provider)} response had no body`);
 
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
@@ -307,7 +338,7 @@ export async function streamOpenAI(
 
         const decoded = decoder.decode(value, { stream: true });
         logRawLlmStream({
-          provider: "openai",
+          provider,
           model,
           iteration: iter,
           label: "sse_chunk",
@@ -324,7 +355,7 @@ export async function streamOpenAI(
 
         for (const event of extracted.events as ResponseStreamEvent[]) {
           logRawLlmStream({
-            provider: "openai",
+            provider,
             model,
             iteration: iter,
             label: "sse_event",
@@ -336,7 +367,7 @@ export async function streamOpenAI(
             payload: event,
           });
 
-          const failureMessage = openAIStreamFailureMessage(event);
+          const failureMessage = openAIStreamFailureMessage(event, provider);
           if (failureMessage) {
             throw new Error(failureMessage);
           }
@@ -411,15 +442,19 @@ export async function streamOpenAI(
   }
 }
 
-export async function completeOpenAIText(params: {
-  model: string;
-  systemPrompt?: string;
-  user: string;
-  maxTokens?: number;
-  apiKeys?: { openai?: string | null };
-  reasoningEffort?: ReasoningEffort;
-}): Promise<string> {
-  const key = apiKey(params.apiKeys?.openai);
+export async function completeOpenAIText(
+  params: {
+    model: string;
+    systemPrompt?: string;
+    user: string;
+    maxTokens?: number;
+    apiKeys?: { openai?: string | null; xai?: string | null };
+    reasoningEffort?: ReasoningEffort;
+  },
+  client?: OpenAICompatibleClient,
+): Promise<string> {
+  const resolvedClient = client ?? defaultOpenAIClient(params.apiKeys?.openai);
+  const label = providerDisplayName(resolvedClient.provider);
   let previousResponseId: string | undefined;
   let input: ResponseInputItem[] = [{ role: "user", content: params.user }];
   let fullText = "";
@@ -440,14 +475,14 @@ export async function completeOpenAIText(params: {
         params.model.startsWith("gpt-5.6") || params.model === "gpt-6-astra"
           ? "all_turns"
           : undefined,
-      apiKey: key,
+      client: resolvedClient,
       // Council opinions can take longer than Railway's roughly five-minute
       // outbound time-to-first-byte ceiling. Streaming gets response headers and
       // deltas flowing immediately while this adapter still returns one complete
       // opinion to the strict council caller.
       stream: true,
     });
-    if (!response.body) throw new Error("OpenAI response had no body");
+    if (!response.body) throw new Error(`${label} response had no body`);
 
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
@@ -458,7 +493,7 @@ export async function completeOpenAIText(params: {
     const consume = (events: unknown[]) => {
       for (const raw of events) {
         const event = raw as ResponseStreamEvent;
-        const failure = openAIStreamFailureMessage(event);
+        const failure = openAIStreamFailureMessage(event, resolvedClient.provider);
         if (failure) throw new Error(failure);
         if (event.type === "response.output_text.delta" && event.delta) {
           text += event.delta;
@@ -498,7 +533,7 @@ export async function completeOpenAIText(params: {
     if (terminal.status !== "incomplete") {
       if (!fullText.trim()) {
         throw new Error(
-          `OpenAI response completed without output text (response ${terminal.id || "unknown"}).`,
+          `${label} response completed without output text (response ${terminal.id || "unknown"}).`,
         );
       }
       return fullText;
@@ -521,7 +556,7 @@ export async function completeOpenAIText(params: {
     );
     if (!canContinue) {
       throw new Error(
-        `OpenAI response incomplete (${terminal.incompleteReason || "unknown reason"}, response ${terminal.id || "unknown"}) after ${continuation} continuation(s).`,
+        `${label} response incomplete (${terminal.incompleteReason || "unknown reason"}, response ${terminal.id || "unknown"}) after ${continuation} continuation(s).`,
       );
     }
 
@@ -530,7 +565,7 @@ export async function completeOpenAIText(params: {
   }
 
   throw new Error(
-    "OpenAI strict completion exhausted its continuation budget.",
+    `${label} strict completion exhausted its continuation budget.`,
   );
 }
 
