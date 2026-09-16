@@ -325,14 +325,20 @@ export async function completeClaudeText(params: {
   apiKeys?: { claude?: string | null };
 }): Promise<string> {
   const anthropic = client(params.apiKeys?.claude);
-  let resp: Awaited<ReturnType<typeof anthropic.messages.create>>;
+  const maxTokens = params.maxTokens ?? 512;
+  // Anthropic rejects non-streaming create() when the request may exceed
+  // ~10 minutes (Fable council seat at COUNCIL_ANTHROPIC_MAX_TOKENS=32k).
+  // Stream + finalMessage() is the supported long-request path and keeps
+  // the same text-block extraction / empty diagnostics as before.
+  let resp: Anthropic.Message;
   try {
-    resp = await anthropic.messages.create({
+    const stream = anthropic.messages.stream({
       model: params.model,
-      max_tokens: params.maxTokens ?? 512,
+      max_tokens: maxTokens,
       system: params.systemPrompt,
       messages: [{ role: "user", content: params.user }],
     });
+    resp = await stream.finalMessage();
   } catch (error) {
     throw new Error(claudeErrorMessage(error));
   }
@@ -345,7 +351,7 @@ export async function completeClaudeText(params: {
     throw new Error(
       describeEmptyClaudeText(
         { stop_reason: resp.stop_reason, content },
-        params.maxTokens ?? 512,
+        maxTokens,
       ),
     );
   }
