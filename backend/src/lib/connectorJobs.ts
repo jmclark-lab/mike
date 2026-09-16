@@ -171,7 +171,6 @@ export async function readMikeSseText(
   }
   buffer += decoder.decode();
   if (buffer) consume(buffer);
-  if (streamError) throw new Error(streamError);
 
   const finalized = preferCouncilSynthesis(text);
   const source = classifyAnswerSource(finalized);
@@ -181,7 +180,14 @@ export async function readMikeSseText(
     answer_bytes: utf8ByteLength(finalized),
     answer_snapshot: finalized,
     saw_done: sawDone,
+    stream_error: streamError || null,
   });
+
+  // Abort/error events must not mark a preamble as done. If the judge
+  // synthesis already landed, keep it even if the writer then aborted.
+  if (streamError && !isCouncilSynthesis(finalized)) {
+    throw new Error(streamError);
+  }
 
   if (promptRequestsCouncil(prompt) && !isCouncilSynthesis(finalized)) {
     throw councilSynthesisMissingError();

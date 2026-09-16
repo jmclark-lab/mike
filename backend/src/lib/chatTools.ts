@@ -4624,6 +4624,15 @@ export function isAbortError(error: unknown): boolean {
   );
 }
 
+/** Abort must emit an error event so connector jobs cannot treat a partial
+ *  preamble as a completed SSE answer (no silent close). */
+export function writeStreamAbort(write: (s: string) => void): void {
+  write(
+    `data: ${JSON.stringify({ type: "error", message: "Stream aborted." })}\n\n`,
+  );
+  write("data: [DONE]\n\n");
+}
+
 function throwIfAborted(signal?: AbortSignal) {
   if (!signal?.aborted) return;
   const err = new Error("Stream aborted.");

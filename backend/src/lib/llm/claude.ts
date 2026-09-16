@@ -19,7 +19,37 @@ type NativeMessage = {
   content: string | ContentBlock[];
 };
 
-const MAX_TOKENS = 16384;
+/** Chat-orchestrator output budget. Adaptive thinking counts against this;
+ *  16k was enough for a preamble and then `stop_reason=max_tokens` with no
+ *  `convene_council` tool_use. Aligns with the Fable council seat (PR #24). */
+export const DEFAULT_CLAUDE_CHAT_MAX_TOKENS = 32000;
+
+export function resolveClaudeChatMaxTokens(
+  env: NodeJS.ProcessEnv = process.env,
+): number {
+  const parsed = Number.parseInt(env.CLAUDE_CHAT_MAX_TOKENS ?? "", 10);
+  if (!Number.isFinite(parsed)) return DEFAULT_CLAUDE_CHAT_MAX_TOKENS;
+  return Math.min(64000, Math.max(1000, Math.trunc(parsed)));
+}
+
+/**
+ * A chat tool-loop turn that hits max_tokens with no tool_use used to `break`
+ * and return the intake preamble as a successful answer. Fail that turn.
+ * If tool_use blocks were parsed, still run them (do not drop convene_council).
+ */
+export function claudeChatTurnFailure(
+  stopReason: string | null | undefined,
+  toolCallCount: number,
+  maxTokens: number,
+): string | null {
+  if (stopReason === "max_tokens" && toolCallCount === 0) {
+    return (
+      `Claude chat turn stopped with stop_reason=max_tokens and no tool_use ` +
+      `(max_tokens=${maxTokens}). The intake preamble is not a final answer.`
+    );
+  }
+  return null;
+}
 
 function apiKey(override?: string | null): string {
   const key = override?.trim() || process.env.ANTHROPIC_API_KEY?.trim() || "";
@@ -134,7 +164,7 @@ export async function streamClaude(
         tools: claudeTools.length
           ? (claudeTools as unknown as Tool[])
           : undefined,
-        max_tokens: MAX_TOKENS,
+        max_tokens: resolveClaudeChatMaxTokens(),
         // Claude 4.x models require `thinking.type: "adaptive"` and
         // drive effort via `output_config.effort` rather than a fixed
         // token budget. We only opt in when the caller requested it.
@@ -249,8 +279,15 @@ export async function streamClaude(
           }),
       );
 
-      // Run any parsed tool_use blocks even when stop_reason is max_tokens /
-      // end_turn. Dropping them left the intake preamble as the terminal answer.
+      const turnFailure = claudeChatTurnFailure(
+        stopReason,
+        toolCalls.length,
+        resolveClaudeChatMaxTokens(),
+      );
+      if (turnFailure) throw new Error(turnFailure);
+
+      // Run any parsed tool_use blocks even when stop_reason is not exactly
+      // tool_use (e.g. max_tokens after a partial convene_council JSON).
       if (!toolCalls.length || !runTools) {
         break;
       }

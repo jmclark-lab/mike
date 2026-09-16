@@ -83,6 +83,30 @@ test("SSE reader keeps a council synthesis even if the writer dies before DONE",
   );
 });
 
+test("SSE reader treats an abort error as failure when only a preamble was streamed", async () => {
+  const response = new Response(
+    'data: {"type":"content_delta","text":"I\'ll convene the five-seat Council. I\'m setting quorum at 3."}\n\ndata: {"type":"error","message":"Stream aborted."}\n\ndata: [DONE]\n\n',
+    { status: 200, headers: { "content-type": "text/event-stream" } },
+  );
+  await assert.rejects(
+    readMikeSseText(response, "Convene the five-seat Council. min_quorum 3."),
+    /Stream aborted/,
+  );
+});
+
+test("SSE reader keeps a council synthesis even if the writer then emits an abort error", async () => {
+  const synthesis =
+    "[Council: 3/5 opinions received (Fugu Ultra, GPT-6 Astra, Grok 4.6); failed: Fable 5.1, Gemini 3.1 Pro Preview; reconciled by Opus 5]\n\nHold the send.";
+  const response = new Response(
+    `data: ${JSON.stringify({ type: "content_delta", text: synthesis })}\n\ndata: {"type":"error","message":"Stream aborted."}\n\ndata: [DONE]\n\n`,
+    { status: 200, headers: { "content-type": "text/event-stream" } },
+  );
+  assert.equal(
+    await readMikeSseText(response, "Convene the five-seat Council. min_quorum 3."),
+    synthesis,
+  );
+});
+
 test("SSE reader does not treat a closed stream without DONE as a completed answer", async () => {
   const response = new Response(
     'data: {"type":"content_delta","text":"I\'ll convene the five-seat Council. I\'m setting quorum at 3."}\n\n',
