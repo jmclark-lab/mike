@@ -13,9 +13,9 @@ var CORS = {
   "Access-Control-Max-Age": "86400"
 };
 var DEFAULT_MAX_JOB_AGE_MS = 2 * 60 * 60 * 1e3;
-var PROMPT_CHUNK_CHARS = 1e5;
+var PROMPT_CHUNK_BYTES = 100 * 1024;
 var DO_STORAGE_VALUE_LIMIT_BYTES = 128 * 1024;
-var MCP_MAX_BODY_BYTES = 512 * 1024;
+var MCP_MAX_BODY_BYTES = 2 * 1024 * 1024;
 function json(obj, status) {
   return new Response(JSON.stringify(obj), {
     status: status || 200,
@@ -44,22 +44,24 @@ function payloadTooLargeResponse(limitBytes, receivedBytes, detail) {
   });
 }
 __name(payloadTooLargeResponse, "payloadTooLargeResponse");
-function splitPromptChunks(prompt) {
+function splitPromptByteChunks(prompt) {
   const text = (prompt || "").toString();
+  const bytes = new TextEncoder().encode(text);
   const chunks = [];
-  for (let i = 0; i < text.length; i += PROMPT_CHUNK_CHARS) {
-    chunks.push(text.slice(i, i + PROMPT_CHUNK_CHARS));
+  for (let i = 0; i < bytes.length; i += PROMPT_CHUNK_BYTES) {
+    const end = Math.min(i + PROMPT_CHUNK_BYTES, bytes.length);
+    chunks.push(bytes.slice(i, end).buffer);
   }
-  if (!chunks.length) chunks.push("");
+  if (!chunks.length) chunks.push(new ArrayBuffer(0));
   return chunks;
 }
-__name(splitPromptChunks, "splitPromptChunks");
+__name(splitPromptByteChunks, "splitPromptByteChunks");
 async function writePromptChunks(storage, prompt) {
-  const chunks = splitPromptChunks(prompt);
+  const chunks = splitPromptByteChunks(prompt);
   for (let i = 0; i < chunks.length; i++) {
-    const bytes = utf8ByteLength(chunks[i]);
+    const bytes = chunks[i].byteLength;
     if (bytes > DO_STORAGE_VALUE_LIMIT_BYTES) {
-      const err = new Error("prompt chunk exceeds Durable Object storage value limit");
+      const err = new Error("Prompt too large for Durable Object storage (MCP_PAYLOAD_TOO_LARGE).");
       err.code = "MCP_PAYLOAD_TOO_LARGE";
       err.limit_bytes = DO_STORAGE_VALUE_LIMIT_BYTES;
       err.received_bytes = bytes;
@@ -72,23 +74,79 @@ async function writePromptChunks(storage, prompt) {
   return chunks.length;
 }
 __name(writePromptChunks, "writePromptChunks");
-async function readJobPrompt(storage, job) {
+async function writePromptToR2(env, jobId, prompt) {
+  const key = "mcp-prompts/" + jobId + ".txt";
+  const bytes = new TextEncoder().encode((prompt || "").toString());
+  await env.MIKE_PROMPTS.put(key, bytes);
+  return key;
+}
+__name(writePromptToR2, "writePromptToR2");
+async function persistJobPrompt(storage, env, prompt, jobId) {
+  if (env && env.MIKE_PROMPTS) {
+    const promptR2Key = await writePromptToR2(env, jobId, prompt);
+    return { promptR2Key, promptChunks: 0 };
+  }
+  const promptChunks = await writePromptChunks(storage, prompt);
+  return { promptR2Key: null, promptChunks };
+}
+__name(persistJobPrompt, "persistJobPrompt");
+function decodeStoredPromptPart(part) {
+  if (part == null) return { kind: "string", value: "" };
+  if (typeof part === "string") return { kind: "string", value: part };
+  if (part instanceof ArrayBuffer) return { kind: "bytes", value: new Uint8Array(part) };
+  if (ArrayBuffer.isView(part)) return { kind: "bytes", value: new Uint8Array(part.buffer, part.byteOffset, part.byteLength) };
+  return { kind: "string", value: String(part) };
+}
+__name(decodeStoredPromptPart, "decodeStoredPromptPart");
+async function readJobPrompt(storage, env, job) {
   if (job && typeof job.prompt === "string") return job.prompt;
+  if (job && job.promptR2Key && env && env.MIKE_PROMPTS) {
+    const obj = await env.MIKE_PROMPTS.get(job.promptR2Key);
+    if (!obj) return "";
+    return await obj.text();
+  }
   const n = job && job.promptChunks || 0;
   if (!n) return "";
-  const parts = [];
+  const stringParts = [];
+  const byteParts = [];
+  let sawString = false;
+  let sawBytes = false;
   for (let i = 0; i < n; i++) {
-    const part = await storage.get("prompt:" + i);
-    parts.push(part == null ? "" : String(part));
+    const decoded = decodeStoredPromptPart(await storage.get("prompt:" + i));
+    if (decoded.kind === "bytes") {
+      sawBytes = true;
+      byteParts.push(decoded.value);
+      stringParts.push("");
+    } else {
+      sawString = true;
+      stringParts.push(decoded.value);
+    }
   }
-  return parts.join("");
+  if (sawBytes && !sawString) {
+    let total = 0;
+    for (let i = 0; i < byteParts.length; i++) total += byteParts[i].byteLength;
+    const merged = new Uint8Array(total);
+    let offset = 0;
+    for (let i = 0; i < byteParts.length; i++) {
+      merged.set(byteParts[i], offset);
+      offset += byteParts[i].byteLength;
+    }
+    return new TextDecoder().decode(merged);
+  }
+  return stringParts.join("");
 }
 __name(readJobPrompt, "readJobPrompt");
-async function clearPromptChunks(storage, job) {
+async function clearJobPrompt(storage, env, job) {
+  if (job && job.promptR2Key && env && env.MIKE_PROMPTS) {
+    try {
+      await env.MIKE_PROMPTS.delete(job.promptR2Key);
+    } catch (_e) {
+    }
+  }
   const n = job && job.promptChunks || 0;
   for (let i = 0; i < n; i++) await storage.delete("prompt:" + i);
 }
-__name(clearPromptChunks, "clearPromptChunks");
+__name(clearJobPrompt, "clearJobPrompt");
 function stripPromptFromJob(job, updates) {
   return Object.assign({}, job, updates || {}, { prompt: null });
 }
@@ -234,7 +292,7 @@ var worker_default = {
       return new Response(null, { status: 204, headers: CORS });
     }
     if (request.method === "GET" && (url.pathname === "/" || url.pathname === "/health")) {
-      return new Response("Mike Legal AI — MCP connector v1.8.0.", {
+      return new Response("Mike Legal AI — MCP connector v1.8.1.", {
         headers: { "content-type": "text/plain", ...CORS }
       });
     }
@@ -368,7 +426,7 @@ var worker_default = {
         return ok({
           protocolVersion: pv,
           capabilities: { tools: { listChanged: false } },
-          serverInfo: { name: "mike-legal", version: "1.8.0" },
+          serverInfo: { name: "mike-legal", version: "1.8.1" },
           instructions: "Start legal reviews with ask_mike, then poll get_mike_answer using retry_after_seconds. Fetch every numbered part before synthesizing. Treat Mike's analysis as legal work product requiring human counsel review."
         });
       }
@@ -384,7 +442,7 @@ var worker_default = {
               inputSchema: {
                 type: "object",
                 properties: {
-                  prompt: { type: "string", minLength: 1, maxLength: 500000, description: "The legal question plus any contract or clause text to review." },
+                  prompt: { type: "string", minLength: 1, maxLength: 500000, description: "The legal question plus any contract or clause text to review. Prompts are stored in R2 or chunked Durable Object values (UTF-8 byte chunks under 128 KiB each); large reviews should still prefer ingest for huge attachments." },
                   idempotency_key: { type: "string", minLength: 1, maxLength: 128, description: "Optional stable key. Reusing it for the same authenticated principal returns the existing job instead of starting a duplicate." }
                 },
                 required: ["prompt"]
@@ -483,13 +541,17 @@ var worker_default = {
             if (started.status === 413) {
               const errBody = await started.json().catch(() => ({}));
               const code = errBody && errBody.error_code || "MCP_PAYLOAD_TOO_LARGE";
-              const detail = errBody && errBody.detail ? " " + errBody.detail : "";
+              const limitBytes = errBody && errBody.limit_bytes;
+              const receivedBytes = errBody && errBody.received_bytes;
+              let msg = "Prompt too large for Durable Object storage (MCP_PAYLOAD_TOO_LARGE).";
+              if (limitBytes != null) msg += " limit_bytes=" + limitBytes;
+              if (receivedBytes != null) msg += " received_bytes=" + receivedBytes;
               return ok({
-                content: [{ type: "text", text: "Prompt too large for Durable Object storage (" + code + ")." + detail }],
+                content: [{ type: "text", text: msg }],
                 structuredContent: {
                   error_code: code,
-                  limit_bytes: errBody && errBody.limit_bytes,
-                  received_bytes: errBody && errBody.received_bytes,
+                  limit_bytes: limitBytes,
+                  received_bytes: receivedBytes,
                   detail: errBody && errBody.detail || null
                 },
                 isError: true
@@ -613,23 +675,26 @@ var MikeJob = class {
       }
       const promptText = (body.prompt || "").toString();
       const receivedBytes = utf8ByteLength(promptText);
+      const jobId = (body.jobId || "").toString() || crypto.randomUUID();
       try {
-        if (existing) await clearPromptChunks(this.state.storage, existing);
-        const promptChunks = await writePromptChunks(this.state.storage, promptText);
+        if (existing) await clearJobPrompt(this.state.storage, this.env, existing);
+        const persisted = await persistJobPrompt(this.state.storage, this.env, promptText, jobId);
         await this.state.storage.put("job", {
           status: "working",
           prompt: null,
-          promptChunks,
+          promptChunks: persisted.promptChunks,
+          promptR2Key: persisted.promptR2Key,
           principal: (body.principal || "").toString(),
           idempotencyKey: body.idempotencyKey || null,
-          backendJobId: (body.jobId || "").toString() || null,
+          backendJobId: jobId,
           created: now,
           startedAt: now
         });
       } catch (e) {
         const limitBytes = e && e.limit_bytes || DO_STORAGE_VALUE_LIMIT_BYTES;
         const gotBytes = e && e.received_bytes != null ? e.received_bytes : receivedBytes;
-        return payloadTooLargeResponse(limitBytes, gotBytes, e && e.message || "Failed to persist prompt");
+        const detail = e && e.message || "Failed to persist prompt";
+        return payloadTooLargeResponse(limitBytes, gotBytes, detail);
       }
       await this.state.storage.setAlarm(now + 100);
       return new Response(JSON.stringify({ ok: true }), { headers: { "content-type": "application/json" } });
@@ -643,11 +708,12 @@ var MikeJob = class {
       const maxJobAgeMs = Number(this.env.MAX_JOB_AGE_MS) || DEFAULT_MAX_JOB_AGE_MS;
       const jobAge = Date.now() - (job.startedAt || job.created || Date.now());
       if (job.status === "working" && jobAge >= maxJobAgeMs) {
-        await clearPromptChunks(this.state.storage, job);
+        await clearJobPrompt(this.state.storage, this.env, job);
         job = stripPromptFromJob(job, {
           status: "error",
           error: "Mike Legal exceeded its maximum job age and was stopped. Please start a new request.",
           promptChunks: 0,
+          promptR2Key: null,
           completedAt: (/* @__PURE__ */ new Date()).toISOString(),
           expiresAt: Date.now() + 24 * 60 * 60 * 1e3
         });
@@ -697,7 +763,7 @@ var MikeJob = class {
     const MAX_JOB_AGE_MS = Number(this.env.MAX_JOB_AGE_MS) || DEFAULT_MAX_JOB_AGE_MS;
     const jobAge = Date.now() - (job.startedAt || job.created || Date.now());
     const backendJobId = job.backendJobId || crypto.randomUUID();
-    const promptText = await readJobPrompt(this.state.storage, job);
+    const promptText = await readJobPrompt(this.state.storage, this.env, job);
     const activeJob = stripPromptFromJob(job, {
       attempt,
       backendJobId,
@@ -728,10 +794,11 @@ var MikeJob = class {
       const currentJob = await this.state.storage.get("job");
       if (!currentJob || currentJob.status !== "working") return;
       const expiresAt = Date.now() + 72 * 60 * 60 * 1e3;
-      await clearPromptChunks(this.state.storage, activeJob);
+      await clearJobPrompt(this.state.storage, this.env, activeJob);
       await this.state.storage.put("job", stripPromptFromJob(activeJob, {
         status: "done",
         promptChunks: 0,
+        promptR2Key: null,
         totalParts: chunks.length,
         resultChars: text.length,
         attempt,
@@ -753,23 +820,25 @@ var MikeJob = class {
           await this.state.storage.setAlarm(Date.now() + RETRY_DELAY_MS);
         } else {
           const ageMin = Math.round(jobAge / 6e4);
-          await clearPromptChunks(this.state.storage, activeJob);
+          await clearJobPrompt(this.state.storage, this.env, activeJob);
           await this.state.storage.put("job", stripPromptFromJob(activeJob, {
             status: "error",
             error: "Mike Legal did not complete after " + ageMin + " minutes (" + attempt + " attempts). The service may be unavailable — please try again later.",
             attempt,
             promptChunks: 0,
+            promptR2Key: null,
             expiresAt: Date.now() + 24 * 60 * 60 * 1e3
           }));
           await this.state.storage.setAlarm(Date.now() + 24 * 60 * 60 * 1e3);
         }
       } else {
-        await clearPromptChunks(this.state.storage, activeJob);
+        await clearJobPrompt(this.state.storage, this.env, activeJob);
         await this.state.storage.put("job", stripPromptFromJob(activeJob, {
           status: "error",
           error: msg + (attempt > 1 ? " (after " + attempt + " attempts)" : ""),
           attempt,
           promptChunks: 0,
+          promptR2Key: null,
           expiresAt: Date.now() + 24 * 60 * 60 * 1e3
         }));
         await this.state.storage.setAlarm(Date.now() + 24 * 60 * 60 * 1e3);
