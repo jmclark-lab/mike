@@ -74,10 +74,11 @@ test("tools expose bounded multipart output schemas and accurate annotations", a
   assert.equal(byName.ask_mike.annotations.destructiveHint, false);
   assert.equal(byName.ask_mike.inputSchema.properties.prompt.maxLength, 500000);
   assert.match(byName.ask_mike.inputSchema.properties.prompt.description, /UTF-8 byte chunks under 128 KiB/i);
-  assert.match(source, /version: "1\.8\.1"/);
-  assert.match(source, /MCP connector v1\.8\.1/);
+  assert.match(source, /version: "1\.8\.2"/);
+  assert.match(source, /MCP connector v1\.8\.2/);
   assert.match(source, /PROMPT_CHUNK_BYTES = 100 \* 1024/);
   assert.match(source, /MCP_MAX_BODY_BYTES = 2 \* 1024 \* 1024/);
+  assert.match(source, /refusing to complete with intake preamble/);
   assert.equal(byName.get_mike_answer.outputSchema.properties.total_parts.type, "integer");
 });
 
@@ -213,6 +214,69 @@ test("long jobs are polled by stable backend id without duplicating execution", 
     assert.equal(await jobState.storage.get("result:1"), "mandatory 4/4 opinion");
     assert.equal(calls, 3);
     assert.ok(urls.every((url) => url.endsWith("/connector/jobs/" + first.backendJobId)));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("MikeJob refuses an intake preamble as the terminal council answer", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    status: "done",
+    text: "I'll convene the five-seat Council on the full v6.6 text. I'm setting quorum at 3.",
+  }), { status: 200, headers: { "content-type": "application/json" } });
+  const jobState = state({
+    job: {
+      status: "working",
+      principal: "principal-a",
+      prompt: "Convene the five-seat Council on this PTA. min_quorum 3.",
+      created: Date.now(),
+      startedAt: Date.now(),
+    },
+  });
+  const job = new workerModule.MikeJob(jobState, {
+    MIKE_BACKEND_URL: "https://backend.test",
+    CONNECTOR_API_KEY: "test-key",
+    RETRY_DELAY_MS: "1",
+  });
+  try {
+    await job.alarm();
+    const stored = await jobState.storage.get("job");
+    assert.equal(stored.status, "error");
+    assert.match(stored.error, /intake preamble/i);
+    assert.equal(await jobState.storage.get("result:1"), undefined);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("MikeJob stores synthesis and drops a leading intake preamble", async () => {
+  const originalFetch = globalThis.fetch;
+  const synthesis = "[Council: 3/5 opinions received (Fugu Ultra, GPT-6 Astra, Grok 4.6); failed: Fable 5.1, Gemini 3.1 Pro Preview; reconciled by Opus 5]\n\nHold the send.";
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    status: "done",
+    text: "I'll convene the five-seat Council.\n\n" + synthesis,
+  }), { status: 200, headers: { "content-type": "application/json" } });
+  const jobState = state({
+    job: {
+      status: "working",
+      principal: "principal-a",
+      prompt: "Convene the five-seat Council. min_quorum 3.",
+      created: Date.now(),
+      startedAt: Date.now(),
+    },
+  });
+  const job = new workerModule.MikeJob(jobState, {
+    MIKE_BACKEND_URL: "https://backend.test",
+    CONNECTOR_API_KEY: "test-key",
+    RETRY_DELAY_MS: "1",
+  });
+  try {
+    await job.alarm();
+    const stored = await jobState.storage.get("job");
+    assert.equal(stored.status, "done");
+    assert.equal(stored.answerSource, "synthesis");
+    assert.equal(await jobState.storage.get("result:1"), synthesis);
   } finally {
     globalThis.fetch = originalFetch;
   }

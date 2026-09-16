@@ -348,17 +348,24 @@ async function obtainRequiredAnswer(params: {
         reasoningEffort: params.seat.reasoningEffort,
       });
       if (!answer?.trim()) throw new Error("empty response");
+      const trimmed = answer.trim();
       logCouncil({
         phase: "member",
+        site: "obtainRequiredAnswer",
         ok: true,
+        seat_id: params.seat.model,
         model: params.seat.model,
         label: params.seat.label,
         attempts: attempt,
+        returned_at: new Date().toISOString(),
+        answer_chars: trimmed.length,
+        answer_bytes: Buffer.byteLength(trimmed, "utf8"),
+        error: null,
       });
       return {
         model: params.seat.model,
         label: params.seat.label,
-        answer: answer.trim(),
+        answer: trimmed,
         ok: true,
         attempts: attempt,
       };
@@ -366,11 +373,16 @@ async function obtainRequiredAnswer(params: {
       lastError = errorMessage(error);
       logCouncil({
         phase: "member_attempt",
+        site: "obtainRequiredAnswer",
         ok: false,
+        seat_id: params.seat.model,
         model: params.seat.model,
         label: params.seat.label,
         attempt,
         max_attempts: params.maxAttempts,
+        returned_at: new Date().toISOString(),
+        answer_chars: 0,
+        answer_bytes: 0,
         error: lastError,
       });
       if (attempt < params.maxAttempts) {
@@ -443,6 +455,20 @@ export async function conveneCouncilWithCompleter(
     `convening 5-seat council (min quorum ${minQuorum}/5): ${seats.map((seat) => seat.label).join(", ")}`,
   );
 
+  const dispatchedAt = new Date().toISOString();
+  logCouncil({
+    phase: "dispatch",
+    site: "conveneCouncilWithCompleter",
+    dispatched_at: dispatchedAt,
+    min_quorum: minQuorum,
+    seat_ids: seats.map((seat) => seat.model),
+    seats: seats.map((seat) => ({
+      seat_id: seat.model,
+      label: seat.label,
+      dispatched_at: dispatchedAt,
+    })),
+  });
+
   const members = await Promise.all(
     seats.map((seat) =>
       obtainRequiredAnswer({
@@ -465,15 +491,20 @@ export async function conveneCouncilWithCompleter(
   if (respondedCount < minQuorum) {
     logCouncil({
       phase: "quorum",
+      site: "conveneCouncilWithCompleter.quorum",
       ok: false,
+      source: "quorum_failure",
       responded_count: respondedCount,
       required_count: minQuorum,
       seat_count: seats.length,
-      members: members.map(({ model, ok, attempts, error }) => ({
+      members: members.map(({ model, ok, attempts, error, answer }) => ({
+        seat_id: model,
         model,
         ok,
         attempts,
-        error,
+        answer_chars: answer.length,
+        answer_bytes: Buffer.byteLength(answer, "utf8"),
+        error: error ?? null,
       })),
     });
     throw new CouncilQuorumError(members, minQuorum);
@@ -510,9 +541,34 @@ export async function conveneCouncilWithCompleter(
   }
 
   const header = councilHeader(members);
+  const finalAnswer = `${header}\n\n${judge.answer}`;
+  logCouncil({
+    phase: "aggregation",
+    site: "conveneCouncilWithCompleter.judge",
+    ok: true,
+    source: "synthesis",
+    responded_count: respondedCount,
+    required_count: minQuorum,
+    seat_count: seats.length,
+    failed_seats: failedMembers.map((member) => member.label),
+    members: members.map(({ model, ok, attempts, error, answer }) => ({
+      seat_id: model,
+      model,
+      ok,
+      attempts,
+      answer_chars: answer.length,
+      answer_bytes: Buffer.byteLength(answer, "utf8"),
+      error: error ?? null,
+    })),
+    judge_attempts: judge.attempts,
+    answer_bytes: Buffer.byteLength(finalAnswer, "utf8"),
+    answer_snapshot: finalAnswer.slice(0, 240),
+  });
   logCouncil({
     phase: "completed",
+    site: "conveneCouncilWithCompleter.return",
     ok: true,
+    source: "synthesis",
     responded_count: respondedCount,
     required_count: minQuorum,
     seat_count: seats.length,
@@ -523,9 +579,11 @@ export async function conveneCouncilWithCompleter(
       attempts,
     })),
     judge_attempts: judge.attempts,
+    answer_bytes: Buffer.byteLength(finalAnswer, "utf8"),
+    answer_snapshot: finalAnswer.slice(0, 240),
   });
   return {
-    finalAnswer: `${header}\n\n${judge.answer}`,
+    finalAnswer,
     members,
     respondedCount,
   };

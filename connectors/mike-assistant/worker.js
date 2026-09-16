@@ -151,6 +151,37 @@ function stripPromptFromJob(job, updates) {
   return Object.assign({}, job, updates || {}, { prompt: null });
 }
 __name(stripPromptFromJob, "stripPromptFromJob");
+function promptRequestsCouncil(text) {
+  if (!text) return false;
+  return /\bconvene_council\b/i.test(text) || /\bmin[_\s-]?quorum\b/i.test(text) || /\bconvene(?:\s+the)?\s+(?:five[- ]seat\s+|5[- ]seat\s+)?council\b/i.test(text) || /\b(?:five[- ]seat|5[- ]seat)\s+council\b/i.test(text) || /\blegal council\b/i.test(text);
+}
+__name(promptRequestsCouncil, "promptRequestsCouncil");
+function isCouncilSynthesis(text) {
+  if (!text) return false;
+  return /\[Council:\s*(?:mandatory\s+)?\d+\/\d+\s+opinions received/i.test(text) || /Council deliberation failed and no council opinion was produced/i.test(text);
+}
+__name(isCouncilSynthesis, "isCouncilSynthesis");
+function preferCouncilSynthesis(text) {
+  if (!text || !isCouncilSynthesis(text)) return text;
+  const headerIdx = text.search(/\[Council:\s*(?:mandatory\s+)?\d+\/\d+\s+opinions received/i);
+  const failIdx = text.search(/Council deliberation failed and no council opinion was produced/i);
+  const starts = [headerIdx, failIdx].filter((idx) => idx >= 0);
+  if (!starts.length) return text;
+  return text.slice(Math.min.apply(null, starts)).trimStart();
+}
+__name(preferCouncilSynthesis, "preferCouncilSynthesis");
+function classifyAnswerSource(text) {
+  if (/Council deliberation failed and no council opinion was produced/i.test(text || "")) return "quorum_failure";
+  if (/\[Council:\s*(?:mandatory\s+)?\d+\/\d+\s+opinions received/i.test(text || "")) return "synthesis";
+  if (text && text.trim().length <= 2500 && (/\bi(?:['’]ll| will) convene\b/i.test(text) || /\bsetting quorum\b/i.test(text))) return "preamble";
+  return "unknown";
+}
+__name(classifyAnswerSource, "classifyAnswerSource");
+function logCouncilCompletion(payload) {
+  const snapshot = String(payload.answer_snapshot || "").slice(0, 240);
+  console.log("[council.completion] " + JSON.stringify(Object.assign({ event: "council_completion" }, payload, { answer_snapshot: snapshot })));
+}
+__name(logCouncilCompletion, "logCouncilCompletion");
 // Start-or-poll a Railway-owned async job. Each Worker request is short-lived;
 // the long council execution stays in Railway and is never duplicated merely
 // because Cloudflare ends a request after its platform lifetime limit.
@@ -292,7 +323,7 @@ var worker_default = {
       return new Response(null, { status: 204, headers: CORS });
     }
     if (request.method === "GET" && (url.pathname === "/" || url.pathname === "/health")) {
-      return new Response("Mike Legal AI — MCP connector v1.8.1.", {
+      return new Response("Mike Legal AI — MCP connector v1.8.2.", {
         headers: { "content-type": "text/plain", ...CORS }
       });
     }
@@ -426,7 +457,7 @@ var worker_default = {
         return ok({
           protocolVersion: pv,
           capabilities: { tools: { listChanged: false } },
-          serverInfo: { name: "mike-legal", version: "1.8.1" },
+          serverInfo: { name: "mike-legal", version: "1.8.2" },
           instructions: "Start legal reviews with ask_mike, then poll get_mike_answer using retry_after_seconds. Fetch every numbered part before synthesizing. Treat Mike's analysis as legal work product requiring human counsel review."
         });
       }
@@ -783,9 +814,22 @@ var MikeJob = class {
       if (result && result.status === "error") {
         throw new Error(result.error || "Mike backend job failed");
       }
-      const text = result && result.status === "done" ? result.text : "";
-      if (!text || text.trim() === "") {
+      const rawText = result && result.status === "done" ? result.text : "";
+      if (!rawText || rawText.trim() === "") {
         throw new Error("empty response from Mike backend (possible upstream timeout)");
+      }
+      const text = preferCouncilSynthesis(rawText);
+      const source = classifyAnswerSource(text);
+      logCouncilCompletion({
+        site: "MikeJob.alarm.completionMarker",
+        source,
+        answer_bytes: utf8ByteLength(text),
+        answer_snapshot: text,
+        job_id: backendJobId,
+        attempt
+      });
+      if (promptRequestsCouncil(promptText) && !isCouncilSynthesis(text)) {
+        throw new Error("council synthesis missing; refusing to complete with intake preamble");
       }
       const chunks = [];
       for (let i = 0; i < text.length; i += 15000) chunks.push(text.slice(i, i + 15000));
@@ -801,6 +845,7 @@ var MikeJob = class {
         promptR2Key: null,
         totalParts: chunks.length,
         resultChars: text.length,
+        answerSource: source,
         attempt,
         completedAt: (/* @__PURE__ */ new Date()).toISOString(),
         expiresAt

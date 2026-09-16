@@ -236,7 +236,22 @@ export async function streamClaude(
         }
       }
 
-      if (stopReason !== "tool_use" || !toolCalls.length || !runTools) {
+      console.log(
+        "[council.completion] " +
+          JSON.stringify({
+            event: "claude_stream_turn",
+            site: "streamClaude.turnEnd",
+            model,
+            iteration: iter,
+            stop_reason: stopReason ?? null,
+            tool_names: toolCalls.map((call) => call.name),
+            text_chars: fullText.length,
+          }),
+      );
+
+      // Run any parsed tool_use blocks even when stop_reason is max_tokens /
+      // end_turn. Dropping them left the intake preamble as the terminal answer.
+      if (!toolCalls.length || !runTools) {
         break;
       }
 
