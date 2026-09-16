@@ -1,11 +1,11 @@
 /**
  * Model "council" for Mike Legal AI.
  *
- * Five named, provider-diverse seats must each return an independent opinion
- * before the neutral judge is allowed to reconcile them. A partial council is
- * never a council: failed seats are retried using the same model, and an
- * incomplete quorum throws a structured error instead of producing a degraded
- * single-model answer.
+ * Five named, provider-diverse seats always fan out. Failed seats are retried
+ * using the same model (never substituted). The judge runs only after
+ * `respondedCount >= minQuorum` (env `COUNCIL_MIN_QUORUM`, default 5, clamp
+ * 1–5). Below that, a structured `CouncilQuorumError` is thrown and the judge
+ * is never invoked. Partial successful opinions are preserved on that error.
  */
 import { completeTextStrict } from "./index";
 import type { ReasoningEffort, UserApiKeys } from "./types";
@@ -23,13 +23,13 @@ const DEFAULT_COUNCIL_SEATS: readonly CouncilSeat[] = [
     provider: "anthropic",
     model: "claude-fable-5-1",
     label: "Fable 5.1",
-    maxTokens: 8000,
+    maxTokens: 32000,
   },
   {
     provider: "sakana",
     model: "fugu-ultra-20260615",
     label: "Fugu Ultra",
-    maxTokens: 6000,
+    maxTokens: 16000,
   },
   {
     provider: "openai",
@@ -63,6 +63,22 @@ export function resolveCouncilJudge(
   return env.COUNCIL_JUDGE?.trim() || COUNCIL_JUDGE;
 }
 
+export function resolveCouncilMinQuorum(
+  override?: unknown,
+  env: NodeJS.ProcessEnv = process.env,
+): number {
+  if (override !== undefined && override !== null && override !== "") {
+    const parsed =
+      typeof override === "number"
+        ? override
+        : Number.parseInt(String(override), 10);
+    if (Number.isFinite(parsed)) {
+      return Math.min(5, Math.max(1, Math.trunc(parsed)));
+    }
+  }
+  return intFromRecord(env, "COUNCIL_MIN_QUORUM", 5, 1, 5);
+}
+
 export interface CouncilMemberResult {
   model: string;
   label: string;
@@ -84,20 +100,58 @@ export class CouncilQuorumError extends Error {
   readonly respondedCount: number;
   readonly requiredCount: number;
 
-  constructor(members: CouncilMemberResult[]) {
+  constructor(members: CouncilMemberResult[], requiredCount = members.length) {
     const failed = members
       .filter((member) => !member.ok)
       .map((member) => `${member.label}: ${member.error ?? "no answer"}`)
       .join("; ");
     const respondedCount = members.filter((member) => member.ok).length;
     super(
-      `Council quorum incomplete: ${respondedCount}/${members.length} required opinions received after retries. Missing: ${failed}`,
+      `Council quorum incomplete: ${respondedCount}/${requiredCount} required opinions received after retries. Missing: ${failed}`,
     );
     this.name = "CouncilQuorumError";
     this.members = members;
     this.respondedCount = respondedCount;
-    this.requiredCount = members.length;
+    this.requiredCount = requiredCount;
   }
+}
+
+export const COUNCIL_PARTIAL_ANSWER_LIMIT = 8000;
+
+export function formatCouncilQuorumFailure(error: CouncilQuorumError): string {
+  const successful = error.members.filter((member) => member.ok);
+  const failed = error.members.filter((member) => !member.ok);
+  const parts: string[] = [
+    `Council deliberation failed and no council opinion was produced — ${error.message}.`,
+    "All five named seats were convened without model substitution. Successful opinions are preserved below so they are not discarded.",
+  ];
+  if (successful.length) {
+    parts.push("Successful member opinions:");
+    for (const member of successful) {
+      const truncated =
+        member.answer.length > COUNCIL_PARTIAL_ANSWER_LIMIT
+          ? `${member.answer.slice(0, COUNCIL_PARTIAL_ANSWER_LIMIT)}\n…[truncated]`
+          : member.answer;
+      parts.push(`=== ${member.label} (${member.model}) ===\n${truncated}`);
+    }
+  } else {
+    parts.push("Successful member opinions: none.");
+  }
+  parts.push(
+    "Failed seats:\n" +
+      (failed.length
+        ? failed
+            .map(
+              (member) =>
+                `- ${member.label} (${member.model}): ${member.error ?? "no answer"}`,
+            )
+            .join("\n")
+        : "- none"),
+  );
+  parts.push(
+    "Retry the council after the unavailable provider/model recovers, or lower min_quorum if a partial council is acceptable.",
+  );
+  return parts.join("\n\n");
 }
 
 const MEMBER_SYSTEM =
@@ -105,6 +159,63 @@ const MEMBER_SYSTEM =
 
 const JUDGE_SYSTEM =
   "You are the presiding judge of a legal AI council for bioaccess®. Exactly five independent models answered the SAME matter over the SAME context. Reconcile all five answers into one authoritative council opinion. You MUST: (1) give the single best final answer; (2) briefly note the points on which the members AGREED; (3) explicitly flag any DISAGREEMENTS, contradictions, or points raised by only one member — these are the items a human should review, so never paper over them; (4) if the members conflict on a material legal/regulatory point, say so plainly and explain the safer position. Do not introduce facts or contract terms that none of the members provided. Keep it tight and decision-useful. This is analysis for internal review, not legal advice.";
+
+function judgeSystemPrompt(failed: CouncilMemberResult[]): string {
+  if (failed.length === 0) return JUDGE_SYSTEM;
+  const failedList = failed
+    .map((member) => `${member.label} (${member.model})`)
+    .join(", ");
+  return (
+    "You are the presiding judge of a legal AI council for bioaccess®. " +
+    "Some named seats FAILED and returned no opinion. Reconcile ONLY the successful independent answers into one authoritative council opinion. " +
+    `Failed seats (do not invent opinions for them): ${failedList}. ` +
+    "You MUST: (1) give the single best final answer from the successful opinions; " +
+    "(2) briefly note the points on which the successful members AGREED; " +
+    "(3) explicitly flag any DISAGREEMENTS, contradictions, or points raised by only one member — these are the items a human should review, so never paper over them; " +
+    "(4) if the members conflict on a material legal/regulatory point, say so plainly and explain the safer position. " +
+    "Do not introduce facts or contract terms that none of the successful members provided. " +
+    "Do not fabricate a missing seat's view. Keep it tight and decision-useful. This is analysis for internal review, not legal advice."
+  );
+}
+
+function buildJudgeUser(
+  question: string,
+  members: CouncilMemberResult[],
+): string {
+  const successful = members.filter((member) => member.ok);
+  const failed = members.filter((member) => !member.ok);
+  const failedBlock =
+    failed.length === 0
+      ? ""
+      : "FAILED SEATS (no opinion — do not invent one):\n" +
+        failed
+          .map(
+            (member) =>
+              `- ${member.label} (${member.model}): ${member.error ?? "no answer"}`,
+          )
+          .join("\n") +
+        "\n\n";
+  const opinionBlock = successful
+    .map(
+      (member, index) =>
+        `=== COUNCIL MEMBER ${index + 1} — ${member.label} (${member.model}) ===\n${member.answer}`,
+    )
+    .join("\n\n");
+  const closer =
+    failed.length === 0
+      ? "Produce the reconciled council opinion now. You must account for all five opinions."
+      : `Produce the reconciled council opinion now. Reconcile only the ${successful.length} successful opinion(s). Do not invent views for failed seats.`;
+  return `MATTER:\n${question}\n\n${failedBlock}${opinionBlock}\n\n${closer}`;
+}
+
+function councilHeader(members: CouncilMemberResult[]): string {
+  const successful = members.filter((member) => member.ok);
+  const failed = members.filter((member) => !member.ok);
+  if (failed.length === 0) {
+    return `[Council: mandatory 5/5 opinions received (${members.map((member) => member.label).join(", ")}); reconciled by Opus 5]`;
+  }
+  return `[Council: ${successful.length}/5 opinions received (${successful.map((member) => member.label).join(", ")}); failed: ${failed.map((member) => member.label).join(", ")}; reconciled by Opus 5]`;
+}
 
 function intFromRecord(
   env: NodeJS.ProcessEnv,
@@ -284,6 +395,7 @@ export async function conveneCouncil(params: {
   context?: string | null;
   apiKeys?: UserApiKeys;
   onProgress?: (msg: string) => void;
+  minQuorum?: number;
 }): Promise<CouncilResult> {
   return conveneCouncilWithCompleter(params, completeTextStrict);
 }
@@ -294,12 +406,14 @@ export async function conveneCouncilWithCompleter(
     context?: string | null;
     apiKeys?: UserApiKeys;
     onProgress?: (msg: string) => void;
+    minQuorum?: number;
   },
   complete: CouncilCompleter,
   options: CouncilRuntimeOptions = {},
 ): Promise<CouncilResult> {
   const { question, context, apiKeys, onProgress } = params;
   const seats = options.seats ?? resolveCouncilSeats();
+  const minQuorum = resolveCouncilMinQuorum(params.minQuorum);
   const maxAttempts =
     options.maxAttempts ?? intFromEnv("COUNCIL_MEMBER_MAX_ATTEMPTS", 3, 1, 5);
   const retryBaseDelayMs =
@@ -326,7 +440,7 @@ export async function conveneCouncilWithCompleter(
       : "(No additional context was supplied. Answer from general legal/regulatory knowledge and clearly flag that no source material was provided.)");
 
   onProgress?.(
-    `convening mandatory 5/5 council: ${seats.map((seat) => seat.label).join(", ")}`,
+    `convening 5-seat council (min quorum ${minQuorum}/5): ${seats.map((seat) => seat.label).join(", ")}`,
   );
 
   const members = await Promise.all(
@@ -346,13 +460,15 @@ export async function conveneCouncilWithCompleter(
     ),
   );
   const respondedCount = members.filter((member) => member.ok).length;
+  const failedMembers = members.filter((member) => !member.ok);
 
-  if (respondedCount !== seats.length) {
+  if (respondedCount < minQuorum) {
     logCouncil({
       phase: "quorum",
       ok: false,
       responded_count: respondedCount,
-      required_count: seats.length,
+      required_count: minQuorum,
+      seat_count: seats.length,
       members: members.map(({ model, ok, attempts, error }) => ({
         model,
         ok,
@@ -360,30 +476,24 @@ export async function conveneCouncilWithCompleter(
         error,
       })),
     });
-    throw new CouncilQuorumError(members);
+    throw new CouncilQuorumError(members, minQuorum);
   }
 
   const judgeModel = resolveCouncilJudge();
-  onProgress?.(`5/5 opinions received; reconciling via ${judgeModel}`);
+  onProgress?.(
+    `${respondedCount}/5 opinions received; reconciling via ${judgeModel}`,
+  );
   const judgeSeat: CouncilSeat = {
     provider: "anthropic",
     model: judgeModel,
     label: "Opus 5 judge",
     maxTokens: intFromEnv("COUNCIL_JUDGE_MAX_TOKENS", 16000, 1000, 64000),
   };
-  const judgeUser =
-    `MATTER:\n${question}\n\n` +
-    members
-      .map(
-        (member, index) =>
-          `=== COUNCIL MEMBER ${index + 1} — ${member.label} (${member.model}) ===\n${member.answer}`,
-      )
-      .join("\n\n") +
-    "\n\nProduce the reconciled council opinion now. You must account for all five opinions.";
+  const judgeUser = buildJudgeUser(question, members);
 
   const judge = await obtainRequiredAnswer({
     seat: judgeSeat,
-    systemPrompt: JUDGE_SYSTEM,
+    systemPrompt: judgeSystemPrompt(failedMembers),
     user: judgeUser,
     maxTokens: judgeSeat.maxTokens,
     apiKeys,
@@ -399,13 +509,19 @@ export async function conveneCouncilWithCompleter(
     );
   }
 
-  const header = `[Council: mandatory 5/5 opinions received (${members.map((member) => member.label).join(", ")}); reconciled by Opus 5]`;
+  const header = councilHeader(members);
   logCouncil({
     phase: "completed",
     ok: true,
     responded_count: respondedCount,
-    required_count: seats.length,
-    members: members.map(({ model, attempts }) => ({ model, attempts })),
+    required_count: minQuorum,
+    seat_count: seats.length,
+    failed_seats: failedMembers.map((member) => member.label),
+    members: members.map(({ model, ok, attempts }) => ({
+      model,
+      ok,
+      attempts,
+    })),
     judge_attempts: judge.attempts,
   });
   return {

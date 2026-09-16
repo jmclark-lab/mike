@@ -67,7 +67,12 @@ import {
   formatPlaybookForRedlines,
   formatPlaybookForDrafting,
 } from "./playbooks";
-import { conveneCouncil } from "./llm/council";
+import {
+  conveneCouncil,
+  CouncilQuorumError,
+  formatCouncilQuorumFailure,
+  resolveCouncilMinQuorum,
+} from "./llm/council";
 
 const STANDARD_FONT_DATA_URL = (() => {
   try {
@@ -518,7 +523,7 @@ export const COUNCIL_TOOLS = [
     function: {
       name: "convene_council",
       description:
-        "Convene a mandatory 5/5 model COUNCIL — Fable 5.1, Fugu Ultra, GPT-6 Astra (xhigh reasoning), the configured Gemini Pro seat, and Grok 4.6 each answer the SAME matter independently (five different providers). Opus 5, which is not a member, reconciles only after all five opinions are received. Failed members are retried without model substitution; an incomplete quorum fails explicitly and never produces a degraded council opinion. Use for HIGH-STAKES legal/regulatory questions where independent opinions materially reduce risk. IMPORTANT: gather the facts FIRST and pass them in `context` so every member reasons over identical evidence.",
+        "Convene a 5-seat model COUNCIL — Fable 5.1, Fugu Ultra, GPT-6 Astra (xhigh reasoning), the configured Gemini Pro seat, and Grok 4.6 each answer the SAME matter independently (five different providers). All five seats always run. Opus 5, which is not a member, reconciles after at least min_quorum successful opinions (default 5). Failed members are retried on the same seat without model substitution. Below min quorum the tool fails explicitly and returns the successful opinions plus failed-seat errors. Use for HIGH-STAKES legal/regulatory questions where independent opinions materially reduce risk. IMPORTANT: gather the facts FIRST and pass them in `context` so every member reasons over identical evidence.",
       parameters: {
         type: "object",
         properties: {
@@ -533,6 +538,11 @@ export const COUNCIL_TOOLS = [
           doc_id: {
             type: "string",
             description: "Optional attached-document id (e.g. 'doc-0'); its text is added to the context automatically.",
+          },
+          min_quorum: {
+            type: "number",
+            description:
+              "Minimum successful member opinions required before the judge reconciles (1–5). Overrides COUNCIL_MIN_QUORUM for this call. Defaults to 5. All five seats still run; failed seats are never replaced by another model.",
           },
         },
         required: ["question"],
@@ -2984,11 +2994,12 @@ export async function runToolCalls(
               (context ? context + "\n\n" : "") +
               `== DOCUMENT (${docStore.get(docId)?.filename ?? rawDocId}) ==\n${docText}`;
           }
-          write(`: convening mandatory 5/5 model council…\n\n`);
+          write(`: convening 5-seat model council…\n\n`);
           const res = await conveneCouncil({
             question,
             context,
             apiKeys,
+            minQuorum: resolveCouncilMinQuorum(args.min_quorum),
             onProgress: (m) => write(`: ${m}\n\n`),
           });
           content =
@@ -2996,9 +3007,13 @@ export async function runToolCalls(
             "\n\n(Relay this council opinion to the user, preserving the agreement/disagreement notes verbatim — the disagreements are the items that warrant human review. Do not silently drop dissent.)";
         }
       } catch (err) {
-        content =
-          `Council deliberation failed and no council opinion was produced — ${(err as Error).message}. ` +
-          "All five named member opinions are mandatory; retry the council after the unavailable provider/model recovers.";
+        if (err instanceof CouncilQuorumError) {
+          content = formatCouncilQuorumFailure(err);
+        } else {
+          content =
+            `Council deliberation failed and no council opinion was produced — ${(err as Error).message}. ` +
+            "Failed seats are not substituted with another model; retry the council after the unavailable provider/model recovers.";
+        }
       }
       toolResults.push({ role: "tool", tool_call_id: tc.id, content });
       continue;

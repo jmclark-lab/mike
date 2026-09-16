@@ -284,11 +284,39 @@ export async function completeClaudeText(params: {
   } catch (error) {
     throw new Error(claudeErrorMessage(error));
   }
-  const text = resp.content
+  const content = Array.isArray(resp.content) ? resp.content : [];
+  const text = content
     .filter((b): b is Anthropic.TextBlock => b.type === "text")
     .map((b) => b.text)
     .join("");
+  if (!text.trim()) {
+    throw new Error(
+      describeEmptyClaudeText(
+        { stop_reason: resp.stop_reason, content },
+        params.maxTokens ?? 512,
+      ),
+    );
+  }
   return text;
+}
+
+/** Diagnostic for empty Claude payloads. Never substitutes thinking-block text. */
+export function describeEmptyClaudeText(
+  resp: { stop_reason?: string | null; content?: Array<{ type?: string }> },
+  maxTokens: number,
+): string {
+  const blockTypeCounts: Record<string, number> = {};
+  for (const block of resp.content ?? []) {
+    const type = typeof block?.type === "string" ? block.type : "unknown";
+    blockTypeCounts[type] = (blockTypeCounts[type] ?? 0) + 1;
+  }
+  const stopReason = resp.stop_reason ?? "unknown";
+  return (
+    `empty Claude text (stop_reason=${stopReason}; ` +
+    `block_types=${JSON.stringify(blockTypeCounts)}; ` +
+    `max_tokens_hit=${stopReason === "max_tokens"}; ` +
+    `max_tokens=${maxTokens})`
+  );
 }
 
 // Helper re-export for callers wanting to hand normalized results back in.
