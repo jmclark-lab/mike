@@ -328,6 +328,7 @@ export async function completeClaudeText(params: {
   const maxTokens = params.maxTokens ?? 512;
   // Anthropic rejects non-streaming create() when the request may exceed
   // ~10 minutes (Fable council seat at COUNCIL_ANTHROPIC_MAX_TOKENS=32k).
+  // Redeploy nudge 2026-09-16: ensure Railway picks up streaming completeText.
   // Stream + finalMessage() is the supported long-request path and keeps
   // the same text-block extraction / empty diagnostics as before.
   let resp: Anthropic.Message;
