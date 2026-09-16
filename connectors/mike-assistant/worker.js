@@ -13,6 +13,9 @@ var CORS = {
   "Access-Control-Max-Age": "86400"
 };
 var DEFAULT_MAX_JOB_AGE_MS = 2 * 60 * 60 * 1e3;
+var PROMPT_CHUNK_CHARS = 1e5;
+var DO_STORAGE_VALUE_LIMIT_BYTES = 128 * 1024;
+var MCP_MAX_BODY_BYTES = 512 * 1024;
 function json(obj, status) {
   return new Response(JSON.stringify(obj), {
     status: status || 200,
@@ -20,6 +23,76 @@ function json(obj, status) {
   });
 }
 __name(json, "json");
+function utf8ByteLength(str) {
+  return new TextEncoder().encode(str).length;
+}
+__name(utf8ByteLength, "utf8ByteLength");
+function payloadTooLargeJson(limitBytes, receivedBytes, detail) {
+  const body = {
+    error_code: "MCP_PAYLOAD_TOO_LARGE",
+    limit_bytes: limitBytes,
+    received_bytes: receivedBytes
+  };
+  if (detail) body.detail = detail;
+  return body;
+}
+__name(payloadTooLargeJson, "payloadTooLargeJson");
+function payloadTooLargeResponse(limitBytes, receivedBytes, detail) {
+  return new Response(JSON.stringify(payloadTooLargeJson(limitBytes, receivedBytes, detail)), {
+    status: 413,
+    headers: { "content-type": "application/json; charset=utf-8", ...CORS }
+  });
+}
+__name(payloadTooLargeResponse, "payloadTooLargeResponse");
+function splitPromptChunks(prompt) {
+  const text = (prompt || "").toString();
+  const chunks = [];
+  for (let i = 0; i < text.length; i += PROMPT_CHUNK_CHARS) {
+    chunks.push(text.slice(i, i + PROMPT_CHUNK_CHARS));
+  }
+  if (!chunks.length) chunks.push("");
+  return chunks;
+}
+__name(splitPromptChunks, "splitPromptChunks");
+async function writePromptChunks(storage, prompt) {
+  const chunks = splitPromptChunks(prompt);
+  for (let i = 0; i < chunks.length; i++) {
+    const bytes = utf8ByteLength(chunks[i]);
+    if (bytes > DO_STORAGE_VALUE_LIMIT_BYTES) {
+      const err = new Error("prompt chunk exceeds Durable Object storage value limit");
+      err.code = "MCP_PAYLOAD_TOO_LARGE";
+      err.limit_bytes = DO_STORAGE_VALUE_LIMIT_BYTES;
+      err.received_bytes = bytes;
+      throw err;
+    }
+  }
+  for (let i = 0; i < chunks.length; i++) {
+    await storage.put("prompt:" + i, chunks[i]);
+  }
+  return chunks.length;
+}
+__name(writePromptChunks, "writePromptChunks");
+async function readJobPrompt(storage, job) {
+  if (job && typeof job.prompt === "string") return job.prompt;
+  const n = job && job.promptChunks || 0;
+  if (!n) return "";
+  const parts = [];
+  for (let i = 0; i < n; i++) {
+    const part = await storage.get("prompt:" + i);
+    parts.push(part == null ? "" : String(part));
+  }
+  return parts.join("");
+}
+__name(readJobPrompt, "readJobPrompt");
+async function clearPromptChunks(storage, job) {
+  const n = job && job.promptChunks || 0;
+  for (let i = 0; i < n; i++) await storage.delete("prompt:" + i);
+}
+__name(clearPromptChunks, "clearPromptChunks");
+function stripPromptFromJob(job, updates) {
+  return Object.assign({}, job, updates || {}, { prompt: null });
+}
+__name(stripPromptFromJob, "stripPromptFromJob");
 // Start-or-poll a Railway-owned async job. Each Worker request is short-lived;
 // the long council execution stays in Railway and is never duplicated merely
 // because Cloudflare ends a request after its platform lifetime limit.
@@ -161,7 +234,7 @@ var worker_default = {
       return new Response(null, { status: 204, headers: CORS });
     }
     if (request.method === "GET" && (url.pathname === "/" || url.pathname === "/health")) {
-      return new Response("Mike Legal AI — MCP connector v1.7.0.", {
+      return new Response("Mike Legal AI — MCP connector v1.8.0.", {
         headers: { "content-type": "text/plain", ...CORS }
       });
     }
@@ -261,6 +334,13 @@ var worker_default = {
       return json(exchanged.payload);
     }
     if (url.pathname === "/mcp" && request.method === "POST") {
+      const contentLengthHeader = request.headers.get("content-length");
+      if (contentLengthHeader != null && contentLengthHeader !== "") {
+        const contentLength = Number(contentLengthHeader);
+        if (Number.isFinite(contentLength) && contentLength > MCP_MAX_BODY_BYTES) {
+          return payloadTooLargeResponse(MCP_MAX_BODY_BYTES, contentLength, "MCP request body exceeds size limit");
+        }
+      }
       const mcpKeys = validMcpKeys(env);
       if (!mcpKeys.length) {
         return json({ jsonrpc: "2.0", id: null, error: { code: -32e3, message: "Server missing MCP_API_KEY secret." } }, 500);
@@ -288,7 +368,7 @@ var worker_default = {
         return ok({
           protocolVersion: pv,
           capabilities: { tools: { listChanged: false } },
-          serverInfo: { name: "mike-legal", version: "1.7.0" },
+          serverInfo: { name: "mike-legal", version: "1.8.0" },
           instructions: "Start legal reviews with ask_mike, then poll get_mike_answer using retry_after_seconds. Fetch every numbered part before synthesizing. Treat Mike's analysis as legal work product requiring human counsel review."
         });
       }
@@ -399,7 +479,24 @@ var worker_default = {
           const jobId = idempotencyKey ? "idem_" + await sha256base64url(auth.principal + ":" + idempotencyKey) : crypto.randomUUID();
           const stub = env.MIKE_JOBS.get(env.MIKE_JOBS.idFromName(jobId));
           const started = await stub.fetch("https://do/start", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ prompt, principal: auth.principal, idempotencyKey: idempotencyKey || null, jobId }) });
-          if (!started.ok) return ok({ content: [{ type: "text", text: "Unable to start Mike Legal job (" + started.status + ")." }], isError: true });
+          if (!started.ok) {
+            if (started.status === 413) {
+              const errBody = await started.json().catch(() => ({}));
+              const code = errBody && errBody.error_code || "MCP_PAYLOAD_TOO_LARGE";
+              const detail = errBody && errBody.detail ? " " + errBody.detail : "";
+              return ok({
+                content: [{ type: "text", text: "Prompt too large for Durable Object storage (" + code + ")." + detail }],
+                structuredContent: {
+                  error_code: code,
+                  limit_bytes: errBody && errBody.limit_bytes,
+                  received_bytes: errBody && errBody.received_bytes,
+                  detail: errBody && errBody.detail || null
+                },
+                isError: true
+              });
+            }
+            return ok({ content: [{ type: "text", text: "Unable to start Mike Legal job (" + started.status + ")." }], isError: true });
+          }
           const structuredContent = { job_id: jobId, status: "working", retry_after_seconds: 20 };
           return ok({
             content: [{ type: "text", text: "Mike Legal job started. job_id=" + jobId + "\nNow call get_mike_answer with this exact job_id, polling about every 20 seconds until the analysis is ready (usually 1–3 minutes)." }],
@@ -514,15 +611,26 @@ var MikeJob = class {
       if (existing && body.idempotencyKey && existing.idempotencyKey === body.idempotencyKey && existing.principal === body.principal) {
         return new Response(JSON.stringify({ ok: true, reused: true, status: existing.status }), { headers: { "content-type": "application/json" } });
       }
-      await this.state.storage.put("job", {
-        status: "working",
-        prompt: (body.prompt || "").toString(),
-        principal: (body.principal || "").toString(),
-        idempotencyKey: body.idempotencyKey || null,
-        backendJobId: (body.jobId || "").toString() || null,
-        created: now,
-        startedAt: now
-      });
+      const promptText = (body.prompt || "").toString();
+      const receivedBytes = utf8ByteLength(promptText);
+      try {
+        if (existing) await clearPromptChunks(this.state.storage, existing);
+        const promptChunks = await writePromptChunks(this.state.storage, promptText);
+        await this.state.storage.put("job", {
+          status: "working",
+          prompt: null,
+          promptChunks,
+          principal: (body.principal || "").toString(),
+          idempotencyKey: body.idempotencyKey || null,
+          backendJobId: (body.jobId || "").toString() || null,
+          created: now,
+          startedAt: now
+        });
+      } catch (e) {
+        const limitBytes = e && e.limit_bytes || DO_STORAGE_VALUE_LIMIT_BYTES;
+        const gotBytes = e && e.received_bytes != null ? e.received_bytes : receivedBytes;
+        return payloadTooLargeResponse(limitBytes, gotBytes, e && e.message || "Failed to persist prompt");
+      }
       await this.state.storage.setAlarm(now + 100);
       return new Response(JSON.stringify({ ok: true }), { headers: { "content-type": "application/json" } });
     }
@@ -535,10 +643,11 @@ var MikeJob = class {
       const maxJobAgeMs = Number(this.env.MAX_JOB_AGE_MS) || DEFAULT_MAX_JOB_AGE_MS;
       const jobAge = Date.now() - (job.startedAt || job.created || Date.now());
       if (job.status === "working" && jobAge >= maxJobAgeMs) {
-        job = Object.assign({}, job, {
+        await clearPromptChunks(this.state.storage, job);
+        job = stripPromptFromJob(job, {
           status: "error",
           error: "Mike Legal exceeded its maximum job age and was stopped. Please start a new request.",
-          prompt: null,
+          promptChunks: 0,
           completedAt: (/* @__PURE__ */ new Date()).toISOString(),
           expiresAt: Date.now() + 24 * 60 * 60 * 1e3
         });
@@ -588,16 +697,17 @@ var MikeJob = class {
     const MAX_JOB_AGE_MS = Number(this.env.MAX_JOB_AGE_MS) || DEFAULT_MAX_JOB_AGE_MS;
     const jobAge = Date.now() - (job.startedAt || job.created || Date.now());
     const backendJobId = job.backendJobId || crypto.randomUUID();
-    const activeJob = Object.assign({}, job, {
+    const promptText = await readJobPrompt(this.state.storage, job);
+    const activeJob = stripPromptFromJob(job, {
       attempt,
       backendJobId,
       attemptStartedAt: (/* @__PURE__ */ new Date()).toISOString()
     });
     await this.state.storage.put("job", activeJob);
     try {
-      const result = await callMike(this.env, job.prompt, { jobId: backendJobId });
+      const result = await callMike(this.env, promptText, { jobId: backendJobId });
       if (result && result.status === "working") {
-        await this.state.storage.put("job", Object.assign({}, activeJob, {
+        await this.state.storage.put("job", stripPromptFromJob(activeJob, {
           status: "working",
           lastProgress: (/* @__PURE__ */ new Date()).toISOString()
         }));
@@ -618,9 +728,10 @@ var MikeJob = class {
       const currentJob = await this.state.storage.get("job");
       if (!currentJob || currentJob.status !== "working") return;
       const expiresAt = Date.now() + 72 * 60 * 60 * 1e3;
-      await this.state.storage.put("job", Object.assign({}, activeJob, {
+      await clearPromptChunks(this.state.storage, activeJob);
+      await this.state.storage.put("job", stripPromptFromJob(activeJob, {
         status: "done",
-        prompt: null,
+        promptChunks: 0,
         totalParts: chunks.length,
         resultChars: text.length,
         attempt,
@@ -633,7 +744,7 @@ var MikeJob = class {
       const isTransient = msg.includes("AbortError") || msg.includes("abort") || msg.includes("empty response") || msg.includes("502") || msg.includes("503") || msg.includes("504") || msg.includes("524") || msg.includes("522") || msg.includes("520") || msg.includes("429") || msg.includes("fetch failed") || msg.toLowerCase().includes("network") || msg.toLowerCase().includes("timeout");
       if (isTransient) {
         if (jobAge < MAX_JOB_AGE_MS) {
-          await this.state.storage.put("job", Object.assign({}, activeJob, {
+          await this.state.storage.put("job", stripPromptFromJob(activeJob, {
             status: "working",
             attempt,
             lastRetry: (/* @__PURE__ */ new Date()).toISOString(),
@@ -642,21 +753,23 @@ var MikeJob = class {
           await this.state.storage.setAlarm(Date.now() + RETRY_DELAY_MS);
         } else {
           const ageMin = Math.round(jobAge / 6e4);
-          await this.state.storage.put("job", Object.assign({}, activeJob, {
+          await clearPromptChunks(this.state.storage, activeJob);
+          await this.state.storage.put("job", stripPromptFromJob(activeJob, {
             status: "error",
             error: "Mike Legal did not complete after " + ageMin + " minutes (" + attempt + " attempts). The service may be unavailable — please try again later.",
             attempt,
-            prompt: null,
+            promptChunks: 0,
             expiresAt: Date.now() + 24 * 60 * 60 * 1e3
           }));
           await this.state.storage.setAlarm(Date.now() + 24 * 60 * 60 * 1e3);
         }
       } else {
-        await this.state.storage.put("job", Object.assign({}, activeJob, {
+        await clearPromptChunks(this.state.storage, activeJob);
+        await this.state.storage.put("job", stripPromptFromJob(activeJob, {
           status: "error",
           error: msg + (attempt > 1 ? " (after " + attempt + " attempts)" : ""),
           attempt,
-          prompt: null,
+          promptChunks: 0,
           expiresAt: Date.now() + 24 * 60 * 60 * 1e3
         }));
         await this.state.storage.setAlarm(Date.now() + 24 * 60 * 60 * 1e3);

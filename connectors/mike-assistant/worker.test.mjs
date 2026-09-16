@@ -84,7 +84,9 @@ test("get_mike_answer returns one bounded part for a large completed result", as
   const answer = first.result.content[0].text.split("\n\n")[1];
   assert.equal(answer.length, 15000);
   assert.equal(answer, "x".repeat(15000));
-  assert.ok(JSON.stringify(first).length < 20000);
+  // content + structuredContent.answer both carry the 15k part (~30k JSON total)
+  assert.ok(JSON.stringify(first).length < 40000);
+  assert.ok(JSON.stringify(first).length < full.length);
   assert.match(first.result.content[0].text, /part 1 of 13/);
 });
 
@@ -181,6 +183,58 @@ test("long jobs are polled by stable backend id without duplicating execution", 
     assert.equal(await jobState.storage.get("result:1"), "mandatory 4/4 opinion");
     assert.equal(calls, 3);
     assert.ok(urls.every((url) => url.endsWith("/connector/jobs/" + first.backendJobId)));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("MikeJob chunks large prompts and alarm reassembles them for callMike", async () => {
+  const originalFetch = globalThis.fetch;
+  let receivedPrompt = null;
+  globalThis.fetch = async (input, init) => {
+    const body = JSON.parse(init.body);
+    receivedPrompt = body.prompt;
+    return new Response(JSON.stringify({ status: "done", text: "chunked prompt ok" }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
+  const jobState = state();
+  const job = new workerModule.MikeJob(jobState, {
+    MIKE_BACKEND_URL: "https://backend.test",
+    CONNECTOR_API_KEY: "test-key",
+    RETRY_DELAY_MS: "1",
+  });
+  const bigPrompt = "p".repeat(200000);
+  try {
+    const started = await job.fetch(new Request("https://do/start", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        prompt: bigPrompt,
+        principal: "principal-a",
+        jobId: "job-large-prompt",
+      }),
+    }));
+    assert.equal(started.status, 200);
+    const meta = await jobState.storage.get("job");
+    assert.equal(meta.prompt, null);
+    assert.ok(meta.promptChunks >= 2);
+    assert.ok(typeof meta.prompt !== "string" || meta.prompt.length < 1000);
+    const chunk0 = await jobState.storage.get("prompt:0");
+    const chunk1 = await jobState.storage.get("prompt:1");
+    assert.equal(typeof chunk0, "string");
+    assert.equal(typeof chunk1, "string");
+    assert.equal(chunk0.length + chunk1.length + ((await jobState.storage.get("prompt:2")) || "").length, 200000);
+
+    await job.alarm();
+    assert.equal(receivedPrompt, bigPrompt);
+    const done = await jobState.storage.get("job");
+    assert.equal(done.status, "done");
+    assert.equal(done.prompt, null);
+    assert.equal(done.promptChunks, 0);
+    assert.equal(await jobState.storage.get("prompt:0"), undefined);
+    assert.equal(await jobState.storage.get("result:1"), "chunked prompt ok");
   } finally {
     globalThis.fetch = originalFetch;
   }
