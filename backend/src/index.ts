@@ -176,7 +176,7 @@ const connectorJobManager = new ConnectorJobManager(async (prompt) => {
       }),
       signal: controller.signal,
     });
-    return await readMikeSseText(response);
+    return await readMikeSseText(response, prompt);
   } finally {
     clearTimeout(timeout);
   }
@@ -232,6 +232,14 @@ app.get("/healthz", async (_req, res) => {
   });
 });
 
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`Mike backend running on port ${PORT}`);
 });
+// Node 18+ defaults requestTimeout to 5 minutes, which closes the /chat SSE
+// while a 15–25 min council is still running and left the intake preamble as
+// the terminal answer. Council jobs are allowed the same 2-hour ceiling as
+// the connector fetch abort.
+const STREAM_TIMEOUT_MS = hours(2);
+server.requestTimeout = STREAM_TIMEOUT_MS;
+server.headersTimeout = STREAM_TIMEOUT_MS;
+server.timeout = STREAM_TIMEOUT_MS;

@@ -10,6 +10,7 @@ import {
     buildCancelledAssistantMessage,
     extractAnnotations,
     isAbortError,
+    writeStreamAbort,
     runLLMStream,
     stripTransientAssistantEvents,
     type ChatMessage,
@@ -566,6 +567,7 @@ chatRouter.post("/", connectorOrAuth, async (req, res) => {
     res.setHeader("Cache-Control", "no-cache");
     res.setHeader("Connection", "keep-alive");
     res.setHeader("X-Accel-Buffering", "no");
+    res.setTimeout(2 * 60 * 60 * 1000);
     res.flushHeaders();
 
     const write = (line: string) => res.write(line);
@@ -650,6 +652,11 @@ chatRouter.post("/", connectorOrAuth, async (req, res) => {
                         saveError,
                     );
                 }
+            }
+            try {
+                writeStreamAbort(write);
+            } catch {
+                /* ignore */
             }
             return;
         }

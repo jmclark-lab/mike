@@ -13,6 +13,9 @@ var CORS = {
   "Access-Control-Max-Age": "86400"
 };
 var DEFAULT_MAX_JOB_AGE_MS = 2 * 60 * 60 * 1e3;
+var PROMPT_CHUNK_BYTES = 100 * 1024;
+var DO_STORAGE_VALUE_LIMIT_BYTES = 128 * 1024;
+var MCP_MAX_BODY_BYTES = 2 * 1024 * 1024;
 function json(obj, status) {
   return new Response(JSON.stringify(obj), {
     status: status || 200,
@@ -20,6 +23,165 @@ function json(obj, status) {
   });
 }
 __name(json, "json");
+function utf8ByteLength(str) {
+  return new TextEncoder().encode(str).length;
+}
+__name(utf8ByteLength, "utf8ByteLength");
+function payloadTooLargeJson(limitBytes, receivedBytes, detail) {
+  const body = {
+    error_code: "MCP_PAYLOAD_TOO_LARGE",
+    limit_bytes: limitBytes,
+    received_bytes: receivedBytes
+  };
+  if (detail) body.detail = detail;
+  return body;
+}
+__name(payloadTooLargeJson, "payloadTooLargeJson");
+function payloadTooLargeResponse(limitBytes, receivedBytes, detail) {
+  return new Response(JSON.stringify(payloadTooLargeJson(limitBytes, receivedBytes, detail)), {
+    status: 413,
+    headers: { "content-type": "application/json; charset=utf-8", ...CORS }
+  });
+}
+__name(payloadTooLargeResponse, "payloadTooLargeResponse");
+function splitPromptByteChunks(prompt) {
+  const text = (prompt || "").toString();
+  const bytes = new TextEncoder().encode(text);
+  const chunks = [];
+  for (let i = 0; i < bytes.length; i += PROMPT_CHUNK_BYTES) {
+    const end = Math.min(i + PROMPT_CHUNK_BYTES, bytes.length);
+    chunks.push(bytes.slice(i, end).buffer);
+  }
+  if (!chunks.length) chunks.push(new ArrayBuffer(0));
+  return chunks;
+}
+__name(splitPromptByteChunks, "splitPromptByteChunks");
+async function writePromptChunks(storage, prompt) {
+  const chunks = splitPromptByteChunks(prompt);
+  for (let i = 0; i < chunks.length; i++) {
+    const bytes = chunks[i].byteLength;
+    if (bytes > DO_STORAGE_VALUE_LIMIT_BYTES) {
+      const err = new Error("Prompt too large for Durable Object storage (MCP_PAYLOAD_TOO_LARGE).");
+      err.code = "MCP_PAYLOAD_TOO_LARGE";
+      err.limit_bytes = DO_STORAGE_VALUE_LIMIT_BYTES;
+      err.received_bytes = bytes;
+      throw err;
+    }
+  }
+  for (let i = 0; i < chunks.length; i++) {
+    await storage.put("prompt:" + i, chunks[i]);
+  }
+  return chunks.length;
+}
+__name(writePromptChunks, "writePromptChunks");
+async function writePromptToR2(env, jobId, prompt) {
+  const key = "mcp-prompts/" + jobId + ".txt";
+  const bytes = new TextEncoder().encode((prompt || "").toString());
+  await env.MIKE_PROMPTS.put(key, bytes);
+  return key;
+}
+__name(writePromptToR2, "writePromptToR2");
+async function persistJobPrompt(storage, env, prompt, jobId) {
+  if (env && env.MIKE_PROMPTS) {
+    const promptR2Key = await writePromptToR2(env, jobId, prompt);
+    return { promptR2Key, promptChunks: 0 };
+  }
+  const promptChunks = await writePromptChunks(storage, prompt);
+  return { promptR2Key: null, promptChunks };
+}
+__name(persistJobPrompt, "persistJobPrompt");
+function decodeStoredPromptPart(part) {
+  if (part == null) return { kind: "string", value: "" };
+  if (typeof part === "string") return { kind: "string", value: part };
+  if (part instanceof ArrayBuffer) return { kind: "bytes", value: new Uint8Array(part) };
+  if (ArrayBuffer.isView(part)) return { kind: "bytes", value: new Uint8Array(part.buffer, part.byteOffset, part.byteLength) };
+  return { kind: "string", value: String(part) };
+}
+__name(decodeStoredPromptPart, "decodeStoredPromptPart");
+async function readJobPrompt(storage, env, job) {
+  if (job && typeof job.prompt === "string") return job.prompt;
+  if (job && job.promptR2Key && env && env.MIKE_PROMPTS) {
+    const obj = await env.MIKE_PROMPTS.get(job.promptR2Key);
+    if (!obj) return "";
+    return await obj.text();
+  }
+  const n = job && job.promptChunks || 0;
+  if (!n) return "";
+  const stringParts = [];
+  const byteParts = [];
+  let sawString = false;
+  let sawBytes = false;
+  for (let i = 0; i < n; i++) {
+    const decoded = decodeStoredPromptPart(await storage.get("prompt:" + i));
+    if (decoded.kind === "bytes") {
+      sawBytes = true;
+      byteParts.push(decoded.value);
+      stringParts.push("");
+    } else {
+      sawString = true;
+      stringParts.push(decoded.value);
+    }
+  }
+  if (sawBytes && !sawString) {
+    let total = 0;
+    for (let i = 0; i < byteParts.length; i++) total += byteParts[i].byteLength;
+    const merged = new Uint8Array(total);
+    let offset = 0;
+    for (let i = 0; i < byteParts.length; i++) {
+      merged.set(byteParts[i], offset);
+      offset += byteParts[i].byteLength;
+    }
+    return new TextDecoder().decode(merged);
+  }
+  return stringParts.join("");
+}
+__name(readJobPrompt, "readJobPrompt");
+async function clearJobPrompt(storage, env, job) {
+  if (job && job.promptR2Key && env && env.MIKE_PROMPTS) {
+    try {
+      await env.MIKE_PROMPTS.delete(job.promptR2Key);
+    } catch (_e) {
+    }
+  }
+  const n = job && job.promptChunks || 0;
+  for (let i = 0; i < n; i++) await storage.delete("prompt:" + i);
+}
+__name(clearJobPrompt, "clearJobPrompt");
+function stripPromptFromJob(job, updates) {
+  return Object.assign({}, job, updates || {}, { prompt: null });
+}
+__name(stripPromptFromJob, "stripPromptFromJob");
+function promptRequestsCouncil(text) {
+  if (!text) return false;
+  return /\bconvene_council\b/i.test(text) || /\bmin[_\s-]?quorum\b/i.test(text) || /\bconvene(?:\s+the)?\s+(?:five[- ]seat\s+|5[- ]seat\s+)?council\b/i.test(text) || /\b(?:five[- ]seat|5[- ]seat)\s+council\b/i.test(text) || /\blegal council\b/i.test(text);
+}
+__name(promptRequestsCouncil, "promptRequestsCouncil");
+function isCouncilSynthesis(text) {
+  if (!text) return false;
+  return /\[Council:\s*(?:mandatory\s+)?\d+\/\d+\s+opinions received/i.test(text) || /Council deliberation failed and no council opinion was produced/i.test(text);
+}
+__name(isCouncilSynthesis, "isCouncilSynthesis");
+function preferCouncilSynthesis(text) {
+  if (!text || !isCouncilSynthesis(text)) return text;
+  const headerIdx = text.search(/\[Council:\s*(?:mandatory\s+)?\d+\/\d+\s+opinions received/i);
+  const failIdx = text.search(/Council deliberation failed and no council opinion was produced/i);
+  const starts = [headerIdx, failIdx].filter((idx) => idx >= 0);
+  if (!starts.length) return text;
+  return text.slice(Math.min.apply(null, starts)).trimStart();
+}
+__name(preferCouncilSynthesis, "preferCouncilSynthesis");
+function classifyAnswerSource(text) {
+  if (/Council deliberation failed and no council opinion was produced/i.test(text || "")) return "quorum_failure";
+  if (/\[Council:\s*(?:mandatory\s+)?\d+\/\d+\s+opinions received/i.test(text || "")) return "synthesis";
+  if (text && text.trim().length <= 2500 && (/\bi(?:['’]ll| will) convene\b/i.test(text) || /\bsetting quorum\b/i.test(text))) return "preamble";
+  return "unknown";
+}
+__name(classifyAnswerSource, "classifyAnswerSource");
+function logCouncilCompletion(payload) {
+  const snapshot = String(payload.answer_snapshot || "").slice(0, 240);
+  console.log("[council.completion] " + JSON.stringify(Object.assign({ event: "council_completion" }, payload, { answer_snapshot: snapshot })));
+}
+__name(logCouncilCompletion, "logCouncilCompletion");
 // Start-or-poll a Railway-owned async job. Each Worker request is short-lived;
 // the long council execution stays in Railway and is never duplicated merely
 // because Cloudflare ends a request after its platform lifetime limit.
@@ -161,7 +323,7 @@ var worker_default = {
       return new Response(null, { status: 204, headers: CORS });
     }
     if (request.method === "GET" && (url.pathname === "/" || url.pathname === "/health")) {
-      return new Response("Mike Legal AI — MCP connector v1.7.0.", {
+      return new Response("Mike Legal AI — MCP connector v1.8.2.", {
         headers: { "content-type": "text/plain", ...CORS }
       });
     }
@@ -261,6 +423,13 @@ var worker_default = {
       return json(exchanged.payload);
     }
     if (url.pathname === "/mcp" && request.method === "POST") {
+      const contentLengthHeader = request.headers.get("content-length");
+      if (contentLengthHeader != null && contentLengthHeader !== "") {
+        const contentLength = Number(contentLengthHeader);
+        if (Number.isFinite(contentLength) && contentLength > MCP_MAX_BODY_BYTES) {
+          return payloadTooLargeResponse(MCP_MAX_BODY_BYTES, contentLength, "MCP request body exceeds size limit");
+        }
+      }
       const mcpKeys = validMcpKeys(env);
       if (!mcpKeys.length) {
         return json({ jsonrpc: "2.0", id: null, error: { code: -32e3, message: "Server missing MCP_API_KEY secret." } }, 500);
@@ -288,7 +457,7 @@ var worker_default = {
         return ok({
           protocolVersion: pv,
           capabilities: { tools: { listChanged: false } },
-          serverInfo: { name: "mike-legal", version: "1.7.0" },
+          serverInfo: { name: "mike-legal", version: "1.8.2" },
           instructions: "Start legal reviews with ask_mike, then poll get_mike_answer using retry_after_seconds. Fetch every numbered part before synthesizing. Treat Mike's analysis as legal work product requiring human counsel review."
         });
       }
@@ -304,7 +473,7 @@ var worker_default = {
               inputSchema: {
                 type: "object",
                 properties: {
-                  prompt: { type: "string", minLength: 1, maxLength: 500000, description: "The legal question plus any contract or clause text to review." },
+                  prompt: { type: "string", minLength: 1, maxLength: 500000, description: "The legal question plus any contract or clause text to review. Prompts are stored in R2 or chunked Durable Object values (UTF-8 byte chunks under 128 KiB each); large reviews should still prefer ingest for huge attachments." },
                   idempotency_key: { type: "string", minLength: 1, maxLength: 128, description: "Optional stable key. Reusing it for the same authenticated principal returns the existing job instead of starting a duplicate." }
                 },
                 required: ["prompt"]
@@ -399,7 +568,28 @@ var worker_default = {
           const jobId = idempotencyKey ? "idem_" + await sha256base64url(auth.principal + ":" + idempotencyKey) : crypto.randomUUID();
           const stub = env.MIKE_JOBS.get(env.MIKE_JOBS.idFromName(jobId));
           const started = await stub.fetch("https://do/start", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ prompt, principal: auth.principal, idempotencyKey: idempotencyKey || null, jobId }) });
-          if (!started.ok) return ok({ content: [{ type: "text", text: "Unable to start Mike Legal job (" + started.status + ")." }], isError: true });
+          if (!started.ok) {
+            if (started.status === 413) {
+              const errBody = await started.json().catch(() => ({}));
+              const code = errBody && errBody.error_code || "MCP_PAYLOAD_TOO_LARGE";
+              const limitBytes = errBody && errBody.limit_bytes;
+              const receivedBytes = errBody && errBody.received_bytes;
+              let msg = "Prompt too large for Durable Object storage (MCP_PAYLOAD_TOO_LARGE).";
+              if (limitBytes != null) msg += " limit_bytes=" + limitBytes;
+              if (receivedBytes != null) msg += " received_bytes=" + receivedBytes;
+              return ok({
+                content: [{ type: "text", text: msg }],
+                structuredContent: {
+                  error_code: code,
+                  limit_bytes: limitBytes,
+                  received_bytes: receivedBytes,
+                  detail: errBody && errBody.detail || null
+                },
+                isError: true
+              });
+            }
+            return ok({ content: [{ type: "text", text: "Unable to start Mike Legal job (" + started.status + ")." }], isError: true });
+          }
           const structuredContent = { job_id: jobId, status: "working", retry_after_seconds: 20 };
           return ok({
             content: [{ type: "text", text: "Mike Legal job started. job_id=" + jobId + "\nNow call get_mike_answer with this exact job_id, polling about every 20 seconds until the analysis is ready (usually 1–3 minutes)." }],
@@ -514,15 +704,29 @@ var MikeJob = class {
       if (existing && body.idempotencyKey && existing.idempotencyKey === body.idempotencyKey && existing.principal === body.principal) {
         return new Response(JSON.stringify({ ok: true, reused: true, status: existing.status }), { headers: { "content-type": "application/json" } });
       }
-      await this.state.storage.put("job", {
-        status: "working",
-        prompt: (body.prompt || "").toString(),
-        principal: (body.principal || "").toString(),
-        idempotencyKey: body.idempotencyKey || null,
-        backendJobId: (body.jobId || "").toString() || null,
-        created: now,
-        startedAt: now
-      });
+      const promptText = (body.prompt || "").toString();
+      const receivedBytes = utf8ByteLength(promptText);
+      const jobId = (body.jobId || "").toString() || crypto.randomUUID();
+      try {
+        if (existing) await clearJobPrompt(this.state.storage, this.env, existing);
+        const persisted = await persistJobPrompt(this.state.storage, this.env, promptText, jobId);
+        await this.state.storage.put("job", {
+          status: "working",
+          prompt: null,
+          promptChunks: persisted.promptChunks,
+          promptR2Key: persisted.promptR2Key,
+          principal: (body.principal || "").toString(),
+          idempotencyKey: body.idempotencyKey || null,
+          backendJobId: jobId,
+          created: now,
+          startedAt: now
+        });
+      } catch (e) {
+        const limitBytes = e && e.limit_bytes || DO_STORAGE_VALUE_LIMIT_BYTES;
+        const gotBytes = e && e.received_bytes != null ? e.received_bytes : receivedBytes;
+        const detail = e && e.message || "Failed to persist prompt";
+        return payloadTooLargeResponse(limitBytes, gotBytes, detail);
+      }
       await this.state.storage.setAlarm(now + 100);
       return new Response(JSON.stringify({ ok: true }), { headers: { "content-type": "application/json" } });
     }
@@ -535,10 +739,12 @@ var MikeJob = class {
       const maxJobAgeMs = Number(this.env.MAX_JOB_AGE_MS) || DEFAULT_MAX_JOB_AGE_MS;
       const jobAge = Date.now() - (job.startedAt || job.created || Date.now());
       if (job.status === "working" && jobAge >= maxJobAgeMs) {
-        job = Object.assign({}, job, {
+        await clearJobPrompt(this.state.storage, this.env, job);
+        job = stripPromptFromJob(job, {
           status: "error",
           error: "Mike Legal exceeded its maximum job age and was stopped. Please start a new request.",
-          prompt: null,
+          promptChunks: 0,
+          promptR2Key: null,
           completedAt: (/* @__PURE__ */ new Date()).toISOString(),
           expiresAt: Date.now() + 24 * 60 * 60 * 1e3
         });
@@ -588,16 +794,17 @@ var MikeJob = class {
     const MAX_JOB_AGE_MS = Number(this.env.MAX_JOB_AGE_MS) || DEFAULT_MAX_JOB_AGE_MS;
     const jobAge = Date.now() - (job.startedAt || job.created || Date.now());
     const backendJobId = job.backendJobId || crypto.randomUUID();
-    const activeJob = Object.assign({}, job, {
+    const promptText = await readJobPrompt(this.state.storage, this.env, job);
+    const activeJob = stripPromptFromJob(job, {
       attempt,
       backendJobId,
       attemptStartedAt: (/* @__PURE__ */ new Date()).toISOString()
     });
     await this.state.storage.put("job", activeJob);
     try {
-      const result = await callMike(this.env, job.prompt, { jobId: backendJobId });
+      const result = await callMike(this.env, promptText, { jobId: backendJobId });
       if (result && result.status === "working") {
-        await this.state.storage.put("job", Object.assign({}, activeJob, {
+        await this.state.storage.put("job", stripPromptFromJob(activeJob, {
           status: "working",
           lastProgress: (/* @__PURE__ */ new Date()).toISOString()
         }));
@@ -607,9 +814,22 @@ var MikeJob = class {
       if (result && result.status === "error") {
         throw new Error(result.error || "Mike backend job failed");
       }
-      const text = result && result.status === "done" ? result.text : "";
-      if (!text || text.trim() === "") {
+      const rawText = result && result.status === "done" ? result.text : "";
+      if (!rawText || rawText.trim() === "") {
         throw new Error("empty response from Mike backend (possible upstream timeout)");
+      }
+      const text = preferCouncilSynthesis(rawText);
+      const source = classifyAnswerSource(text);
+      logCouncilCompletion({
+        site: "MikeJob.alarm.completionMarker",
+        source,
+        answer_bytes: utf8ByteLength(text),
+        answer_snapshot: text,
+        job_id: backendJobId,
+        attempt
+      });
+      if (promptRequestsCouncil(promptText) && !isCouncilSynthesis(text)) {
+        throw new Error("council synthesis missing; refusing to complete with intake preamble");
       }
       const chunks = [];
       for (let i = 0; i < text.length; i += 15000) chunks.push(text.slice(i, i + 15000));
@@ -618,11 +838,14 @@ var MikeJob = class {
       const currentJob = await this.state.storage.get("job");
       if (!currentJob || currentJob.status !== "working") return;
       const expiresAt = Date.now() + 72 * 60 * 60 * 1e3;
-      await this.state.storage.put("job", Object.assign({}, activeJob, {
+      await clearJobPrompt(this.state.storage, this.env, activeJob);
+      await this.state.storage.put("job", stripPromptFromJob(activeJob, {
         status: "done",
-        prompt: null,
+        promptChunks: 0,
+        promptR2Key: null,
         totalParts: chunks.length,
         resultChars: text.length,
+        answerSource: source,
         attempt,
         completedAt: (/* @__PURE__ */ new Date()).toISOString(),
         expiresAt
@@ -633,7 +856,7 @@ var MikeJob = class {
       const isTransient = msg.includes("AbortError") || msg.includes("abort") || msg.includes("empty response") || msg.includes("502") || msg.includes("503") || msg.includes("504") || msg.includes("524") || msg.includes("522") || msg.includes("520") || msg.includes("429") || msg.includes("fetch failed") || msg.toLowerCase().includes("network") || msg.toLowerCase().includes("timeout");
       if (isTransient) {
         if (jobAge < MAX_JOB_AGE_MS) {
-          await this.state.storage.put("job", Object.assign({}, activeJob, {
+          await this.state.storage.put("job", stripPromptFromJob(activeJob, {
             status: "working",
             attempt,
             lastRetry: (/* @__PURE__ */ new Date()).toISOString(),
@@ -642,21 +865,25 @@ var MikeJob = class {
           await this.state.storage.setAlarm(Date.now() + RETRY_DELAY_MS);
         } else {
           const ageMin = Math.round(jobAge / 6e4);
-          await this.state.storage.put("job", Object.assign({}, activeJob, {
+          await clearJobPrompt(this.state.storage, this.env, activeJob);
+          await this.state.storage.put("job", stripPromptFromJob(activeJob, {
             status: "error",
             error: "Mike Legal did not complete after " + ageMin + " minutes (" + attempt + " attempts). The service may be unavailable — please try again later.",
             attempt,
-            prompt: null,
+            promptChunks: 0,
+            promptR2Key: null,
             expiresAt: Date.now() + 24 * 60 * 60 * 1e3
           }));
           await this.state.storage.setAlarm(Date.now() + 24 * 60 * 60 * 1e3);
         }
       } else {
-        await this.state.storage.put("job", Object.assign({}, activeJob, {
+        await clearJobPrompt(this.state.storage, this.env, activeJob);
+        await this.state.storage.put("job", stripPromptFromJob(activeJob, {
           status: "error",
           error: msg + (attempt > 1 ? " (after " + attempt + " attempts)" : ""),
           attempt,
-          prompt: null,
+          promptChunks: 0,
+          promptR2Key: null,
           expiresAt: Date.now() + 24 * 60 * 60 * 1e3
         }));
         await this.state.storage.setAlarm(Date.now() + 24 * 60 * 60 * 1e3);

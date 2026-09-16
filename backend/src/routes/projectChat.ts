@@ -10,6 +10,7 @@ import {
     buildCancelledAssistantMessage,
     extractAnnotations,
     isAbortError,
+    writeStreamAbort,
     runLLMStream,
     stripTransientAssistantEvents,
     PROJECT_EXTRA_TOOLS,
@@ -229,6 +230,11 @@ projectChatRouter.post("/", requireAuth, async (req, res) => {
                         saveError,
                     );
                 }
+            }
+            try {
+                writeStreamAbort(write);
+            } catch {
+                /* ignore */
             }
             return;
         }

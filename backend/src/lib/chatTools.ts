@@ -73,6 +73,17 @@ import {
   formatCouncilQuorumFailure,
   resolveCouncilMinQuorum,
 } from "./llm/council";
+import {
+  classifyAnswerSource,
+  extractCouncilQuestion,
+  isCouncilSynthesis,
+  logCouncilCompletion,
+  parseMinQuorumFromPrompt,
+  preferCouncilSynthesis,
+  promptRequestsCouncil,
+  resolveCouncilContext,
+  utf8ByteLength,
+} from "./councilCompletion";
 
 const STANDARD_FONT_DATA_URL = (() => {
   try {
@@ -180,7 +191,12 @@ When edit_document adds, deletes, moves, or reorders any numbered clause, sectio
 - Update all affected cross-references, including references in recitals, definitions, schedules, and exhibits.
 - Before editing, scan the full document with read_document or find_in_document for affected references.
 - If a reference might point to a shifted number, include the update and explain the reason.
-- When deleting square brackets, delete both "[" and "]".`;
+- When deleting square brackets, delete both "[" and "]".
+
+LEGAL COUNCIL:
+- When the user asks to convene the legal council (five-seat / convene_council / min_quorum), call convene_council on the first tool-use turn. Do not stop after an intake preamble such as "I'll convene…".
+- Pass a precise question and optional min_quorum. Do not paste the full user evidence pack into context; the original user message is supplied to every seat automatically if context is missing or truncated.
+- The tool result is the council opinion. Relay it verbatim, including the roster header and disagreement notes.`;
 
 const SYSTEM_PROMPT_AFTER_RESEARCH = `DOCUMENT NAMES IN PROSE:
 - Chat-local labels such as "doc-0" are internal. Use them only in tool arguments and citation JSON.
@@ -523,7 +539,7 @@ export const COUNCIL_TOOLS = [
     function: {
       name: "convene_council",
       description:
-        "Convene a 5-seat model COUNCIL — Fable 5.1, Fugu Ultra, GPT-6 Astra (xhigh reasoning), the configured Gemini Pro seat, and Grok 4.6 each answer the SAME matter independently (five different providers). All five seats always run. Opus 5, which is not a member, reconciles after at least min_quorum successful opinions (default 5). Failed members are retried on the same seat without model substitution. Below min quorum the tool fails explicitly and returns the successful opinions plus failed-seat errors. Use for HIGH-STAKES legal/regulatory questions where independent opinions materially reduce risk. IMPORTANT: gather the facts FIRST and pass them in `context` so every member reasons over identical evidence.",
+        "Convene a 5-seat model COUNCIL — Fable 5.1, Fugu Ultra, GPT-6 Astra (xhigh reasoning), the configured Gemini Pro seat, and Grok 4.6 each answer the SAME matter independently (five different providers). All five seats always run. Opus 5, which is not a member, reconciles after at least min_quorum successful opinions (default 5). Failed members are retried on the same seat without model substitution. Below min quorum the tool fails explicitly and returns the successful opinions plus failed-seat errors. Use for HIGH-STAKES legal/regulatory questions where independent opinions materially reduce risk. Pass a precise question (and min_quorum if the user set one). Do not paste the full user evidence into context — the original user message is attached automatically when context is missing or shorter than the evidence pack.",
       parameters: {
         type: "object",
         properties: {
@@ -2565,6 +2581,65 @@ function cachedCaseNotFetchedResult(clusterId: number | null) {
   };
 }
 
+async function executeCouncilForStream(params: {
+  question: string;
+  context: string;
+  minQuorum?: number;
+  apiKeys?: import("./llm").UserApiKeys;
+  write: (s: string) => void;
+  site: string;
+}): Promise<{ answer: string; ok: boolean }> {
+  const { question, context, minQuorum, apiKeys, write, site } = params;
+  write(`: convening 5-seat model council…\n\n`);
+  logCouncilCompletion({
+    site,
+    source: "unknown",
+    answer_bytes: 0,
+    answer_snapshot: "",
+    phase: "seat_dispatch_requested",
+    question_chars: question.length,
+    context_chars: context.length,
+    min_quorum: minQuorum ?? null,
+  });
+  try {
+    const res = await conveneCouncil({
+      question,
+      context,
+      apiKeys,
+      minQuorum,
+      onProgress: (m) => write(`: ${m}\n\n`),
+    });
+    const answer = res.finalAnswer;
+    write(`data: ${JSON.stringify({ type: "content_delta", text: answer })}\n\n`);
+    logCouncilCompletion({
+      site,
+      source: classifyAnswerSource(answer),
+      answer_bytes: utf8ByteLength(answer),
+      answer_snapshot: answer,
+      phase: "aggregation",
+      responded_count: res.respondedCount,
+    });
+    return { answer, ok: true };
+  } catch (err) {
+    const answer =
+      err instanceof CouncilQuorumError
+        ? formatCouncilQuorumFailure(err)
+        : `Council deliberation failed and no council opinion was produced — ${(err as Error).message}. ` +
+          "Failed seats are not substituted with another model; retry the council after the unavailable provider/model recovers.";
+    write(`data: ${JSON.stringify({ type: "content_delta", text: answer })}\n\n`);
+    logCouncilCompletion({
+      site,
+      source: classifyAnswerSource(answer),
+      answer_bytes: utf8ByteLength(answer),
+      answer_snapshot: answer,
+      phase: "aggregation",
+      ok: false,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return { answer, ok: false };
+  }
+}
+
 export async function runToolCalls(
   toolCalls: ToolCall[],
   docStore: DocStore,
@@ -2578,6 +2653,7 @@ export async function runToolCalls(
   projectId?: string | null,
   courtlistenerState?: CourtlistenerTurnState,
   apiKeys?: import("./llm").UserApiKeys,
+  userPrompt?: string,
 ): Promise<{
   toolResults: unknown[];
   docsRead: { filename: string; document_id?: string }[];
@@ -2589,6 +2665,8 @@ export async function runToolCalls(
   courtlistenerEvents: CourtlistenerToolEvent[];
   caseCitationEvents: CaseCitationEvent[];
   mcpEvents: McpToolEvent[];
+  councilRan: boolean;
+  councilAnswer: string;
 }> {
   const toolResults: unknown[] = [];
   const docsRead: { filename: string; document_id?: string }[] = [];
@@ -2604,6 +2682,8 @@ export async function runToolCalls(
   const courtlistenerEvents: CourtlistenerToolEvent[] = [];
   const caseCitationEvents: CaseCitationEvent[] = [];
   const mcpEvents: McpToolEvent[] = [];
+  let councilRan = false;
+  let councilAnswer = "";
   const courtState: CourtlistenerTurnState =
     courtlistenerState ??
     {
@@ -2971,49 +3051,48 @@ export async function runToolCalls(
 
     if (tc.function.name === "convene_council") {
       const question =
-        typeof args.question === "string" ? args.question : "";
-      let context = typeof args.context === "string" ? args.context : "";
+        typeof args.question === "string" && args.question.trim()
+          ? args.question
+          : extractCouncilQuestion(userPrompt ?? "");
+      let context = resolveCouncilContext(
+        typeof args.context === "string" ? args.context : "",
+        userPrompt ?? "",
+      );
       const rawDocId = typeof args.doc_id === "string" ? args.doc_id : "";
       let content: string;
-      try {
-        if (!question.trim()) {
-          content =
-            "convene_council needs a 'question' — the specific matter for the council to deliberate.";
-        } else {
-          if (rawDocId) {
-            const docId =
-              resolveDocLabel(rawDocId, docStore, docIndex) ?? rawDocId;
-            const docText = await readDocumentContent(
-              docId,
-              docStore,
-              write,
-              docIndex,
-              db,
-            );
-            context =
-              (context ? context + "\n\n" : "") +
-              `== DOCUMENT (${docStore.get(docId)?.filename ?? rawDocId}) ==\n${docText}`;
-          }
-          write(`: convening 5-seat model council…\n\n`);
-          const res = await conveneCouncil({
-            question,
-            context,
-            apiKeys,
-            minQuorum: resolveCouncilMinQuorum(args.min_quorum),
-            onProgress: (m) => write(`: ${m}\n\n`),
-          });
-          content =
-            res.finalAnswer +
-            "\n\n(Relay this council opinion to the user, preserving the agreement/disagreement notes verbatim — the disagreements are the items that warrant human review. Do not silently drop dissent.)";
+      if (!question.trim()) {
+        content =
+          "convene_council needs a 'question' — the specific matter for the council to deliberate.";
+      } else {
+        if (rawDocId) {
+          const docId =
+            resolveDocLabel(rawDocId, docStore, docIndex) ?? rawDocId;
+          const docText = await readDocumentContent(
+            docId,
+            docStore,
+            write,
+            docIndex,
+            db,
+          );
+          context =
+            (context ? context + "\n\n" : "") +
+            `== DOCUMENT (${docStore.get(docId)?.filename ?? rawDocId}) ==\n${docText}`;
         }
-      } catch (err) {
-        if (err instanceof CouncilQuorumError) {
-          content = formatCouncilQuorumFailure(err);
-        } else {
-          content =
-            `Council deliberation failed and no council opinion was produced — ${(err as Error).message}. ` +
-            "Failed seats are not substituted with another model; retry the council after the unavailable provider/model recovers.";
-        }
+        const result = await executeCouncilForStream({
+          question,
+          context,
+          minQuorum: resolveCouncilMinQuorum(
+            args.min_quorum ?? parseMinQuorumFromPrompt(userPrompt ?? ""),
+          ),
+          apiKeys,
+          write,
+          site: "chatTools.convene_council",
+        });
+        councilRan = true;
+        councilAnswer = result.answer;
+        content =
+          result.answer +
+          "\n\n(Relay this council opinion to the user, preserving the agreement/disagreement notes verbatim — the disagreements are the items that warrant human review. Do not silently drop dissent.)";
       }
       toolResults.push({ role: "tool", tool_call_id: tc.id, content });
       continue;
@@ -4287,6 +4366,8 @@ export async function runToolCalls(
     courtlistenerEvents,
     caseCitationEvents,
     mcpEvents,
+    councilRan,
+    councilAnswer,
   };
 }
 
@@ -4543,6 +4624,15 @@ export function isAbortError(error: unknown): boolean {
   );
 }
 
+/** Abort must emit an error event so connector jobs cannot treat a partial
+ *  preamble as a completed SSE answer (no silent close). */
+export function writeStreamAbort(write: (s: string) => void): void {
+  write(
+    `data: ${JSON.stringify({ type: "error", message: "Stream aborted." })}\n\n`,
+  );
+  write("data: [DONE]\n\n");
+}
+
 function throwIfAborted(signal?: AbortSignal) {
   if (!signal?.aborted) return;
   const err = new Error("Stream aborted.");
@@ -4749,6 +4839,10 @@ export async function runLLMStream(params: {
 
   const selectedModel = resolveModel(model, DEFAULT_MAIN_MODEL);
   let streamResult: import("./llm").StreamChatResult | undefined;
+  const lastUserPrompt =
+    [...chatMessages].reverse().find((message) => message.role === "user")
+      ?.content ?? "";
+  const councilState = { ran: false, answer: "" };
 
   try {
     throwIfAborted(signal);
@@ -4818,6 +4912,8 @@ export async function runLLMStream(params: {
           courtlistenerEvents,
           caseCitationEvents,
           mcpEvents,
+          councilRan,
+          councilAnswer,
         } = await runToolCalls(
           toolCalls,
           docStore,
@@ -4831,7 +4927,12 @@ export async function runLLMStream(params: {
           projectId,
         courtlistenerTurnState,
         apiKeys,
+        lastUserPrompt,
       );
+        if (councilRan && councilAnswer) {
+          councilState.ran = true;
+          councilState.answer = councilAnswer;
+        }
         throwIfAborted(signal);
         for (const r of docsRead) {
           events.push({
@@ -4927,6 +5028,57 @@ export async function runLLMStream(params: {
   }
 
   flushText();
+
+  if (
+    promptRequestsCouncil(lastUserPrompt) &&
+    !councilState.ran &&
+    !isCouncilSynthesis(fullText)
+  ) {
+    throwIfAborted(signal);
+    logCouncilCompletion({
+      site: "runLLMStream.autoConvene",
+      source: classifyAnswerSource(fullText),
+      answer_bytes: utf8ByteLength(fullText),
+      answer_snapshot: fullText,
+      phase: "stream_finished_without_council",
+    });
+    const result = await executeCouncilForStream({
+      question: extractCouncilQuestion(lastUserPrompt),
+      context: lastUserPrompt,
+      minQuorum: resolveCouncilMinQuorum(
+        parseMinQuorumFromPrompt(lastUserPrompt),
+      ),
+      apiKeys,
+      write,
+      site: "runLLMStream.autoConvene",
+    });
+    councilState.ran = true;
+    councilState.answer = result.answer;
+    fullText = preferCouncilSynthesis(`${fullText}\n\n${result.answer}`);
+    events.push({ type: "content", text: result.answer });
+  } else if (councilState.answer) {
+    fullText = preferCouncilSynthesis(
+      isCouncilSynthesis(fullText)
+        ? fullText
+        : `${fullText}\n\n${councilState.answer}`,
+    );
+  }
+
+  if (promptRequestsCouncil(lastUserPrompt)) {
+    logCouncilCompletion({
+      site: "runLLMStream.completionMarker",
+      source: classifyAnswerSource(fullText),
+      answer_bytes: utf8ByteLength(fullText),
+      answer_snapshot: fullText,
+      phase: "completion_marker",
+      council_ran: councilState.ran,
+    });
+    if (!isCouncilSynthesis(fullText)) {
+      throw new Error(
+        "council synthesis missing; refusing to complete with intake preamble",
+      );
+    }
+  }
 
   // Parse and emit citations from <CITATIONS> block
   const { citations: parsedCitations, diagnostics: citationDiagnostics } =

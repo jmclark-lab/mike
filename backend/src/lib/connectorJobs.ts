@@ -1,3 +1,13 @@
+import {
+  classifyAnswerSource,
+  councilSynthesisMissingError,
+  isCouncilSynthesis,
+  logCouncilCompletion,
+  preferCouncilSynthesis,
+  promptRequestsCouncil,
+  utf8ByteLength,
+} from "./councilCompletion";
+
 export type ConnectorJobSnapshot =
   | { status: "working"; createdAt: number; updatedAt: number }
   | { status: "done"; text: string; createdAt: number; updatedAt: number }
@@ -30,9 +40,21 @@ export class ConnectorJobManager {
         const current = this.jobs.get(id);
         if (!current || current.status !== "working") return;
         if (!text.trim()) throw new Error("empty response from Mike backend");
+        const finalized = preferCouncilSynthesis(text);
+        const source = classifyAnswerSource(finalized);
+        logCouncilCompletion({
+          site: "ConnectorJobManager.done",
+          source,
+          answer_bytes: utf8ByteLength(finalized),
+          answer_snapshot: finalized,
+          job_id: id,
+        });
+        if (promptRequestsCouncil(prompt) && !isCouncilSynthesis(finalized)) {
+          throw councilSynthesisMissingError();
+        }
         this.jobs.set(id, {
           status: "done",
-          text,
+          text: finalized,
           prompt: "",
           createdAt: current.createdAt,
           updatedAt: Date.now(),
@@ -41,9 +63,18 @@ export class ConnectorJobManager {
       .catch((error) => {
         const current = this.jobs.get(id);
         if (!current || current.status !== "working") return;
+        const message = error instanceof Error ? error.message : String(error);
+        logCouncilCompletion({
+          site: "ConnectorJobManager.error",
+          source: "unknown",
+          answer_bytes: 0,
+          answer_snapshot: "",
+          job_id: id,
+          error: message,
+        });
         this.jobs.set(id, {
           status: "error",
-          error: error instanceof Error ? error.message : String(error),
+          error: message,
           prompt: "",
           createdAt: current.createdAt,
           updatedAt: Date.now(),
@@ -87,7 +118,10 @@ export class ConnectorJobManager {
   }
 }
 
-export async function readMikeSseText(response: Response): Promise<string> {
+export async function readMikeSseText(
+  response: Response,
+  prompt = "",
+): Promise<string> {
   if (!response.ok) {
     const body = await response.text().catch(() => "");
     throw new Error(
@@ -101,12 +135,17 @@ export async function readMikeSseText(response: Response): Promise<string> {
   let buffer = "";
   let text = "";
   let streamError = "";
+  let sawDone = false;
 
   const consume = (line: string) => {
     const trimmed = line.trim();
     if (!trimmed.startsWith("data:")) return;
     const data = trimmed.slice(5).trim();
-    if (!data || data === "[DONE]") return;
+    if (!data) return;
+    if (data === "[DONE]") {
+      sawDone = true;
+      return;
+    }
     try {
       const event = JSON.parse(data) as {
         type?: unknown;
@@ -132,6 +171,31 @@ export async function readMikeSseText(response: Response): Promise<string> {
   }
   buffer += decoder.decode();
   if (buffer) consume(buffer);
-  if (streamError) throw new Error(streamError);
-  return text;
+
+  const finalized = preferCouncilSynthesis(text);
+  const source = classifyAnswerSource(finalized);
+  logCouncilCompletion({
+    site: "readMikeSseText",
+    source,
+    answer_bytes: utf8ByteLength(finalized),
+    answer_snapshot: finalized,
+    saw_done: sawDone,
+    stream_error: streamError || null,
+  });
+
+  // Abort/error events must not mark a preamble as done. If the judge
+  // synthesis already landed, keep it even if the writer then aborted.
+  if (streamError && !isCouncilSynthesis(finalized)) {
+    throw new Error(streamError);
+  }
+
+  if (promptRequestsCouncil(prompt) && !isCouncilSynthesis(finalized)) {
+    throw councilSynthesisMissingError();
+  }
+  if (!sawDone && !isCouncilSynthesis(finalized)) {
+    throw new Error(
+      "SSE stream ended without DONE (possible upstream timeout)",
+    );
+  }
+  return finalized;
 }

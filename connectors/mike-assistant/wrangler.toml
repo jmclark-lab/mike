@@ -29,3 +29,8 @@ enabled = true
 #                            (per-client, independently revocable; any listed key works)
 #   CONNECTOR_API_KEY      - service key sent to the Railway backend
 #   MIKE_BACKEND_URL       - Railway backend base URL (e.g. https://.../)
+
+# Large MCP prompts (council / PTA) — avoid DO 128 KiB per-value limit.
+[[r2_buckets]]
+binding = "MIKE_PROMPTS"
+bucket_name = "mike"

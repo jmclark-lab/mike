@@ -20,6 +20,31 @@ class MemoryStorage {
   async setAlarm(value) { this.alarm = value; }
 }
 
+class MemoryR2 {
+  constructor() {
+    this.objects = new Map();
+  }
+  async put(key, value) {
+    let bytes;
+    if (typeof value === "string") bytes = new TextEncoder().encode(value);
+    else if (value instanceof ArrayBuffer) bytes = new Uint8Array(value.slice(0));
+    else if (ArrayBuffer.isView(value)) bytes = new Uint8Array(value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength));
+    else bytes = new TextEncoder().encode(String(value));
+    this.objects.set(key, bytes);
+  }
+  async get(key) {
+    const bytes = this.objects.get(key);
+    if (!bytes) return null;
+    return {
+      async text() { return new TextDecoder().decode(bytes); },
+      async arrayBuffer() { return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength); },
+    };
+  }
+  async delete(key) {
+    this.objects.delete(key);
+  }
+}
+
 function state(initial) {
   return { storage: new MemoryStorage(initial) };
 }
@@ -48,6 +73,12 @@ test("tools expose bounded multipart output schemas and accurate annotations", a
   assert.equal(byName.get_mike_answer.annotations.destructiveHint, false);
   assert.equal(byName.ask_mike.annotations.destructiveHint, false);
   assert.equal(byName.ask_mike.inputSchema.properties.prompt.maxLength, 500000);
+  assert.match(byName.ask_mike.inputSchema.properties.prompt.description, /UTF-8 byte chunks under 128 KiB/i);
+  assert.match(source, /version: "1\.8\.2"/);
+  assert.match(source, /MCP connector v1\.8\.2/);
+  assert.match(source, /PROMPT_CHUNK_BYTES = 100 \* 1024/);
+  assert.match(source, /MCP_MAX_BODY_BYTES = 2 \* 1024 \* 1024/);
+  assert.match(source, /refusing to complete with intake preamble/);
   assert.equal(byName.get_mike_answer.outputSchema.properties.total_parts.type, "integer");
 });
 
@@ -84,7 +115,9 @@ test("get_mike_answer returns one bounded part for a large completed result", as
   const answer = first.result.content[0].text.split("\n\n")[1];
   assert.equal(answer.length, 15000);
   assert.equal(answer, "x".repeat(15000));
-  assert.ok(JSON.stringify(first).length < 20000);
+  // content + structuredContent.answer both carry the 15k part (~30k JSON total)
+  assert.ok(JSON.stringify(first).length < 40000);
+  assert.ok(JSON.stringify(first).length < full.length);
   assert.match(first.result.content[0].text, /part 1 of 13/);
 });
 
@@ -181,6 +214,240 @@ test("long jobs are polled by stable backend id without duplicating execution", 
     assert.equal(await jobState.storage.get("result:1"), "mandatory 4/4 opinion");
     assert.equal(calls, 3);
     assert.ok(urls.every((url) => url.endsWith("/connector/jobs/" + first.backendJobId)));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("MikeJob refuses an intake preamble as the terminal council answer", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    status: "done",
+    text: "I'll convene the five-seat Council on the full v6.6 text. I'm setting quorum at 3.",
+  }), { status: 200, headers: { "content-type": "application/json" } });
+  const jobState = state({
+    job: {
+      status: "working",
+      principal: "principal-a",
+      prompt: "Convene the five-seat Council on this PTA. min_quorum 3.",
+      created: Date.now(),
+      startedAt: Date.now(),
+    },
+  });
+  const job = new workerModule.MikeJob(jobState, {
+    MIKE_BACKEND_URL: "https://backend.test",
+    CONNECTOR_API_KEY: "test-key",
+    RETRY_DELAY_MS: "1",
+  });
+  try {
+    await job.alarm();
+    const stored = await jobState.storage.get("job");
+    assert.equal(stored.status, "error");
+    assert.match(stored.error, /intake preamble/i);
+    assert.equal(await jobState.storage.get("result:1"), undefined);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("MikeJob stores synthesis and drops a leading intake preamble", async () => {
+  const originalFetch = globalThis.fetch;
+  const synthesis = "[Council: 3/5 opinions received (Fugu Ultra, GPT-6 Astra, Grok 4.6); failed: Fable 5.1, Gemini 3.1 Pro Preview; reconciled by Opus 5]\n\nHold the send.";
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    status: "done",
+    text: "I'll convene the five-seat Council.\n\n" + synthesis,
+  }), { status: 200, headers: { "content-type": "application/json" } });
+  const jobState = state({
+    job: {
+      status: "working",
+      principal: "principal-a",
+      prompt: "Convene the five-seat Council. min_quorum 3.",
+      created: Date.now(),
+      startedAt: Date.now(),
+    },
+  });
+  const job = new workerModule.MikeJob(jobState, {
+    MIKE_BACKEND_URL: "https://backend.test",
+    CONNECTOR_API_KEY: "test-key",
+    RETRY_DELAY_MS: "1",
+  });
+  try {
+    await job.alarm();
+    const stored = await jobState.storage.get("job");
+    assert.equal(stored.status, "done");
+    assert.equal(stored.answerSource, "synthesis");
+    assert.equal(await jobState.storage.get("result:1"), synthesis);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+function chunkByteLength(part) {
+  if (part == null) return 0;
+  if (typeof part === "string") return new TextEncoder().encode(part).length;
+  if (part instanceof ArrayBuffer) return part.byteLength;
+  if (ArrayBuffer.isView(part)) return part.byteLength;
+  return 0;
+}
+
+test("MikeJob chunks large ASCII prompts and alarm reassembles them for callMike", async () => {
+  const originalFetch = globalThis.fetch;
+  let receivedPrompt = null;
+  globalThis.fetch = async (input, init) => {
+    const body = JSON.parse(init.body);
+    receivedPrompt = body.prompt;
+    return new Response(JSON.stringify({ status: "done", text: "chunked prompt ok" }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
+  const jobState = state();
+  const job = new workerModule.MikeJob(jobState, {
+    MIKE_BACKEND_URL: "https://backend.test",
+    CONNECTOR_API_KEY: "test-key",
+    RETRY_DELAY_MS: "1",
+  });
+  const bigPrompt = "p".repeat(200000);
+  try {
+    const started = await job.fetch(new Request("https://do/start", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        prompt: bigPrompt,
+        principal: "principal-a",
+        jobId: "job-large-prompt",
+      }),
+    }));
+    assert.equal(started.status, 200);
+    const meta = await jobState.storage.get("job");
+    assert.equal(meta.prompt, null);
+    assert.equal(meta.promptR2Key, null);
+    assert.ok(meta.promptChunks >= 2);
+    let totalBytes = 0;
+    for (let i = 0; i < meta.promptChunks; i++) {
+      const chunk = await jobState.storage.get("prompt:" + i);
+      assert.ok(chunk instanceof ArrayBuffer);
+      assert.ok(chunk.byteLength <= 128 * 1024);
+      totalBytes += chunk.byteLength;
+    }
+    assert.equal(totalBytes, 200000);
+
+    await job.alarm();
+    assert.equal(receivedPrompt, bigPrompt);
+    const done = await jobState.storage.get("job");
+    assert.equal(done.status, "done");
+    assert.equal(done.prompt, null);
+    assert.equal(done.promptChunks, 0);
+    assert.equal(await jobState.storage.get("prompt:0"), undefined);
+    assert.equal(await jobState.storage.get("result:1"), "chunked prompt ok");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("MikeJob DO fallback splits multibyte prompts by UTF-8 bytes under 128 KiB", async () => {
+  const originalFetch = globalThis.fetch;
+  let receivedPrompt = null;
+  globalThis.fetch = async (input, init) => {
+    const body = JSON.parse(init.body);
+    receivedPrompt = body.prompt;
+    return new Response(JSON.stringify({ status: "done", text: "multibyte ok" }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
+  const jobState = state();
+  const job = new workerModule.MikeJob(jobState, {
+    MIKE_BACKEND_URL: "https://backend.test",
+    CONNECTOR_API_KEY: "test-key",
+    RETRY_DELAY_MS: "1",
+  });
+  const bigPrompt = "á".repeat(90000);
+  const utf8Bytes = new TextEncoder().encode(bigPrompt).length;
+  assert.ok(utf8Bytes > 128 * 1024, "fixture must exceed DO 128 KiB as a single value");
+  try {
+    const started = await job.fetch(new Request("https://do/start", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        prompt: bigPrompt,
+        principal: "principal-a",
+        jobId: "job-multibyte-prompt",
+      }),
+    }));
+    assert.equal(started.status, 200);
+    const meta = await jobState.storage.get("job");
+    assert.equal(meta.prompt, null);
+    assert.equal(meta.promptR2Key, null);
+    assert.ok(meta.promptChunks >= 2);
+    let totalBytes = 0;
+    for (let i = 0; i < meta.promptChunks; i++) {
+      const chunk = await jobState.storage.get("prompt:" + i);
+      assert.ok(chunk instanceof ArrayBuffer);
+      assert.ok(chunkByteLength(chunk) <= 128 * 1024);
+      totalBytes += chunkByteLength(chunk);
+    }
+    assert.equal(totalBytes, utf8Bytes);
+
+    await job.alarm();
+    assert.equal(receivedPrompt, bigPrompt);
+    const done = await jobState.storage.get("job");
+    assert.equal(done.status, "done");
+    assert.equal(done.promptChunks, 0);
+    assert.equal(await jobState.storage.get("prompt:0"), undefined);
+    assert.equal(await jobState.storage.get("result:1"), "multibyte ok");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("MikeJob stores prompts in R2 when MIKE_PROMPTS is bound", async () => {
+  const originalFetch = globalThis.fetch;
+  let receivedPrompt = null;
+  globalThis.fetch = async (input, init) => {
+    const body = JSON.parse(init.body);
+    receivedPrompt = body.prompt;
+    return new Response(JSON.stringify({ status: "done", text: "r2 ok" }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
+  const r2 = new MemoryR2();
+  const jobState = state();
+  const job = new workerModule.MikeJob(jobState, {
+    MIKE_BACKEND_URL: "https://backend.test",
+    CONNECTOR_API_KEY: "test-key",
+    RETRY_DELAY_MS: "1",
+    MIKE_PROMPTS: r2,
+  });
+  const bigPrompt = "á".repeat(90000);
+  try {
+    const started = await job.fetch(new Request("https://do/start", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        prompt: bigPrompt,
+        principal: "principal-a",
+        jobId: "job-r2-prompt",
+      }),
+    }));
+    assert.equal(started.status, 200);
+    const meta = await jobState.storage.get("job");
+    assert.equal(meta.prompt, null);
+    assert.equal(meta.promptChunks, 0);
+    assert.equal(meta.promptR2Key, "mcp-prompts/job-r2-prompt.txt");
+    assert.equal(await jobState.storage.get("prompt:0"), undefined);
+    const stored = await r2.get(meta.promptR2Key);
+    assert.ok(stored);
+    assert.equal(await stored.text(), bigPrompt);
+
+    await job.alarm();
+    assert.equal(receivedPrompt, bigPrompt);
+    const done = await jobState.storage.get("job");
+    assert.equal(done.status, "done");
+    assert.equal(done.promptR2Key, null);
+    assert.equal(await r2.get("mcp-prompts/job-r2-prompt.txt"), null);
+    assert.equal(await jobState.storage.get("result:1"), "r2 ok");
   } finally {
     globalThis.fetch = originalFetch;
   }
