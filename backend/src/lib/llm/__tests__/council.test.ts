@@ -3,9 +3,12 @@ import test from "node:test";
 import {
   COUNCIL_JUDGE,
   COUNCIL_MEMBERS,
+  COUNCIL_PARTIAL_ANSWER_LIMIT,
   CouncilQuorumError,
   conveneCouncilWithCompleter,
+  formatCouncilQuorumFailure,
   resolveCouncilJudge,
+  resolveCouncilMinQuorum,
   resolveCouncilSeats,
 } from "../council";
 
@@ -22,6 +25,8 @@ test("default council seats are five providers including Fable 5.1 and Grok 4.6"
   assert.equal(seats[4].provider, "xai");
   assert.equal(seats[4].model, "grok-4.6");
   assert.equal(seats[4].label, "Grok 4.6");
+  assert.equal(seats[0].maxTokens, 32000);
+  assert.equal(seats[1].maxTokens, 16000);
   assert.equal(seats[4].maxTokens, 8000);
   assert.equal(COUNCIL_MEMBERS.length, 5);
   assert.deepEqual(COUNCIL_MEMBERS, [
@@ -176,14 +181,31 @@ test("council seats are configurable and the OpenAI seat always uses xhigh reaso
   );
   assert.equal(seats[2].label, "GPT-6 Astra");
   assert.equal(seats[2].reasoningEffort, "xhigh");
-  assert.equal(seats[0].maxTokens, 8000);
-  assert.equal(seats[1].maxTokens, 6000);
+  assert.equal(seats[0].maxTokens, 32000);
+  assert.equal(seats[1].maxTokens, 16000);
   assert.equal(seats[2].maxTokens, 32000);
   assert.equal(seats[3].maxTokens, 6000);
   assert.equal(seats[3].label, "Gemini 3.5 Pro");
   assert.equal(seats[4].provider, "xai");
   assert.equal(seats[4].label, "Grok 4.6");
   assert.equal(seats[4].maxTokens, 12000);
+});
+
+test("the Anthropic and Sakana council calls receive the raised token budgets", async () => {
+  const observed = new Map<string, number | undefined>();
+  await conveneCouncilWithCompleter(
+    { question: "Review this matter." },
+    async ({ model, maxTokens }) => {
+      if (model === "claude-fable-5-1" || model === "fugu-ultra-20260615") {
+        observed.set(model, maxTokens);
+      }
+      return model === COUNCIL_JUDGE ? "Judge answer" : `Answer from ${model}`;
+    },
+    noDelay,
+  );
+
+  assert.equal(observed.get("claude-fable-5-1"), 32000);
+  assert.equal(observed.get("fugu-ultra-20260615"), 16000);
 });
 
 test("the xAI council call receives the Grok 4.6 token budget", async () => {
@@ -255,6 +277,164 @@ test("the council judge call receives the Opus 5 token budget", async () => {
 
   assert.deepEqual(observed, { model: "claude-opus-5", maxTokens: 16000 });
   assert.match(result.finalAnswer, /reconciled by Opus 5/);
+});
+
+test("min_quorum=4 with one empty seat still judges the successful opinions", async () => {
+  const empty = COUNCIL_MEMBERS[0];
+  const invoked: string[] = [];
+  let judgeUser = "";
+  let judgeSystem = "";
+  const result = await conveneCouncilWithCompleter(
+    { question: "Review this matter.", minQuorum: 4 },
+    async ({ model, user, systemPrompt }) => {
+      invoked.push(model);
+      if (model === empty) return "   ";
+      if (model === COUNCIL_JUDGE) {
+        judgeUser = user;
+        judgeSystem = systemPrompt ?? "";
+        return "Partial reconcile";
+      }
+      return `Answer from ${model}`;
+    },
+    { ...noDelay, maxAttempts: 2 },
+  );
+
+  assert.equal(result.respondedCount, 4);
+  assert.equal(invoked.filter((model) => model === empty).length, 2);
+  assert.equal(invoked.includes(COUNCIL_JUDGE), true);
+  assert.match(result.finalAnswer, /4\/5 opinions received/);
+  assert.match(result.finalAnswer, /failed: Fable 5\.1/);
+  assert.match(result.finalAnswer, /reconciled by Opus 5/);
+  assert.doesNotMatch(result.finalAnswer, /mandatory 5\/5/);
+  assert.match(judgeUser, /FAILED SEATS/);
+  assert.match(judgeUser, /Fable 5\.1/);
+  assert.match(judgeUser, /Answer from fugu-ultra-20260615/);
+  assert.doesNotMatch(judgeUser, /Answer from claude-fable-5-1/);
+  assert.match(judgeSystem, /do not invent/i);
+  assert.equal(
+    result.members.find((member) => member.model === empty)?.ok,
+    false,
+  );
+});
+
+test("min_quorum=5 with one empty seat still fails and never invokes the judge", async () => {
+  const empty = COUNCIL_MEMBERS[3];
+  const invoked: string[] = [];
+
+  await assert.rejects(
+    () =>
+      conveneCouncilWithCompleter(
+        { question: "Review this matter.", minQuorum: 5 },
+        async ({ model }) => {
+          invoked.push(model);
+          return model === empty ? "   " : `Answer from ${model}`;
+        },
+        { ...noDelay, maxAttempts: 2 },
+      ),
+    (error: unknown) => {
+      assert.ok(error instanceof CouncilQuorumError);
+      assert.equal(error.respondedCount, 4);
+      assert.equal(error.requiredCount, 5);
+      assert.match(error.message, /Gemini 3\.1 Pro Preview/);
+      assert.equal(
+        error.members.filter((member) => member.ok).length,
+        4,
+      );
+      return true;
+    },
+  );
+
+  assert.equal(invoked.filter((model) => model === empty).length, 2);
+  assert.equal(invoked.includes(COUNCIL_JUDGE), false);
+});
+
+test("COUNCIL_MIN_QUORUM env is clamped to 1–5 and overridden by the call", () => {
+  assert.equal(resolveCouncilMinQuorum(undefined, {}), 5);
+  assert.equal(resolveCouncilMinQuorum(undefined, { COUNCIL_MIN_QUORUM: "4" }), 4);
+  assert.equal(resolveCouncilMinQuorum(undefined, { COUNCIL_MIN_QUORUM: "0" }), 1);
+  assert.equal(resolveCouncilMinQuorum(undefined, { COUNCIL_MIN_QUORUM: "9" }), 5);
+  assert.equal(resolveCouncilMinQuorum(4, { COUNCIL_MIN_QUORUM: "5" }), 4);
+  assert.equal(resolveCouncilMinQuorum("3", {}), 3);
+});
+
+test("formatCouncilQuorumFailure dumps successful answers and failed seat errors", () => {
+  const longAnswer = "x".repeat(COUNCIL_PARTIAL_ANSWER_LIMIT + 250);
+  const error = new CouncilQuorumError(
+    [
+      {
+        model: "claude-fable-5-1",
+        label: "Fable 5.1",
+        answer: longAnswer,
+        ok: true,
+        attempts: 1,
+      },
+      {
+        model: "fugu-ultra-20260615",
+        label: "Fugu Ultra",
+        answer: "Keep the Fugu view",
+        ok: true,
+        attempts: 2,
+      },
+      {
+        model: "gpt-6-astra",
+        label: "GPT-6 Astra",
+        answer: "",
+        ok: false,
+        attempts: 3,
+        error: "empty response",
+      },
+      {
+        model: "gemini-3.1-pro-preview",
+        label: "Gemini 3.1 Pro Preview",
+        answer: "Gemini view",
+        ok: true,
+        attempts: 1,
+      },
+      {
+        model: "grok-4.6",
+        label: "Grok 4.6",
+        answer: "Grok view",
+        ok: true,
+        attempts: 1,
+      },
+    ],
+    5,
+  );
+
+  const dump = formatCouncilQuorumFailure(error);
+  assert.match(dump, /no council opinion was produced/);
+  assert.match(dump, /Keep the Fugu view/);
+  assert.match(dump, /Gemini view/);
+  assert.match(dump, /Grok view/);
+  assert.match(dump, /GPT-6 Astra/);
+  assert.match(dump, /empty response/);
+  assert.match(dump, /\[truncated\]/);
+  assert.ok(dump.includes("x".repeat(COUNCIL_PARTIAL_ANSWER_LIMIT)));
+  assert.equal(
+    dump.includes("x".repeat(COUNCIL_PARTIAL_ANSWER_LIMIT + 1)),
+    false,
+  );
+});
+
+test("empty Claude text diagnostics include stop_reason, block types, and max_tokens", async () => {
+  const { describeEmptyClaudeText } = await import("../claude");
+  const message = describeEmptyClaudeText(
+    {
+      stop_reason: "max_tokens",
+      content: [
+        { type: "thinking" },
+        { type: "thinking" },
+        { type: "text", text: "" },
+      ],
+    },
+    8000,
+  );
+  assert.match(message, /stop_reason=max_tokens/);
+  assert.match(message, /"thinking":2/);
+  assert.match(message, /"text":1/);
+  assert.match(message, /max_tokens_hit=true/);
+  assert.match(message, /max_tokens=8000/);
+  assert.doesNotMatch(message, /invent|thinking text/i);
 });
 
 test("duplicate model configuration is rejected before any provider call", async () => {
