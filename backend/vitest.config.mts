@@ -35,20 +35,17 @@ export default defineConfig({
       // chat tool dispatch, llm providers, spreadsheet handling) — so
       // the global number stays modest.
       //
-      // Measured on THIS tree with the widened src/** scope: 60.59%
-      // statements, 51.98% branches, 64.77% functions, 63.18% lines —
-      // slightly under the src/lib + src/modules numbers (61.34 / 52.31
-      // / 66.28 / 63.97), because the workers, jobs and app wiring the
-      // widening pulled in are covered only by the stack suites.
+      // Measured on this tree after the Library download gate: 68.4%
+      // statements, 59.21% branches, 71.88% functions, 70.95% lines.
       // The floors below sit just under that, so CI fails on a real
       // *drop* rather than on measurement noise. Floors only go up: when
       // you add tests, raise them in the same PR. Backlog + per-area
       // status: docs/testing-coverage.md.
       thresholds: {
-        statements: 60,
-        branches: 51,
-        functions: 64,
-        lines: 63,
+        statements: 68,
+        branches: 58,
+        functions: 71,
+        lines: 70,
       },
     },
   },

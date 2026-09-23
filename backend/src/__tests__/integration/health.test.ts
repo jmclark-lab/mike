@@ -51,6 +51,50 @@ describe("GET /health", () => {
     });
 });
 
+describe("GET /healthz", () => {
+    afterEach(() => {
+        delete process.env.SPONSOR_CI_MODE;
+        delete process.env.RAILWAY_GIT_COMMIT_SHA;
+        delete process.env.GIT_SHA;
+    });
+
+    it("is unauthenticated and echoes commit plus sponsorCiMode", async () => {
+        process.env.RAILWAY_GIT_COMMIT_SHA = "abc123def";
+        delete process.env.SPONSOR_CI_MODE;
+
+        const res = await request(app).get("/healthz");
+
+        expect(res.status).toBe(200);
+        expect(res.body.status).toBe("ok");
+        expect(res.body.commit).toBe("abc123def");
+        expect(res.body.sponsorCiMode).toBe(false);
+        expect(res.body.db).toBe("ok");
+        expect(typeof res.body.uptime_s).toBe("number");
+        expect(typeof res.body.latency_ms).toBe("number");
+    });
+
+    it("reports sponsorCiMode when the flag is on", async () => {
+        process.env.SPONSOR_CI_MODE = "1";
+        process.env.RAILWAY_GIT_COMMIT_SHA = "716c28c";
+
+        const res = await request(app).get("/healthz");
+
+        expect(res.status).toBe(200);
+        expect(res.body.sponsorCiMode).toBe(true);
+        expect(res.body.commit).toBe("716c28c");
+    });
+
+    it("falls back to the image GIT_SHA when Railway does not inject one", async () => {
+        delete process.env.RAILWAY_GIT_COMMIT_SHA;
+        process.env.GIT_SHA = "4ad85e4";
+
+        const res = await request(app).get("/healthz");
+
+        expect(res.status).toBe(200);
+        expect(res.body.commit).toBe("4ad85e4");
+    });
+});
+
 describe("requireAuth middleware", () => {
     it("rejects requests with no Authorization header (401)", async () => {
         const res = await request(app).get("/chat");

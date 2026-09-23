@@ -4,6 +4,7 @@ import type { Server } from "node:http";
 import { Worker as ThreadWorker } from "node:worker_threads";
 import path from "node:path";
 import { app } from "./app";
+import { sponsorCiBootWarning } from "./lib/sponsorCiMode";
 import { enforceDocumentLifecycleMigration } from "./lib/dbq/lifecycleGuard";
 import { manifestPublicKey } from "./lib/manifestSigning";
 import { validateRuntimeConfiguration } from "./lib/runtimeConfig";
@@ -103,6 +104,10 @@ let server: Server | null = null;
 
 async function main(): Promise<void> {
   await validateBootConfiguration();
+  const sponsorCiWarning = sponsorCiBootWarning();
+  if (sponsorCiWarning) {
+    console.warn(`[sponsor-ci] ${sponsorCiWarning}`);
+  }
   // Deploying this code against a database that has not run the
   // document-lifecycle migrations leaks storage silently and fails every
   // upload — see lifecycleGuard. The probe is AWAITED before the port is

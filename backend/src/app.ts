@@ -27,6 +27,8 @@ import {
   userMemoryRouter,
 } from "./modules/memory/memory.routes";
 import { manifestPublicKey } from "./lib/manifestSigning";
+import { isSponsorCiMode } from "./lib/sponsorCiMode";
+import { createServerSupabase } from "./lib/supabase";
 import {
   handleUnhandledError,
   protectInternalErrorResponses,
@@ -316,6 +318,46 @@ app.use("/audit", auditRouter);
 app.use("/upload-sessions", uploadSessionsRouter);
 
 app.get("/health", (_req, res) => res.json({ ok: true }));
+
+// Unauthenticated deploy probe. `GET /health` stays the tiny liveness check.
+// `/healthz` echoes the git sha and the same Sponsor-CI predicate the
+// Library download gate uses, so a frontend that proxies `/api/*` can prove
+// which backend build is behind it. No auth: monitors and the OpenNext
+// gateway call it before a session exists.
+function deployedCommitSha(): string | null {
+  // Railway injects RAILWAY_GIT_COMMIT_SHA. The backend image also bakes
+  // GIT_SHA from the Docker build arg (see backend/Dockerfile).
+  const sha = (
+    process.env.RAILWAY_GIT_COMMIT_SHA ||
+    process.env.GIT_SHA ||
+    process.env.GIT_COMMIT_SHA ||
+    process.env.GIT_COMMIT ||
+    process.env.SOURCE_VERSION ||
+    ""
+  ).trim();
+  return sha.length > 0 ? sha : null;
+}
+
+app.get("/healthz", async (_req, res) => {
+  const started = Date.now();
+  let db: "ok" | "error" = "ok";
+  try {
+    const supa = createServerSupabase();
+    const { error } = await supa.from("chats").select("id").limit(1);
+    if (error) db = "error";
+  } catch {
+    db = "error";
+  }
+  const ok = db === "ok";
+  res.status(ok ? 200 : 503).json({
+    status: ok ? "ok" : "degraded",
+    commit: deployedCommitSha(),
+    db,
+    uptime_s: Math.round(process.uptime()),
+    latency_ms: Date.now() - started,
+    sponsorCiMode: isSponsorCiMode(),
+  });
+});
 
 // Deliberate failure for verifying the error pipeline end to end (a real
 // thrown error through the real 500 path, so the Sentry event carries the

@@ -1,7 +1,12 @@
 // Read/serve paths for documents: inline display bytes, zip bundling, signed
 // download URLs, and the raw source bytes of a version.
 
-import { getSignedUrl, headFile } from "../../lib/storage";
+import { downloadFile, getSignedUrl, headFile } from "../../lib/storage";
+import {
+    bytesSafeForSignedUrl,
+    OutboundAttributionError,
+    outboundAttributionStatusBody,
+} from "../../lib/outboundAttribution";
 import {
     attachActiveVersionPaths,
     loadActiveVersion,
@@ -15,6 +20,76 @@ import {
 } from "../../lib/documentDisplay";
 import { downloadFilenameForVersion, type Db } from "./documents.shared";
 import { ensureDocumentAccess } from "./documents.access";
+
+type AttributionBlock = {
+    ok: false;
+    kind: "attribution";
+    body: ReturnType<typeof outboundAttributionStatusBody>;
+};
+
+/**
+ * Word, PDF, and legacy .doc are fail-closed even when Sponsor-CI mode is
+ * off. Other types stay on the streaming path here; `GET /url` still scans
+ * every object before it mints a signed URL.
+ */
+function storedBytesNeedAttributionGate(
+    filename: string,
+    fileType: string | null,
+): boolean {
+    const name = filename.toLowerCase();
+    const type = (fileType ?? "").trim().toLowerCase();
+    if (
+        name.endsWith(".docx") ||
+        type === "docx" ||
+        type.includes("wordprocessingml")
+    ) {
+        return true;
+    }
+    if (name.endsWith(".pdf") || type === "pdf" || type.includes("pdf")) {
+        return true;
+    }
+    if (
+        (name.endsWith(".doc") && !name.endsWith(".docx")) ||
+        type === "doc" ||
+        type === "application/msword"
+    ) {
+        return true;
+    }
+    return false;
+}
+
+/**
+ * Download the object a client would receive and refuse it when the
+ * outbound attribution detector hits. Does not rewrite, scrub, or upload:
+ * a cleaned buffer is not the stored object.
+ */
+async function gateExactStoredBytes(
+    storagePath: string,
+    filename: string,
+    fileType: string | null,
+    missingDetail: string,
+): Promise<
+    | { ok: true; stored: Buffer }
+    | { ok: false; kind: "not_found"; detail: string }
+    | AttributionBlock
+> {
+    const raw = await downloadFile(storagePath);
+    if (!raw) return { ok: false, kind: "not_found", detail: missingDetail };
+    const stored = Buffer.from(raw);
+    try {
+        await bytesSafeForSignedUrl(stored, filename, fileType);
+    } catch (err) {
+        if (err instanceof OutboundAttributionError) {
+            return {
+                ok: false,
+                kind: "attribution",
+                body: outboundAttributionStatusBody(err),
+            };
+        }
+        throw err;
+    }
+    return { ok: true, stored };
+}
 
 // ---------------------------------------------------------------------------
 // Display
@@ -379,6 +454,7 @@ export async function getDownloadUrl(
     | { ok: true; payload: Record<string, unknown> }
     | { ok: false; kind: "not_found"; detail: string }
     | { ok: false; kind: "storage"; detail: string }
+    | AttributionBlock
 > {
     const access = await ensureDocumentAccess(documentId, userId, userEmail, db);
     if (!access.ok)
@@ -393,6 +469,17 @@ export async function getDownloadUrl(
         active.version_number,
         active.source === "assistant_edit",
     );
+    // The signed GET returns this storage key unchanged. Gate those exact
+    // bytes before getSignedUrl. Do not rewrite, scrub, or upload a
+    // replacement here: a cleaned in-memory copy is not the object the URL
+    // serves, and writing one back races the sponsor download.
+    const gated = await gateExactStoredBytes(
+        active.storage_path,
+        downloadFilename,
+        active.file_type,
+        "No file available",
+    );
+    if (!gated.ok) return gated;
     const url = await getSignedUrl(active.storage_path, 3600, downloadFilename);
     if (!url)
         return { ok: false, kind: "storage", detail: "Storage not configured" };
@@ -418,9 +505,11 @@ export async function getDownloadUrl(
 /**
  * Locate the active version's source object (or a specific version selected
  * with `versionIdParam`) so the route can stream it. Unlike the display path
- * this never substitutes a generated PDF rendition. Only the object's
- * metadata is read here: the route opens the read stream itself so `res`
- * applies backpressure to the object-storage read.
+ * this never substitutes a generated PDF rendition.
+ *
+ * Word, PDF, and legacy .doc are the upstream stand-in for the old `/docx`
+ * stream: those bytes are downloaded and fail-closed before anything is
+ * sent. Other types stay metadata-only so the route can stream them.
  */
 export async function getFileStreamSource(
     documentId: string,
@@ -435,8 +524,11 @@ export async function getFileStreamSource(
           fileType: string | null;
           size: number;
           filename: string;
+          /** Present when the attribution gate already read the object. */
+          verifiedBytes?: Buffer;
       }
     | { ok: false; detail: string }
+    | AttributionBlock
 > {
     const access = await ensureDocumentAccess(documentId, userId, userEmail, db);
     if (!access.ok) return { ok: false, detail: "Document not found" };
@@ -446,15 +538,34 @@ export async function getFileStreamSource(
     const metadata = await headFile(active.storage_path);
     if (!metadata) return { ok: false, detail: "Document bytes not available" };
 
+    const filename = downloadFilenameForVersion(
+        active.filename,
+        active.version_number,
+        active.source === "assistant_edit",
+    );
+    if (storedBytesNeedAttributionGate(filename, active.file_type)) {
+        const gated = await gateExactStoredBytes(
+            active.storage_path,
+            filename,
+            active.file_type,
+            "Document bytes not available",
+        );
+        if (!gated.ok) return gated;
+        return {
+            ok: true,
+            storagePath: active.storage_path,
+            fileType: active.file_type,
+            size: gated.stored.length,
+            filename,
+            verifiedBytes: gated.stored,
+        };
+    }
+
     return {
         ok: true,
         storagePath: active.storage_path,
         fileType: active.file_type,
         size: metadata.size,
-        filename: downloadFilenameForVersion(
-            active.filename,
-            active.version_number,
-            active.source === "assistant_edit",
-        ),
+        filename,
     };
 }

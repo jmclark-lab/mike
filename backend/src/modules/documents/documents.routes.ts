@@ -127,8 +127,12 @@ documentsRouter.get("/:documentId/file", requireAuth, asyncRoute(async (req, res
         versionIdParam,
         db,
     );
-    if (!result.ok)
+    if (!result.ok) {
+        if ("kind" in result) {
+            return void res.status(422).json(result.body);
+        }
         return void res.status(404).json({ detail: result.detail });
+    }
 
     res.setHeader("Content-Type", contentTypeForDocumentType(result.fileType));
     res.setHeader("Content-Length", result.size);
@@ -136,6 +140,12 @@ documentsRouter.get("/:documentId/file", requireAuth, asyncRoute(async (req, res
         "Content-Disposition",
         buildContentDisposition("inline", result.filename),
     );
+    // Gated office files are the bytes the detector already accepted.
+    // Do not open a second read that could observe a different object.
+    if (result.verifiedBytes) {
+        res.send(result.verifiedBytes);
+        return;
+    }
     const source = createFileReadStream(result.storagePath);
     try {
         await pipeline(source, res);
@@ -238,6 +248,9 @@ documentsRouter.get("/:documentId/url", requireAuth, asyncRoute(async (req, res)
         db,
     );
     if (!result.ok) {
+        if (result.kind === "attribution") {
+            return void res.status(422).json(result.body);
+        }
         const status = result.kind === "storage" ? 503 : 404;
         return void res.status(status).json({ detail: result.detail });
     }
