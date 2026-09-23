@@ -2,7 +2,7 @@
 
 Operational reference for the bioaccess® **Mike Legal AI** platform. Covers topology, deploy flow, rollback, auth/security, observability, and the gotchas learned in production.
 
-_Last updated: 2026-09-16._
+_Last updated: 2026-09-23._
 
 ---
 
@@ -44,7 +44,7 @@ _Last updated: 2026-09-16._
 - **Health-aware routing:** a model that returns empty/errors goes on an exponential-backoff cooldown (60s → cap 15min, +jitter, reset on success) and is deprioritised — never removed. In-memory/per-process (resets on deploy).
 - **Completions** (chat titles, tabular): `completeText` uses the caller's requested (cheap) model as primary with the chain as fallback. `invokeComplete` routes Claude/Gemini/OpenAI/xAI/DeepSeek. Sakana ids throw before any network call. DeepSeek is not added to `resolveModelChain()` and is not a council seat.
 - **DeepSeek:** adapter remains (`DEEPSEEK_API_KEY`, optional `DEEPSEEK_BASE_URL`, default `https://api.deepseek.com`). It is fenced out of the CI-facing model picker and account model dropdowns. Not a council seat. With `SPONSOR_CI_MODE=1` it also cannot be selected by id or used as a chat, council, or judge model.
-- **Sponsor-CI mode:** see §14. Off unless `SPONSOR_CI_MODE=1`. It does not change model-id defaults; it fences Sakana and DeepSeek and keeps council, judge, and the chat chain on the frontier seats already configured above.
+- **Sponsor-CI mode:** see §14. In production (`NODE_ENV=production`, which `backend/Dockerfile` sets) a missing flag stays on. Outside production it is off unless `SPONSOR_CI_MODE=1`. It does not change model-id defaults; it fences Sakana and DeepSeek and keeps council, judge, and the chat chain on the frontier seats already configured above.
 - **Legal council:** four provider-diverse seats always fan out — Fable 5.1 (`claude-fable-5-1`), GPT-6 Astra (`gpt-6-astra` with `xhigh` reasoning), Gemini 3.1 Pro Preview (`gemini-3.1-pro-preview`), and Grok 4.7 (`grok-4.7`). Sakana is not a seat. Each original model is retried up to `COUNCIL_MEMBER_MAX_ATTEMPTS` (default 3) without substitution. Quorum is `respondedCount >= COUNCIL_MIN_QUORUM` (default **4**, clamp 1–4; per-call `min_quorum` overrides). The Opus 5.5 judge (`COUNCIL_JUDGE=claude-opus-5-5`, default `COUNCIL_JUDGE_MAX_TOKENS=16000`) is never a voting seat and is never invoked below min quorum. If some seats fail but min quorum is met, the judge reconciles only successful opinions and the header reports `k/4`, not a fake 4/4. Below min quorum, `convene_council` returns a structured dump of completed opinions plus failed-seat errors. Default output budgets: Anthropic/Fable `32000`, Astra `16384`, Gemini `6000`, Grok `8000`. Tunable via `COUNCIL_ANTHROPIC_MAX_TOKENS`, `COUNCIL_OPENAI_MAX_TOKENS`, `COUNCIL_GEMINI_MAX_TOKENS`, `COUNCIL_XAI_MAX_TOKENS`, and `COUNCIL_JUDGE_MAX_TOKENS`. `SAKANA_API_KEY` is not required to boot.
 - **Gemini seat:** the council keeps `gemini-3.1-pro-preview`, the strongest Gemini Pro id already in this repo. `gemini-3.5-flash` is present and is not a Pro seat. No Gemini 3.5 Pro API id is checked in. On release, verify the identifier, set `COUNCIL_GEMINI_MODEL` and `COUNCIL_GEMINI_LABEL`, and smoke-test a real 4/4 council before promoting.
 - **Backend streams with a 20s SSE keepalive** so long/dense generations aren't cut by the connector's idle timeout. The HTTP server `requestTimeout` / `headersTimeout` / socket `timeout` are **2 hours** (Node 18+ otherwise defaults to 5 minutes and closed `/chat` SSE mid-council).
@@ -66,7 +66,7 @@ _Last updated: 2026-09-16._
 
 ## 7. Observability
 
-- **`GET /healthz`** — DB check + uptime + deployed `commit` + live routing/cooldown state; returns 503 if the DB is down. (There's also a trivial `GET /health` → `{ok:true}`.)
+- **`GET /healthz`** — unauthenticated. DB check + uptime + deployed `commit` + live routing/cooldown state + boolean `sponsorCiMode` (same `isSponsorCiMode()` as `GET /user/profile`); returns 503 if the DB is down. (There's also a trivial `GET /health` → `{ok:true}`.) `sponsorCiMode` is the effective fence, including when production refused an explicit off.
 - **Per-call telemetry** — one JSON line per LLM call: `[llm.telemetry] {event:"llm_call", surface, ok, answered, fallback_depth, attempted[], skipped[], empty, latency_ms, error_class}`. Grep Railway logs, or add a log drain to Axiom/Better Stack and alert when the `fallback_depth>0` share is high. The same trail is stored on `chat_messages.provider_metadata` for stream answers so it is queryable in Supabase without logs.
 - **Search telemetry** — `[serp.telemetry]` records outcome, latency, result count, authoritative-source count, and a one-way query hash. Raw search queries and contract text are not logged.
 - **Scheduled (Cowork):** daily Mike health-check (8:05am); weekly "Mike model usage" report (Mondays) querying `chat_messages.provider_metadata` in Supabase.
@@ -106,7 +106,7 @@ order by created_at desc;
 
 ## 10. Secrets & key IDs (names only — values in dashboards)
 
-- **Backend (Railway):** `SUPABASE_URL`, `SUPABASE_SECRET_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `OPENAI_API_KEY`, `XAI_API_KEY`, `DEEPSEEK_API_KEY` (adapter only; not in the picker, default chat chain, or council), `SAKANA_API_KEY` (optional; not required to boot; council and chat do not call Sakana), `LLM_MODEL` (optional primary override), `LLM_FALLBACK_MODEL` (optional comma-separated tail override), `CONNECTOR_API_KEY`, `CONNECTOR_USER_ID`, `FRONTEND_URL`, `USER_API_KEYS_ENCRYPTION_SECRET`, `SERPAPI_KEY`, optional `SERP_SEARCH_MODE` / `SERPAPI_MAX_SEARCHES_PER_MINUTE`, R2/download vars, etc.
+- **Backend (Railway):** `SUPABASE_URL`, `SUPABASE_SECRET_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `OPENAI_API_KEY`, `XAI_API_KEY`, `DEEPSEEK_API_KEY` (adapter only; not in the picker, default chat chain, or council), `SAKANA_API_KEY` (optional; not required to boot; council and chat do not call Sakana), `LLM_MODEL` (optional primary override), `LLM_FALLBACK_MODEL` (optional comma-separated tail override), `CONNECTOR_API_KEY`, `CONNECTOR_USER_ID`, `FRONTEND_URL`, `USER_API_KEYS_ENCRYPTION_SECRET`, `SERPAPI_KEY`, optional `SERP_SEARCH_MODE` / `SERPAPI_MAX_SEARCHES_PER_MINUTE`, `SPONSOR_CI_MODE` (production expects `1`; when `NODE_ENV=production` an unset value stays on), `SPONSOR_CI_CHANGE_CONTROL_NOTE` (required only to honor an explicit production off), R2/download vars, etc.
 - **mike-assistant (Cloudflare):** `CONNECTOR_API_KEY`, `MCP_API_KEY`, `MIKE_BACKEND_URL`.
 - **fugu-assistant (Cloudflare):** `MCP_API_KEY`, `SAKANA_API_KEY`, `ASSISTANT_PASSPHRASE`.
 - **Prod connector service user id:** `CONNECTOR_USER_ID = c62f4b5c-db2d-44c0-a6ad-5a7cc7c1cf12` (jmclark@bioaccessla.com).
@@ -142,14 +142,33 @@ where user_id = '<uuid>'
 
 ## 14. Sponsor-CI mode
 
-Set `SPONSOR_CI_MODE=1` on the backend process (`true`, `yes`, and `on` also count). Unset or any other value leaves the mode off. A Railway variable change does not apply until that service is redeployed. This tranche does not deploy.
+Production expects both flags on:
 
-`user_profiles` has no settings or feature-flag column. `organisation` is the company name used as the Word author, not a mode switch. There is no per-tenant flag to turn Sponsor-CI on for one organisation and off for another. Set the company name per account (Account → Organisation, or `bootstrapOrganisation.ts`) before sponsor-facing redlines; an empty organisation falls back to `TRACKED_CHANGE_AUTHOR`, then `Author`.
+- `SPONSOR_CI_MODE=1` on the backend process (`true`, `yes`, and `on` also count).
+- `NEXT_PUBLIC_SPONSOR_CI_MODE=1` on the frontend build.
+
+`NEXT_PUBLIC_SPONSOR_CI_MODE` is inlined at **build time**. A later Railway variable edit does not change a frontend that was already built. The backend `SPONSOR_CI_MODE` value, read when the API process is running, is what refuses Sakana, DeepSeek, and the plain-text export bypass. The two can drift until the frontend is rebuilt. `GET /healthz` (no auth) and `GET /user/profile` both report the backend flag as `sponsorCiMode`.
+
+Production is `NODE_ENV=production`. `backend/Dockerfile` sets that on the runtime image, so every Railway deploy of this image (production and staging) is in that mode. Local `npm run dev` and unit tests are not, unless you set `NODE_ENV` yourself.
+
+| `NODE_ENV` | `SPONSOR_CI_MODE` | `SPONSOR_CI_CHANGE_CONTROL_NOTE` | Result |
+|---|---|---|---|
+| production | unset, empty, or anything other than an explicit off | ignored | **ON** |
+| production | `1` / `true` / `yes` / `on` | ignored | **ON** |
+| production | `0` / `false` / `off` / `no` | missing or blank | **ON** (OFF refused; process still boots; a warning is logged) |
+| production | `0` / `false` / `off` / `no` | non-empty note | **OFF** |
+| anything else | unset or any value other than `1` / `true` / `yes` / `on` | ignored | **OFF** (unchanged local/dev behavior) |
+
+The process does not refuse to boot. A boot exit would crash-loop the container (`restartPolicyMaxRetries`) and take every tenant on that process down. An explicit production off without a note is not honored.
+
+A Railway variable change does not apply until that service is redeployed. Unsetting `SPONSOR_CI_MODE` and redeploying does **not** turn fencing off on this image.
+
+`user_profiles` has no settings or feature-flag column. `organisation` is the company name used as the Word author, not a mode switch. There is no per-tenant flag to turn Sponsor-CI on for one organisation and off for another. The flag covers every account on the process, including non-sponsor tenants. Set the company name per account (Account → Organisation, or `bootstrapOrganisation.ts`) before sponsor-facing redlines; an empty organisation falls back to `TRACKED_CHANGE_AUTHOR`, then `Author`.
 
 While the mode is on:
 
 - The profile payload includes `sponsorCiMode: true`. The chat model picker and the account model dropdowns drop any `fugu-` or `deepseek-` id. Sakana and DeepSeek are already absent from those lists; the filter is what keeps them out if a key exists.
-- Optional frontend build flag `NEXT_PUBLIC_SPONSOR_CI_MODE=1` applies the same picker filter before the profile loads. The backend flag is what actually refuses the call.
+- Frontend build flag `NEXT_PUBLIC_SPONSOR_CI_MODE=1` applies the same picker filter before the profile loads. The backend flag is what actually refuses the call.
 - `resolveModel` will not return a Sakana or DeepSeek id. `completeText` / `completeTextStrict` / streaming throw before the adapter, so a configured `DEEPSEEK_API_KEY` or `SAKANA_API_KEY` is not used.
 - Council seat env overrides (`COUNCIL_ANTHROPIC_MODEL`, `COUNCIL_OPENAI_MODEL`, `COUNCIL_GEMINI_MODEL`, `COUNCIL_XAI_MODEL`) and `COUNCIL_JUDGE` are ignored. Seats stay Fable 5.1, GPT-6 Astra, Gemini 3.1 Pro Preview, and Grok 4.7. The judge stays Opus 5.5. Token budgets can still be tuned.
 - The chat chain drops Sakana, DeepSeek, and any other id outside that frontier set, and always keeps `claude-fable-5-1` → `claude-opus-5-5` → `gpt-6-astra`.

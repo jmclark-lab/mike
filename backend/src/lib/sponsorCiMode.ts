@@ -4,10 +4,19 @@
  * Operators turn it on with `SPONSOR_CI_MODE=1` (also `true`, `yes`, `on`)
  * on the backend process. `user_profiles` has no settings column — organisation
  * is the company-voice name, not a feature flag — so there is no per-tenant
- * switch in the schema. The profile response echoes this process flag so the
- * model picker can hide fenced ids. Optionally set
+ * switch in the schema. `GET /user/profile` and unauthenticated `GET /healthz`
+ * both echo this process flag. Optionally set
  * `NEXT_PUBLIC_SPONSOR_CI_MODE=1` on the frontend build so the picker is
- * fenced before that profile loads. The backend flag is what blocks use.
+ * fenced before that profile loads. That public value is inlined at build
+ * time and can drift. The backend flag is what blocks use.
+ *
+ * Production is `NODE_ENV=production`. The backend Docker image sets that
+ * for every Railway runtime. In production a missing, empty, or unrecognized
+ * `SPONSOR_CI_MODE` is ON. Explicit `0` / `false` / `off` / `no` is OFF only
+ * when `SPONSOR_CI_CHANGE_CONTROL_NOTE` is non-empty. Without that note the
+ * process still boots and the OFF request is refused (fencing stays on).
+ * A boot refusal would crash-loop the container for every tenant. Outside
+ * production, unset stays off so local dev and unit tests are unchanged.
  *
  * While the mode is on:
  * - Sakana (`fugu-`) and DeepSeek cannot be selected, cannot sit on the
@@ -25,6 +34,13 @@
  */
 
 const TRUTHY = new Set(["1", "true", "yes", "on"]);
+const EXPLICIT_OFF = new Set(["0", "false", "off", "no"]);
+
+export type SponsorCiModeDecision = {
+  enabled: boolean;
+  /** Production asked for OFF without a change-control note. Fencing stays on. */
+  disableRefused: boolean;
+};
 
 /** Frontier GA ids Sponsor-CI chat, council, and judge stay on. */
 export const SPONSOR_CI_FRONTIER_MODELS = [
@@ -38,9 +54,51 @@ export const SPONSOR_CI_FRONTIER_MODELS = [
 
 const FRONTIER = new Set<string>(SPONSOR_CI_FRONTIER_MODELS);
 
+function isProductionNodeEnv(env: NodeJS.ProcessEnv): boolean {
+  return env.NODE_ENV === "production";
+}
+
+function normalizedFlag(value: string | undefined): string {
+  return value?.trim().toLowerCase() ?? "";
+}
+
+export function sponsorCiChangeControlNote(
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  return env.SPONSOR_CI_CHANGE_CONTROL_NOTE?.trim() ?? "";
+}
+
+/**
+ * Production fail-closed decision. See the file header. Does not exit
+ * the process: an explicit OFF without a note is refused and `enabled`
+ * stays true.
+ */
+export function resolveSponsorCiMode(
+  env: NodeJS.ProcessEnv = process.env,
+): SponsorCiModeDecision {
+  const raw = normalizedFlag(env.SPONSOR_CI_MODE);
+  if (!isProductionNodeEnv(env)) {
+    return { enabled: TRUTHY.has(raw), disableRefused: false };
+  }
+  if (!EXPLICIT_OFF.has(raw)) {
+    return { enabled: true, disableRefused: false };
+  }
+  if (sponsorCiChangeControlNote(env).length > 0) {
+    return { enabled: false, disableRefused: false };
+  }
+  return { enabled: true, disableRefused: true };
+}
+
 export function isSponsorCiMode(env: NodeJS.ProcessEnv = process.env): boolean {
-  const raw = env.SPONSOR_CI_MODE?.trim().toLowerCase() ?? "";
-  return TRUTHY.has(raw);
+  return resolveSponsorCiMode(env).enabled;
+}
+
+/** Logged once at boot when production OFF was refused. Null when there is nothing to say. */
+export function sponsorCiBootWarning(
+  env: NodeJS.ProcessEnv = process.env,
+): string | null {
+  if (!resolveSponsorCiMode(env).disableRefused) return null;
+  return "SPONSOR_CI_MODE is explicitly off in production but SPONSOR_CI_CHANGE_CONTROL_NOTE is empty. Refusing OFF; Sponsor-CI fencing stays on. The process still boots.";
 }
 
 /** Sakana Fugu and DeepSeek ids. Matched even when Sponsor-CI mode is off. */

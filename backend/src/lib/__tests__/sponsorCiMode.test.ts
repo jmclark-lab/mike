@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import { describe, test } from "node:test";
 import JSZip from "jszip";
 import {
@@ -21,12 +23,15 @@ import {
   assertSponsorCiAllowsModel,
   isFencedModelId,
   isSponsorCiMode,
+  resolveSponsorCiMode,
+  sponsorCiBootWarning,
 } from "../sponsorCiMode";
 
 const PHRASE = "Mike, an AI legal assistant";
 const sponsorOn = { SPONSOR_CI_MODE: "1" } as NodeJS.ProcessEnv;
 
 test("SPONSOR_CI_MODE accepts 1, true, yes, and on", () => {
+  // NODE_ENV is unset here: non-production behavior. Unset stays off.
   for (const value of ["1", "true", "TRUE", "yes", "on"]) {
     assert.equal(isSponsorCiMode({ SPONSOR_CI_MODE: value }), true, value);
   }
@@ -34,6 +39,105 @@ test("SPONSOR_CI_MODE accepts 1, true, yes, and on", () => {
     assert.equal(isSponsorCiMode({ SPONSOR_CI_MODE: value }), false, value);
   }
   assert.equal(isSponsorCiMode({}), false);
+  assert.equal(isSponsorCiMode({ NODE_ENV: "development" }), false);
+  assert.equal(isSponsorCiMode({ NODE_ENV: "test", SPONSOR_CI_MODE: "0" }), false);
+});
+
+const production = { NODE_ENV: "production" } as NodeJS.ProcessEnv;
+
+test("production treats unset SPONSOR_CI_MODE as on", () => {
+  for (const env of [
+    production,
+    { ...production, SPONSOR_CI_MODE: "" },
+    { ...production, SPONSOR_CI_MODE: "   " },
+    { ...production, SPONSOR_CI_MODE: "maybe" },
+  ]) {
+    const decision = resolveSponsorCiMode(env);
+    assert.equal(decision.enabled, true);
+    assert.equal(decision.disableRefused, false);
+    assert.equal(sponsorCiBootWarning(env), null);
+  }
+});
+
+test("production explicit 1 is on", () => {
+  for (const value of ["1", "true", "yes", "on", " TRUE "]) {
+    const decision = resolveSponsorCiMode({
+      ...production,
+      SPONSOR_CI_MODE: value,
+    });
+    assert.equal(decision.enabled, true, value);
+    assert.equal(decision.disableRefused, false, value);
+  }
+});
+
+test("production explicit 0 without a change-control note refuses OFF", () => {
+  for (const value of ["0", "false", "off", "no", "FALSE", " Off "]) {
+    const decision = resolveSponsorCiMode({
+      ...production,
+      SPONSOR_CI_MODE: value,
+    });
+    assert.equal(decision.enabled, true, value);
+    assert.equal(decision.disableRefused, true, value);
+    assert.match(sponsorCiBootWarning({ ...production, SPONSOR_CI_MODE: value }) ?? "", /Refusing OFF/);
+  }
+  const blankNote = resolveSponsorCiMode({
+    ...production,
+    SPONSOR_CI_MODE: "0",
+    SPONSOR_CI_CHANGE_CONTROL_NOTE: "   ",
+  });
+  assert.equal(blankNote.enabled, true);
+  assert.equal(blankNote.disableRefused, true);
+});
+
+test("production explicit 0 with a change-control note is off", () => {
+  for (const value of ["0", "false", "off", "no"]) {
+    const decision = resolveSponsorCiMode({
+      ...production,
+      SPONSOR_CI_MODE: value,
+      SPONSOR_CI_CHANGE_CONTROL_NOTE: "CoS 2026-09-23 fence paused",
+    });
+    assert.equal(decision.enabled, false, value);
+    assert.equal(decision.disableRefused, false, value);
+    assert.equal(
+      sponsorCiBootWarning({
+        ...production,
+        SPONSOR_CI_MODE: value,
+        SPONSOR_CI_CHANGE_CONTROL_NOTE: "CoS 2026-09-23 fence paused",
+      }),
+      null,
+    );
+  }
+});
+
+test("GET /healthz echoes sponsorCiMode from isSponsorCiMode and stays unauthenticated", () => {
+  const src = readFileSync(path.join(__dirname, "../../index.ts"), "utf8");
+  assert.match(src, /app\.get\("\/healthz"/);
+  assert.match(src, /sponsorCiMode:\s*isSponsorCiMode\(\)/);
+  assert.equal(/app\.get\("\/healthz"[\s\S]*requireAuth/.test(src), false);
+  assert.equal(isSponsorCiMode(production), true);
+  assert.equal(isSponsorCiMode({ SPONSOR_CI_MODE: "1" }), true);
+});
+
+test("checked-in templates expect production Sponsor-CI flags on", () => {
+  const repoRoot = path.resolve(__dirname, "../../../..");
+  const railway = readFileSync(path.join(repoRoot, "backend/railway.toml"), "utf8");
+  const operations = readFileSync(path.join(repoRoot, "docs/OPERATIONS.md"), "utf8");
+  const backendEnv = readFileSync(path.join(repoRoot, "backend/.env.example"), "utf8");
+  const frontendEnv = readFileSync(
+    path.join(repoRoot, "frontend/.env.local.example"),
+    "utf8",
+  );
+  for (const [name, text] of [
+    ["backend/railway.toml", railway],
+    ["docs/OPERATIONS.md", operations],
+    ["backend/.env.example", backendEnv],
+  ] as const) {
+    assert.match(text, /SPONSOR_CI_MODE=1/, name);
+    assert.match(text, /NEXT_PUBLIC_SPONSOR_CI_MODE=1/, name);
+  }
+  assert.match(frontendEnv, /NEXT_PUBLIC_SPONSOR_CI_MODE=1/);
+  assert.match(operations, /SPONSOR_CI_CHANGE_CONTROL_NOTE/);
+  assert.match(operations, /build time/);
 });
 
 test("Sponsor-CI fences Sakana and DeepSeek ids even when a key is present", () => {
