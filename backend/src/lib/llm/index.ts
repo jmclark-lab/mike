@@ -4,6 +4,12 @@ import { completeOpenAIText, streamOpenAI } from "./openai";
 import { completeXaiText, streamXai } from "./xai";
 import { completeDeepSeekText, streamDeepSeek } from "./deepseek";
 import { isSakanaModelId, providerForModel } from "./models";
+import {
+    assertSponsorCiAllowsModel,
+    isSponsorCiFencedModel,
+    isSponsorCiFrontierModel,
+    isSponsorCiMode,
+} from "../sponsorCiMode";
 import type {
     ProviderMetadata,
     ReasoningEffort,
@@ -28,12 +34,29 @@ const FINAL_OPENAI_FALLBACK = "gpt-6-astra";
 /**
  * Chat primary. `LLM_MODEL` is the only env var that can change this.
  * Sakana / Fugu ids are ignored so a stale `LLM_MODEL` or `SAKANA_MODEL`
- * cannot put Fugu on `/healthz`.
+ * cannot put Fugu on `/healthz`. While Sponsor-CI mode is on, DeepSeek and
+ * any id outside the frontier set are ignored too.
  */
-export function resolveActiveModel(): string {
-    const explicit = process.env.LLM_MODEL?.trim();
-    if (explicit && !isSakanaModelId(explicit)) return explicit;
+export function resolveActiveModel(
+    env: NodeJS.ProcessEnv = process.env,
+): string {
+    const explicit = env.LLM_MODEL?.trim();
+    if (
+        explicit &&
+        !isSakanaModelId(explicit) &&
+        sponsorCiAllowsChatModel(explicit, env)
+    ) {
+        return explicit;
+    }
     return DEFAULT_FABLE_MODEL;
+}
+
+function sponsorCiAllowsChatModel(
+    model: string,
+    env: NodeJS.ProcessEnv,
+): boolean {
+    if (!isSponsorCiMode(env)) return true;
+    return isSponsorCiFrontierModel(model);
 }
 
 /**
@@ -45,21 +68,35 @@ export function resolveActiveModel(): string {
  * `LLM_MODEL` replaces the primary. `LLM_FALLBACK_MODEL` replaces the tail
  * (comma-separated model ids, tried in the order given). Fugu / Sakana ids
  * are dropped from both, including explicit overrides. `SAKANA_MODEL` never
- * composes this chain.
+ * composes this chain. While Sponsor-CI mode is on, DeepSeek and other
+ * non-frontier ids are dropped, and Fable 5.1, Opus 5.5, and Astra stay
+ * on the chain.
  */
-export function resolveModelChain(): string[] {
+export function resolveModelChain(
+    env: NodeJS.ProcessEnv = process.env,
+): string[] {
     const chain: string[] = [];
     const push = (m?: string | null) => {
         const v = m?.trim();
-        if (v && !isSakanaModelId(v) && !chain.includes(v)) chain.push(v);
+        if (!v || isSakanaModelId(v) || chain.includes(v)) return;
+        if (!sponsorCiAllowsChatModel(v, env)) return;
+        chain.push(v);
     };
 
-    push(resolveActiveModel());
+    push(resolveActiveModel(env));
 
-    const explicitFallbacks = process.env.LLM_FALLBACK_MODEL?.trim();
+    const explicitFallbacks = env.LLM_FALLBACK_MODEL?.trim();
     if (explicitFallbacks) {
         for (const m of explicitFallbacks.split(",")) push(m);
     } else {
+        push(INTERIM_STABLE_MODEL);
+        push(FINAL_OPENAI_FALLBACK);
+    }
+
+    // Sponsor-CI chat stays on the locked frontier tail even when an
+    // override names Sakana, DeepSeek, or a non-frontier id.
+    if (isSponsorCiMode(env)) {
+        push(DEFAULT_FABLE_MODEL);
         push(INTERIM_STABLE_MODEL);
         push(FINAL_OPENAI_FALLBACK);
     }
@@ -253,11 +290,16 @@ function rejectSakanaModel(model: string): void {
     );
 }
 
+function rejectUnavailableModel(model: string): void {
+    rejectSakanaModel(model);
+    assertSponsorCiAllowsModel(model);
+}
+
 async function invokeStream(
     model: string,
     params: StreamChatParams & { systemPrompt?: string },
 ): Promise<StreamChatResult> {
-    rejectSakanaModel(model);
+    rejectUnavailableModel(model);
     const provider = providerForModel(model);
     if (provider === "claude") return streamClaude({ ...params, model });
     if (provider === "gemini") return streamGemini({ ...params, model });
@@ -277,7 +319,7 @@ async function invokeComplete(
         reasoningEffort?: ReasoningEffort;
     },
 ): Promise<string> {
-    rejectSakanaModel(model);
+    rejectUnavailableModel(model);
     const provider = providerForModel(model);
     if (provider === "claude") return completeClaudeText({ ...params, model });
     if (provider === "gemini") return completeGeminiText({ ...params, model });
@@ -392,8 +434,14 @@ export async function completeText(params: {
     // the primary, with the standard fallback chain behind it. Previously the
     // passed model was ignored and every completion ran the frontier chain.
     const requestedRaw = params.model?.trim();
+    // Title and tabular completions may stay on their cheap models. Only
+    // Sakana and, while Sponsor-CI mode is on, DeepSeek are dropped here.
     const requested =
-        requestedRaw && !isSakanaModelId(requestedRaw) ? requestedRaw : "";
+        requestedRaw &&
+        !isSakanaModelId(requestedRaw) &&
+        !isSponsorCiFencedModel(requestedRaw)
+            ? requestedRaw
+            : "";
     const fallbackChain = orderByHealth(resolveModelChain());
     const chain = requested
         ? [requested, ...fallbackChain.filter((m) => m !== requested)]

@@ -53,6 +53,20 @@ export const DEFAULT_MODEL_ID = "gemini-3-flash-preview";
 
 export const ALLOWED_MODEL_IDS = new Set(MODELS.map((m) => m.id));
 
+/** Sakana Fugu and DeepSeek. Kept out of the picker while Sponsor-CI mode is on. */
+export function isFencedPickerModelId(id: string): boolean {
+    const normalized = id.trim().toLowerCase();
+    return normalized.startsWith("fugu-") || normalized.startsWith("deepseek-");
+}
+
+export function visiblePickerModels<T extends { id: string }>(
+    models: readonly T[],
+    sponsorCiMode: boolean,
+): T[] {
+    if (!sponsorCiMode) return [...models];
+    return models.filter((model) => !isFencedPickerModelId(model.id));
+}
+
 const GROUP_ORDER: ModelOption["group"][] = [
     "Anthropic",
     "Google",
@@ -64,11 +78,13 @@ interface Props {
     value: string;
     onChange: (id: string) => void;
     apiKeys?: ApiKeyState;
+    sponsorCiMode?: boolean;
 }
 
-export function ModelToggle({ value, onChange, apiKeys }: Props) {
+export function ModelToggle({ value, onChange, apiKeys, sponsorCiMode = false }: Props) {
     const [isOpen, setIsOpen] = useState(false);
-    const selected = MODELS.find((m) => m.id === value);
+    const models = visiblePickerModels(MODELS, sponsorCiMode);
+    const selected = models.find((m) => m.id === value);
     const selectedLabel = selected?.label ?? "Model";
     const selectedAvailable = apiKeys
         ? isModelAvailable(value, apiKeys)
@@ -97,7 +113,7 @@ export function ModelToggle({ value, onChange, apiKeys }: Props) {
             </DropdownMenuTrigger>
             <DropdownMenuContent className="w-56 z-50" side="top" align="end">
                 {GROUP_ORDER.map((group, gi) => {
-                    const items = MODELS.filter((m) => m.group === group);
+                    const items = models.filter((m) => m.group === group);
                     if (items.length === 0) return null;
                     return (
                         <div key={group}>

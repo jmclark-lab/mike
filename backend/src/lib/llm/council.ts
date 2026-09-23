@@ -11,6 +11,7 @@
 import { completeTextStrict } from "./index";
 import type { ReasoningEffort, UserApiKeys } from "./types";
 import { OUTBOUND_ATTRIBUTION_RULE } from "../outboundAttribution";
+import { isSponsorCiMode } from "../sponsorCiMode";
 
 export interface CouncilSeat {
   provider: "anthropic" | "openai" | "google" | "xai";
@@ -57,6 +58,7 @@ export const COUNCIL_MEMBERS = DEFAULT_COUNCIL_SEATS.map((seat) => seat.model);
 export function resolveCouncilJudge(
   env: NodeJS.ProcessEnv = process.env,
 ): string {
+  if (isSponsorCiMode(env)) return COUNCIL_JUDGE;
   return env.COUNCIL_JUDGE?.trim() || COUNCIL_JUDGE;
 }
 
@@ -236,11 +238,18 @@ function intFromEnv(name: string, fallback: number, min: number, max: number) {
 export function resolveCouncilSeats(
   env: NodeJS.ProcessEnv = process.env,
 ): CouncilSeat[] {
+  // Sponsor-CI ignores seat model overrides so a stale env value cannot
+  // put Sakana, DeepSeek, or any other id on a council seat.
+  const lockFrontier = isSponsorCiMode(env);
+  const seatModel = (override: string | undefined, fallback: string) =>
+    lockFrontier ? fallback : override?.trim() || fallback;
   return [
     {
       ...DEFAULT_COUNCIL_SEATS[0],
-      model:
-        env.COUNCIL_ANTHROPIC_MODEL?.trim() || DEFAULT_COUNCIL_SEATS[0].model,
+      model: seatModel(
+        env.COUNCIL_ANTHROPIC_MODEL,
+        DEFAULT_COUNCIL_SEATS[0].model,
+      ),
       maxTokens: intFromRecord(
         env,
         "COUNCIL_ANTHROPIC_MAX_TOKENS",
@@ -251,7 +260,7 @@ export function resolveCouncilSeats(
     },
     {
       ...DEFAULT_COUNCIL_SEATS[1],
-      model: env.COUNCIL_OPENAI_MODEL?.trim() || DEFAULT_COUNCIL_SEATS[1].model,
+      model: seatModel(env.COUNCIL_OPENAI_MODEL, DEFAULT_COUNCIL_SEATS[1].model),
       reasoningEffort: "xhigh",
       maxTokens: intFromRecord(
         env,
@@ -263,8 +272,10 @@ export function resolveCouncilSeats(
     },
     {
       ...DEFAULT_COUNCIL_SEATS[2],
-      model: env.COUNCIL_GEMINI_MODEL?.trim() || DEFAULT_COUNCIL_SEATS[2].model,
-      label: env.COUNCIL_GEMINI_LABEL?.trim() || DEFAULT_COUNCIL_SEATS[2].label,
+      model: seatModel(env.COUNCIL_GEMINI_MODEL, DEFAULT_COUNCIL_SEATS[2].model),
+      label: lockFrontier
+        ? DEFAULT_COUNCIL_SEATS[2].label
+        : env.COUNCIL_GEMINI_LABEL?.trim() || DEFAULT_COUNCIL_SEATS[2].label,
       maxTokens: intFromRecord(
         env,
         "COUNCIL_GEMINI_MAX_TOKENS",
@@ -275,7 +286,7 @@ export function resolveCouncilSeats(
     },
     {
       ...DEFAULT_COUNCIL_SEATS[3],
-      model: env.COUNCIL_XAI_MODEL?.trim() || DEFAULT_COUNCIL_SEATS[3].model,
+      model: seatModel(env.COUNCIL_XAI_MODEL, DEFAULT_COUNCIL_SEATS[3].model),
       maxTokens: intFromRecord(
         env,
         "COUNCIL_XAI_MAX_TOKENS",
@@ -413,7 +424,11 @@ export async function conveneCouncilWithCompleter(
   options: CouncilRuntimeOptions = {},
 ): Promise<CouncilResult> {
   const { question, context, apiKeys, onProgress } = params;
-  const seats = options.seats ?? resolveCouncilSeats();
+  // Injected seats cannot put Sakana or DeepSeek on the council while
+  // Sponsor-CI mode is on. The locked frontier roster is used instead.
+  const seats = isSponsorCiMode()
+    ? resolveCouncilSeats()
+    : (options.seats ?? resolveCouncilSeats());
   const minQuorum = resolveCouncilMinQuorum(params.minQuorum);
   const maxAttempts =
     options.maxAttempts ?? intFromEnv("COUNCIL_MEMBER_MAX_ATTEMPTS", 3, 1, 5);

@@ -32,6 +32,7 @@ interface UserProfile {
     tabularModel: string;
     mfaOnLogin: boolean;
     legalResearchUs: boolean;
+    sponsorCiMode: boolean;
     apiKeys: ApiKeyState;
 }
 
@@ -80,6 +81,11 @@ function emptyApiKeys(): ApiKeyState {
     };
 }
 
+function publicSponsorCiMode(): boolean {
+    const raw = process.env.NEXT_PUBLIC_SPONSOR_CI_MODE?.trim().toLowerCase() ?? "";
+    return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
+}
+
 function toProfile(data: ApiUserProfile): UserProfile {
     const { apiKeyStatus, ...profile } = data;
     const apiKeys = emptyApiKeys();
@@ -95,6 +101,7 @@ function toProfile(data: ApiUserProfile): UserProfile {
     return {
         ...profile,
         mfaOnLogin: profile.mfaOnLogin === true,
+        sponsorCiMode: profile.sponsorCiMode === true || publicSponsorCiMode(),
         apiKeys,
     };
 }
@@ -126,6 +133,7 @@ export function UserProfileProvider({ children }: { children: ReactNode }) {
                 tabularModel: "gemini-3-flash-preview",
                 mfaOnLogin: false,
                 legalResearchUs: true,
+                sponsorCiMode: publicSponsorCiMode(),
                 apiKeys: emptyApiKeys(),
             });
         } finally {
