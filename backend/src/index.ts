@@ -18,17 +18,8 @@ import { getRoutingHealth } from "./lib/llm";
 import { ConnectorJobManager, readMikeSseText } from "./lib/connectorJobs";
 import { requireConnectorKey } from "./middleware/auth";
 
-// ---------------------------------------------------------------------------
-// Required environment variable check — fail fast before binding the port.
-// ---------------------------------------------------------------------------
-
-if (!process.env.SAKANA_API_KEY?.trim()) {
-  console.error(
-    "FATAL: SAKANA_API_KEY is required. " +
-      "Add it to your Railway environment variables (Settings → Variables).",
-  );
-  process.exit(1);
-}
+// SAKANA_API_KEY is not required. Council and chat do not call Sakana.
+// A leftover Railway value must not block boot and is not read here.
 
 const app = express();
 const PORT = process.env.PORT ?? 3001;

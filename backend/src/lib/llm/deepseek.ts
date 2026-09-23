@@ -3,9 +3,9 @@
  *
  * DeepSeek exposes an OpenAI-compatible Chat Completions API at
  * https://api.deepseek.com (also accepts /v1). This is the same transport as
- * Sakana Fugu, not the OpenAI/xAI Responses API. DeepSeek is selectable in
- * chat and completions when DEEPSEEK_API_KEY is set. It is not in the default
- * fallback chain and is not a legal-council seat.
+ * the OpenAI/xAI Responses API. DeepSeek is not offered in the CI-facing
+ * model picker. The adapter remains for direct calls when DEEPSEEK_API_KEY
+ * is set. It is not in the default fallback chain and is not a council seat.
  */
 
 import type {

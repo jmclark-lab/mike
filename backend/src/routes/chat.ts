@@ -32,11 +32,11 @@ const devLog = (...args: Parameters<typeof console.log>) => {
 
 const TITLE_FALLBACK = "Misc. Query";
 
-// Provenance metadata stamped on every assistant message.
-// Always Sakana Fugu after the straight-swap migration.
-const SAKANA_PROVIDER_METADATA = {
-    provider_name: "sakana_fugu",
-    model_name: process.env.SAKANA_MODEL?.trim() || "fugu-ultra-20260615",
+// Provenance when a stream aborts or errors before a provider answers.
+// Do not stamp Sakana; council and chat do not call it.
+const UNKNOWN_PROVIDER_METADATA = {
+    provider_name: "unknown",
+    model_name: "unknown",
 } as const;
 
 function normalizeGeneratedTitle(raw: string): string {
@@ -618,7 +618,7 @@ chatRouter.post("/", connectorOrAuth, async (req, res) => {
             annotations: annotations.length ? annotations : null,
             provider_metadata: providerMetadata
                 ? persistableProviderMetadata(providerMetadata)
-                : SAKANA_PROVIDER_METADATA,
+                : UNKNOWN_PROVIDER_METADATA,
         });
 
         if (!chatTitle && lastUser?.content) {
@@ -644,7 +644,7 @@ chatRouter.post("/", connectorOrAuth, async (req, res) => {
                     annotations: partial.annotations.length
                         ? partial.annotations
                         : null,
-                    provider_metadata: SAKANA_PROVIDER_METADATA,
+                    provider_metadata: UNKNOWN_PROVIDER_METADATA,
                 });
                 if (saveError) {
                     console.error(
@@ -678,7 +678,7 @@ chatRouter.post("/", connectorOrAuth, async (req, res) => {
                 role: "assistant",
                 content: errorEvents.length ? errorEvents : null,
                 annotations: annotations.length ? annotations : null,
-                provider_metadata: SAKANA_PROVIDER_METADATA,
+                provider_metadata: UNKNOWN_PROVIDER_METADATA,
             });
             if (saveError)
                 console.error("[chat/stream] failed to save error", saveError);

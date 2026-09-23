@@ -1,10 +1,9 @@
-import { streamSakana, completeSakanaText } from "./sakana";
 import { streamClaude, completeClaudeText } from "./claude";
-import { completeGeminiText } from "./gemini";
-import { completeOpenAIText } from "./openai";
+import { completeGeminiText, streamGemini } from "./gemini";
+import { completeOpenAIText, streamOpenAI } from "./openai";
 import { completeXaiText, streamXai } from "./xai";
 import { completeDeepSeekText, streamDeepSeek } from "./deepseek";
-import { providerForModel } from "./models";
+import { isSakanaModelId, providerForModel } from "./models";
 import type {
     ProviderMetadata,
     ReasoningEffort,
@@ -19,42 +18,40 @@ export * from "./types";
 export * from "./models";
 
 const DEFAULT_FABLE_MODEL = "claude-fable-5-1";
-// Stable Anthropic fallback after Fable 5.1 (highest-intelligence policy).
-const INTERIM_STABLE_MODEL = "claude-opus-5";
-// Final tail fallback: OpenAI GPT-6 Astra. Only reached if Fable and Opus
-// both fail. Requires the OpenAI account to have billing/quota; until funded
-// it returns insufficient_quota (429) and the chain simply ends here.
+// Stable Anthropic fallback after Fable 5.1.
+const INTERIM_STABLE_MODEL = "claude-opus-5-5";
+// Final tail fallback: OpenAI GPT-6 Astra, the strongest commercial OpenAI
+// model. Sol and Luna stay selectable and are not default hops. Only reached
+// if Fable 5.1 and Opus 5.5 both fail.
 const FINAL_OPENAI_FALLBACK = "gpt-6-astra";
 
 /**
  * Chat primary. `LLM_MODEL` is the only env var that can change this.
- * `SAKANA_MODEL` and `LLM_PROVIDER` must never promote a Sakana model into
- * the primary slot as a side effect — they previously did when `LLM_MODEL`
- * was unset, which is why production `/healthz` showed Fugu first.
+ * Sakana / Fugu ids are ignored so a stale `LLM_MODEL` or `SAKANA_MODEL`
+ * cannot put Fugu on `/healthz`.
  */
 export function resolveActiveModel(): string {
     const explicit = process.env.LLM_MODEL?.trim();
-    if (explicit) return explicit;
+    if (explicit && !isSakanaModelId(explicit)) return explicit;
     return DEFAULT_FABLE_MODEL;
 }
 
 /**
  * Ordered model fallback chain. Default is a three-way chain with no Sakana hop:
  *   1. Fable 5.1    (primary)    — claude-fable-5-1
- *   2. Opus 5       (fallback)   — claude-opus-5
+ *   2. Opus 5.5     (fallback)   — claude-opus-5-5
  *   3. GPT-6 Astra  (final net)  — gpt-6-astra
  *
  * `LLM_MODEL` replaces the primary. `LLM_FALLBACK_MODEL` replaces the tail
- * (comma-separated model ids, tried in the order given). To put Fugu back in
- * the chain, name it explicitly in one of those two variables.
- * `SAKANA_MODEL` only selects which Fugu variant is used when a Sakana model
- * is actually invoked — it never composes this chain.
+ * (comma-separated model ids, tried in the order given). Fugu / Sakana ids
+ * are dropped from both, including explicit overrides. `SAKANA_MODEL` never
+ * composes this chain.
  */
 export function resolveModelChain(): string[] {
     const chain: string[] = [];
     const push = (m?: string | null) => {
         const v = m?.trim();
-        if (v && !chain.includes(v)) chain.push(v);
+        if (v && !isSakanaModelId(v) && !chain.includes(v)) chain.push(v);
     };
 
     push(resolveActiveModel());
@@ -249,15 +246,25 @@ export function getRoutingHealth(): {
     return { chain: resolveModelChain(), coolingDown };
 }
 
+function rejectSakanaModel(model: string): void {
+    if (!isSakanaModelId(model)) return;
+    throw new Error(
+        `Sakana Fugu is not available (${model}). Council and chat do not call Sakana.`,
+    );
+}
+
 async function invokeStream(
     model: string,
     params: StreamChatParams & { systemPrompt?: string },
 ): Promise<StreamChatResult> {
+    rejectSakanaModel(model);
     const provider = providerForModel(model);
     if (provider === "claude") return streamClaude({ ...params, model });
+    if (provider === "gemini") return streamGemini({ ...params, model });
+    if (provider === "openai") return streamOpenAI({ ...params, model });
     if (provider === "xai") return streamXai({ ...params, model });
     if (provider === "deepseek") return streamDeepSeek({ ...params, model });
-    return streamSakana({ ...params, model });
+    throw new Error(`No chat stream adapter for ${provider} model ${model}.`);
 }
 
 async function invokeComplete(
@@ -270,13 +277,14 @@ async function invokeComplete(
         reasoningEffort?: ReasoningEffort;
     },
 ): Promise<string> {
+    rejectSakanaModel(model);
     const provider = providerForModel(model);
     if (provider === "claude") return completeClaudeText({ ...params, model });
     if (provider === "gemini") return completeGeminiText({ ...params, model });
     if (provider === "openai") return completeOpenAIText({ ...params, model });
     if (provider === "xai") return completeXaiText({ ...params, model });
     if (provider === "deepseek") return completeDeepSeekText({ ...params, model });
-    return completeSakanaText({ ...params, model });
+    throw new Error(`No completion adapter for ${provider} model ${model}.`);
 }
 
 export async function streamChatWithTools(params: StreamChatParams): Promise<StreamChatResult> {
@@ -383,7 +391,9 @@ export async function completeText(params: {
     // Honor the caller's requested model (e.g. a cheap low-tier title model) as
     // the primary, with the standard fallback chain behind it. Previously the
     // passed model was ignored and every completion ran the frontier chain.
-    const requested = params.model?.trim();
+    const requestedRaw = params.model?.trim();
+    const requested =
+        requestedRaw && !isSakanaModelId(requestedRaw) ? requestedRaw : "";
     const fallbackChain = orderByHealth(resolveModelChain());
     const chain = requested
         ? [requested, ...fallbackChain.filter((m) => m !== requested)]

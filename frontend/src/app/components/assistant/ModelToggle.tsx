@@ -16,12 +16,13 @@ import type { ApiKeyState } from "@/app/lib/mikeApi";
 export interface ModelOption {
     id: string;
     label: string;
-    group: "Anthropic" | "Google" | "OpenAI" | "xAI" | "DeepSeek";
+    group: "Anthropic" | "Google" | "OpenAI" | "xAI";
 }
 
 export const MODELS: ModelOption[] = [
     { id: "claude-fable-5-1", label: "Claude Fable 5.1", group: "Anthropic" },
     { id: "claude-fable-5", label: "Claude Fable 5", group: "Anthropic" },
+    { id: "claude-opus-5-5", label: "Claude Opus 5.5", group: "Anthropic" },
     { id: "claude-opus-5", label: "Claude Opus 5", group: "Anthropic" },
     { id: "claude-opus-4-8", label: "Claude Opus 4.8", group: "Anthropic" },
     { id: "claude-opus-4-7", label: "Claude Opus 4.7", group: "Anthropic" },
@@ -30,12 +31,11 @@ export const MODELS: ModelOption[] = [
     { id: "gemini-3.1-pro-preview", label: "Gemini 3.1 Pro", group: "Google" },
     { id: "gemini-3-flash-preview", label: "Gemini 3 Flash", group: "Google" },
     { id: "gpt-6-astra", label: "GPT-6 Astra", group: "OpenAI" },
+    { id: "gpt-6-sol", label: "GPT-6 Sol", group: "OpenAI" },
     { id: "gpt-5.6-sol", label: "GPT-5.6 Sol", group: "OpenAI" },
     { id: "gpt-5.5", label: "GPT-5.5", group: "OpenAI" },
     { id: "gpt-5.4", label: "GPT-5.4", group: "OpenAI" },
-    { id: "grok-4.6", label: "Grok 4.6", group: "xAI" },
-    { id: "deepseek-v4-flash", label: "DeepSeek V4 Flash", group: "DeepSeek" },
-    { id: "deepseek-v4-pro", label: "DeepSeek V4 Pro", group: "DeepSeek" },
+    { id: "grok-4.7", label: "Grok 4.7", group: "xAI" },
 ];
 
 export const SETTINGS_MODELS: ModelOption[] = [
@@ -58,7 +58,6 @@ const GROUP_ORDER: ModelOption["group"][] = [
     "Google",
     "OpenAI",
     "xAI",
-    "DeepSeek",
 ];
 
 interface Props {

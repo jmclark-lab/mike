@@ -31,10 +31,10 @@ export function promptRequestsCouncil(text: string): boolean {
   return (
     /\bconvene_council\b/i.test(text) ||
     /\bmin[_\s-]?quorum\b/i.test(text) ||
-    /\bconvene(?:\s+the)?\s+(?:five[- ]seat\s+|5[- ]seat\s+)?council\b/i.test(
+    /\bconvene(?:\s+the)?\s+(?:(?:five|four|5|4)[- ]seat\s+)?council\b/i.test(
       text,
     ) ||
-    /\b(?:five[- ]seat|5[- ]seat)\s+council\b/i.test(text) ||
+    /\b(?:(?:five|four|5|4)[- ]seat)\s+council\b/i.test(text) ||
     /\blegal council\b/i.test(text)
   );
 }

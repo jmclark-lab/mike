@@ -1,18 +1,19 @@
 /**
  * Model "council" for Mike Legal AI.
  *
- * Five named, provider-diverse seats always fan out. Failed seats are retried
- * using the same model (never substituted). The judge runs only after
- * `respondedCount >= minQuorum` (env `COUNCIL_MIN_QUORUM`, default 5, clamp
- * 1–5). Below that, a structured `CouncilQuorumError` is thrown and the judge
- * is never invoked. Partial successful opinions are preserved on that error.
+ * Four named, provider-diverse seats always fan out. Sakana / Fugu is not a
+ * seat. Failed seats are retried using the same model (never substituted).
+ * The judge runs only after `respondedCount >= minQuorum` (env
+ * `COUNCIL_MIN_QUORUM`, default 4, clamp 1–4). Below that, a structured
+ * `CouncilQuorumError` is thrown and the judge is never invoked. Partial
+ * successful opinions are preserved on that error. Opus 5.5 is judge only.
  */
 import { completeTextStrict } from "./index";
 import type { ReasoningEffort, UserApiKeys } from "./types";
 import { OUTBOUND_ATTRIBUTION_RULE } from "../outboundAttribution";
 
 export interface CouncilSeat {
-  provider: "anthropic" | "sakana" | "openai" | "google" | "xai";
+  provider: "anthropic" | "openai" | "google" | "xai";
   model: string;
   label: string;
   reasoningEffort?: ReasoningEffort;
@@ -25,12 +26,6 @@ const DEFAULT_COUNCIL_SEATS: readonly CouncilSeat[] = [
     model: "claude-fable-5-1",
     label: "Fable 5.1",
     maxTokens: 32000,
-  },
-  {
-    provider: "sakana",
-    model: "fugu-ultra-20260615",
-    label: "Fugu Ultra",
-    maxTokens: 16000,
   },
   {
     provider: "openai",
@@ -49,13 +44,14 @@ const DEFAULT_COUNCIL_SEATS: readonly CouncilSeat[] = [
   },
   {
     provider: "xai",
-    model: "grok-4.6",
-    label: "Grok 4.6",
+    model: "grok-4.7",
+    label: "Grok 4.7",
     maxTokens: 8000,
   },
 ] as const;
 
-export const COUNCIL_JUDGE = "claude-opus-5";
+export const COUNCIL_SEAT_COUNT = DEFAULT_COUNCIL_SEATS.length;
+export const COUNCIL_JUDGE = "claude-opus-5-5";
 export const COUNCIL_MEMBERS = DEFAULT_COUNCIL_SEATS.map((seat) => seat.model);
 
 export function resolveCouncilJudge(
@@ -74,10 +70,10 @@ export function resolveCouncilMinQuorum(
         ? override
         : Number.parseInt(String(override), 10);
     if (Number.isFinite(parsed)) {
-      return Math.min(5, Math.max(1, Math.trunc(parsed)));
+      return Math.min(COUNCIL_SEAT_COUNT, Math.max(1, Math.trunc(parsed)));
     }
   }
-  return intFromRecord(env, "COUNCIL_MIN_QUORUM", 5, 1, 5);
+  return intFromRecord(env, "COUNCIL_MIN_QUORUM", COUNCIL_SEAT_COUNT, 1, COUNCIL_SEAT_COUNT);
 }
 
 export interface CouncilMemberResult {
@@ -124,7 +120,7 @@ export function formatCouncilQuorumFailure(error: CouncilQuorumError): string {
   const failed = error.members.filter((member) => !member.ok);
   const parts: string[] = [
     `Council deliberation failed and no council opinion was produced — ${error.message}.`,
-    "All five named seats were convened without model substitution. Successful opinions are preserved below so they are not discarded.",
+    "All four named seats were convened without model substitution. Successful opinions are preserved below so they are not discarded.",
   ];
   if (successful.length) {
     parts.push("Successful member opinions:");
@@ -160,7 +156,7 @@ const MEMBER_SYSTEM =
   OUTBOUND_ATTRIBUTION_RULE;
 
 const JUDGE_SYSTEM =
-  "You are the presiding judge of a legal AI council for bioaccess®. Exactly five independent models answered the SAME matter over the SAME context. Reconcile all five answers into one authoritative council opinion. You MUST: (1) give the single best final answer; (2) briefly note the points on which the members AGREED; (3) explicitly flag any DISAGREEMENTS, contradictions, or points raised by only one member — these are the items a human should review, so never paper over them; (4) if the members conflict on a material legal/regulatory point, say so plainly and explain the safer position. Do not introduce facts or contract terms that none of the members provided. Keep it tight and decision-useful. This is analysis for internal review, not legal advice.\n\n" +
+  "You are the presiding judge of a legal AI council for bioaccess®. Exactly four independent models answered the SAME matter over the SAME context. Reconcile all four answers into one authoritative council opinion. You MUST: (1) give the single best final answer; (2) briefly note the points on which the members AGREED; (3) explicitly flag any DISAGREEMENTS, contradictions, or points raised by only one member — these are the items a human should review, so never paper over them; (4) if the members conflict on a material legal/regulatory point, say so plainly and explain the safer position. Do not introduce facts or contract terms that none of the members provided. Keep it tight and decision-useful. This is analysis for internal review, not legal advice.\n\n" +
   OUTBOUND_ATTRIBUTION_RULE;
 
 function judgeSystemPrompt(failed: CouncilMemberResult[]): string {
@@ -207,7 +203,7 @@ function buildJudgeUser(
     .join("\n\n");
   const closer =
     failed.length === 0
-      ? "Produce the reconciled council opinion now. You must account for all five opinions."
+      ? "Produce the reconciled council opinion now. You must account for all four opinions."
       : `Produce the reconciled council opinion now. Reconcile only the ${successful.length} successful opinion(s). Do not invent views for failed seats.`;
   return `MATTER:\n${question}\n\n${failedBlock}${opinionBlock}\n\n${closer}`;
 }
@@ -216,9 +212,9 @@ function councilHeader(members: CouncilMemberResult[]): string {
   const successful = members.filter((member) => member.ok);
   const failed = members.filter((member) => !member.ok);
   if (failed.length === 0) {
-    return `[Council: mandatory 5/5 opinions received (${members.map((member) => member.label).join(", ")}); reconciled by Opus 5]`;
+    return `[Council: mandatory ${COUNCIL_SEAT_COUNT}/${COUNCIL_SEAT_COUNT} opinions received (${members.map((member) => member.label).join(", ")}); reconciled by Opus 5.5]`;
   }
-  return `[Council: ${successful.length}/5 opinions received (${successful.map((member) => member.label).join(", ")}); failed: ${failed.map((member) => member.label).join(", ")}; reconciled by Opus 5]`;
+  return `[Council: ${successful.length}/${COUNCIL_SEAT_COUNT} opinions received (${successful.map((member) => member.label).join(", ")}); failed: ${failed.map((member) => member.label).join(", ")}; reconciled by Opus 5.5]`;
 }
 
 function intFromRecord(
@@ -255,10 +251,11 @@ export function resolveCouncilSeats(
     },
     {
       ...DEFAULT_COUNCIL_SEATS[1],
-      model: env.COUNCIL_SAKANA_MODEL?.trim() || DEFAULT_COUNCIL_SEATS[1].model,
+      model: env.COUNCIL_OPENAI_MODEL?.trim() || DEFAULT_COUNCIL_SEATS[1].model,
+      reasoningEffort: "xhigh",
       maxTokens: intFromRecord(
         env,
-        "COUNCIL_SAKANA_MAX_TOKENS",
+        "COUNCIL_OPENAI_MAX_TOKENS",
         DEFAULT_COUNCIL_SEATS[1].maxTokens,
         1000,
         64000,
@@ -266,11 +263,11 @@ export function resolveCouncilSeats(
     },
     {
       ...DEFAULT_COUNCIL_SEATS[2],
-      model: env.COUNCIL_OPENAI_MODEL?.trim() || DEFAULT_COUNCIL_SEATS[2].model,
-      reasoningEffort: "xhigh",
+      model: env.COUNCIL_GEMINI_MODEL?.trim() || DEFAULT_COUNCIL_SEATS[2].model,
+      label: env.COUNCIL_GEMINI_LABEL?.trim() || DEFAULT_COUNCIL_SEATS[2].label,
       maxTokens: intFromRecord(
         env,
-        "COUNCIL_OPENAI_MAX_TOKENS",
+        "COUNCIL_GEMINI_MAX_TOKENS",
         DEFAULT_COUNCIL_SEATS[2].maxTokens,
         1000,
         64000,
@@ -278,23 +275,11 @@ export function resolveCouncilSeats(
     },
     {
       ...DEFAULT_COUNCIL_SEATS[3],
-      model: env.COUNCIL_GEMINI_MODEL?.trim() || DEFAULT_COUNCIL_SEATS[3].model,
-      label: env.COUNCIL_GEMINI_LABEL?.trim() || DEFAULT_COUNCIL_SEATS[3].label,
-      maxTokens: intFromRecord(
-        env,
-        "COUNCIL_GEMINI_MAX_TOKENS",
-        DEFAULT_COUNCIL_SEATS[3].maxTokens,
-        1000,
-        64000,
-      ),
-    },
-    {
-      ...DEFAULT_COUNCIL_SEATS[4],
-      model: env.COUNCIL_XAI_MODEL?.trim() || DEFAULT_COUNCIL_SEATS[4].model,
+      model: env.COUNCIL_XAI_MODEL?.trim() || DEFAULT_COUNCIL_SEATS[3].model,
       maxTokens: intFromRecord(
         env,
         "COUNCIL_XAI_MAX_TOKENS",
-        DEFAULT_COUNCIL_SEATS[4].maxTokens,
+        DEFAULT_COUNCIL_SEATS[3].maxTokens,
         1000,
         64000,
       ),
@@ -437,9 +422,9 @@ export async function conveneCouncilWithCompleter(
     intFromEnv("COUNCIL_RETRY_BASE_DELAY_MS", 1500, 0, 30000);
   const sleepFn = options.sleepFn ?? sleep;
 
-  if (seats.length !== 5) {
+  if (seats.length !== COUNCIL_SEAT_COUNT) {
     throw new Error(
-      `Council configuration invalid: exactly 5 seats are required, got ${seats.length}.`,
+      `Council configuration invalid: exactly ${COUNCIL_SEAT_COUNT} seats are required, got ${seats.length}.`,
     );
   }
   const uniqueModels = new Set(seats.map((seat) => seat.model));
@@ -456,7 +441,7 @@ export async function conveneCouncilWithCompleter(
       : "(No additional context was supplied. Answer from general legal/regulatory knowledge and clearly flag that no source material was provided.)");
 
   onProgress?.(
-    `convening 5-seat council (min quorum ${minQuorum}/5): ${seats.map((seat) => seat.label).join(", ")}`,
+    `convening ${COUNCIL_SEAT_COUNT}-seat council (min quorum ${minQuorum}/${COUNCIL_SEAT_COUNT}): ${seats.map((seat) => seat.label).join(", ")}`,
   );
 
   const dispatchedAt = new Date().toISOString();
@@ -516,12 +501,12 @@ export async function conveneCouncilWithCompleter(
 
   const judgeModel = resolveCouncilJudge();
   onProgress?.(
-    `${respondedCount}/5 opinions received; reconciling via ${judgeModel}`,
+    `${respondedCount}/${COUNCIL_SEAT_COUNT} opinions received; reconciling via ${judgeModel}`,
   );
   const judgeSeat: CouncilSeat = {
     provider: "anthropic",
     model: judgeModel,
-    label: "Opus 5 judge",
+    label: "Opus 5.5 judge",
     maxTokens: intFromEnv("COUNCIL_JUDGE_MAX_TOKENS", 16000, 1000, 64000),
   };
   const judgeUser = buildJudgeUser(question, members);

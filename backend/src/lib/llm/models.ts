@@ -7,6 +7,7 @@ import type { Provider } from "./types";
 export const CLAUDE_MAIN_MODELS = [
     "claude-fable-5-1",
     "claude-fable-5",
+    "claude-opus-5-5",
     "claude-opus-5",
     "claude-opus-4-8",
     "claude-opus-4-7",
@@ -19,15 +20,18 @@ export const GEMINI_MAIN_MODELS = [
 ] as const;
 export const OPENAI_MAIN_MODELS = [
     "gpt-6-astra",
+    "gpt-6-sol",
     "gpt-5.6-sol",
     "gpt-5.5",
     "gpt-5.4",
 ] as const;
+// Retired Sakana ids. Kept so the unused adapter tests can name them.
+// Excluded from ALL_MODELS so settings and resolveModel cannot select them.
 export const FUGU_MAIN_MODELS = [
     "fugu-ultra-20260615",
     "fugu-20260615",
 ] as const;
-export const GROK_MAIN_MODELS = ["grok-4.6"] as const;
+export const GROK_MAIN_MODELS = ["grok-4.7"] as const;
 // Official OpenAI-compat ids as of 2026-09-05 (V4 Flash + V4 Pro).
 export const DEEPSEEK_MAIN_MODELS = [
     "deepseek-v4-flash",
@@ -56,7 +60,6 @@ const ALL_MODELS = new Set<string>([
     ...CLAUDE_MAIN_MODELS,
     ...GEMINI_MAIN_MODELS,
     ...OPENAI_MAIN_MODELS,
-    ...FUGU_MAIN_MODELS,
     ...GROK_MAIN_MODELS,
     ...DEEPSEEK_MAIN_MODELS,
     ...CLAUDE_MID_MODELS,
@@ -79,6 +82,11 @@ export function providerForModel(model: string): Provider {
     if (model.startsWith("grok-")) return "xai";
     if (model.startsWith("deepseek-")) return "deepseek";
     throw new Error(`Unknown model id: ${model}`);
+}
+
+/** True for retired Sakana Fugu ids. Chat and council must not call these. */
+export function isSakanaModelId(model: string): boolean {
+    return model.startsWith("fugu-");
 }
 
 export function resolveModel(id: string | null | undefined, fallback: string): string {

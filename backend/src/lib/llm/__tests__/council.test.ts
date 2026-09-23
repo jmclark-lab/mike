@@ -17,28 +17,35 @@ const noDelay = {
   sleepFn: async () => undefined,
 };
 
-test("default council seats are five providers including Fable 5.1 and Grok 4.6", () => {
+test("default council seats are four providers including Fable 5.1 and Grok 4.7", () => {
   const seats = resolveCouncilSeats({});
-  assert.equal(seats.length, 5);
+  assert.equal(seats.length, 4);
   assert.equal(seats[0].model, "claude-fable-5-1");
   assert.equal(seats[0].label, "Fable 5.1");
-  assert.equal(seats[4].provider, "xai");
-  assert.equal(seats[4].model, "grok-4.6");
-  assert.equal(seats[4].label, "Grok 4.6");
+  assert.equal(seats[1].provider, "openai");
+  assert.equal(seats[1].model, "gpt-6-astra");
+  assert.equal(seats[1].label, "GPT-6 Astra");
+  assert.equal(seats[2].model, "gemini-3.1-pro-preview");
+  assert.equal(seats[3].provider, "xai");
+  assert.equal(seats[3].model, "grok-4.7");
+  assert.equal(seats[3].label, "Grok 4.7");
   assert.equal(seats[0].maxTokens, 32000);
-  assert.equal(seats[1].maxTokens, 16000);
-  assert.equal(seats[4].maxTokens, 8000);
-  assert.equal(COUNCIL_MEMBERS.length, 5);
+  assert.equal(seats[1].maxTokens, 16384);
+  assert.equal(seats[3].maxTokens, 8000);
+  assert.equal(
+    seats.some((seat) => seat.model.startsWith("fugu-") || seat.provider === ("sakana" as never)),
+    false,
+  );
+  assert.equal(COUNCIL_MEMBERS.length, 4);
   assert.deepEqual(COUNCIL_MEMBERS, [
     "claude-fable-5-1",
-    "fugu-ultra-20260615",
     "gpt-6-astra",
     "gemini-3.1-pro-preview",
-    "grok-4.6",
+    "grok-4.7",
   ]);
 });
 
-test("the council invokes all five declared members before the judge", async () => {
+test("the council invokes all four declared members before the judge", async () => {
   const invoked: string[] = [];
   const result = await conveneCouncilWithCompleter(
     {
@@ -60,8 +67,8 @@ test("the council invokes all five declared members before the judge", async () 
   );
   assert.equal(invoked.at(-1), COUNCIL_JUDGE);
   assert.equal(invoked.length, COUNCIL_MEMBERS.length + 1);
-  assert.equal(result.respondedCount, 5);
-  assert.match(result.finalAnswer, /mandatory 5\/5 opinions received/);
+  assert.equal(result.respondedCount, 4);
+  assert.match(result.finalAnswer, /mandatory 4\/4 opinions received/);
   assert.match(result.finalAnswer, /Reconciled answer/);
 });
 
@@ -85,7 +92,7 @@ test("a transient member failure is retried using the same model", async () => {
     result.members.find((member) => member.model === transient)?.attempts,
     3,
   );
-  assert.equal(result.respondedCount, 5);
+  assert.equal(result.respondedCount, 4);
   assert.equal(attempts.get(COUNCIL_JUDGE), 1);
 });
 
@@ -108,9 +115,9 @@ test("an incomplete quorum throws and never invokes the judge", async () => {
       ),
     (error: unknown) => {
       assert.ok(error instanceof CouncilQuorumError);
-      assert.equal(error.respondedCount, 4);
-      assert.equal(error.requiredCount, 5);
-      assert.match(error.message, /GPT-6 Astra/);
+      assert.equal(error.respondedCount, 3);
+      assert.equal(error.requiredCount, 4);
+      assert.match(error.message, /Gemini 3\.1 Pro Preview/);
       return true;
     },
   );
@@ -173,30 +180,32 @@ test("council seats are configurable and the OpenAI seat always uses xhigh reaso
     seats.map((seat) => seat.model),
     [
       "claude-required",
-      "fugu-required",
       "gpt-6-astra",
       "gemini-3.5-pro",
       "grok-required",
     ],
   );
-  assert.equal(seats[2].label, "GPT-6 Astra");
-  assert.equal(seats[2].reasoningEffort, "xhigh");
+  assert.equal(
+    seats.some((seat) => seat.model.includes("fugu")),
+    false,
+  );
+  assert.equal(seats[1].label, "GPT-6 Astra");
+  assert.equal(seats[1].reasoningEffort, "xhigh");
   assert.equal(seats[0].maxTokens, 32000);
-  assert.equal(seats[1].maxTokens, 16000);
-  assert.equal(seats[2].maxTokens, 32000);
-  assert.equal(seats[3].maxTokens, 6000);
-  assert.equal(seats[3].label, "Gemini 3.5 Pro");
-  assert.equal(seats[4].provider, "xai");
-  assert.equal(seats[4].label, "Grok 4.6");
-  assert.equal(seats[4].maxTokens, 12000);
+  assert.equal(seats[1].maxTokens, 32000);
+  assert.equal(seats[2].maxTokens, 6000);
+  assert.equal(seats[2].label, "Gemini 3.5 Pro");
+  assert.equal(seats[3].provider, "xai");
+  assert.equal(seats[3].label, "Grok 4.7");
+  assert.equal(seats[3].maxTokens, 12000);
 });
 
-test("the Anthropic and Sakana council calls receive the raised token budgets", async () => {
+test("the Anthropic council call receives the raised token budget", async () => {
   const observed = new Map<string, number | undefined>();
   await conveneCouncilWithCompleter(
     { question: "Review this matter." },
     async ({ model, maxTokens }) => {
-      if (model === "claude-fable-5-1" || model === "fugu-ultra-20260615") {
+      if (model === "claude-fable-5-1" || model === "gpt-6-astra") {
         observed.set(model, maxTokens);
       }
       return model === COUNCIL_JUDGE ? "Judge answer" : `Answer from ${model}`;
@@ -205,15 +214,16 @@ test("the Anthropic and Sakana council calls receive the raised token budgets", 
   );
 
   assert.equal(observed.get("claude-fable-5-1"), 32000);
-  assert.equal(observed.get("fugu-ultra-20260615"), 16000);
+  assert.equal(observed.get("gpt-6-astra"), 16384);
+  assert.equal(observed.has("fugu-ultra-20260615"), false);
 });
 
-test("the xAI council call receives the Grok 4.6 token budget", async () => {
+test("the xAI council call receives the Grok 4.7 token budget", async () => {
   let observed: { maxTokens?: number } | undefined;
   await conveneCouncilWithCompleter(
     { question: "Review this matter." },
     async ({ model, maxTokens }) => {
-      if (model === "grok-4.6") observed = { maxTokens };
+      if (model === "grok-4.7") observed = { maxTokens };
       return model === COUNCIL_JUDGE ? "Judge answer" : `Answer from ${model}`;
     },
     noDelay,
@@ -236,9 +246,9 @@ test("the OpenAI council call receives the Astra reasoning and token budget", as
   assert.deepEqual(observed, { reasoningEffort: "xhigh", maxTokens: 16384 });
 });
 
-test("a four-seat configuration is rejected before any provider call", async () => {
+test("a three-seat configuration is rejected before any provider call", async () => {
   let calls = 0;
-  const fourSeats = resolveCouncilSeats({}).slice(0, 4);
+  const threeSeats = resolveCouncilSeats({}).slice(0, 3);
 
   await assert.rejects(
     () =>
@@ -248,23 +258,23 @@ test("a four-seat configuration is rejected before any provider call", async () 
           calls += 1;
           return "answer";
         },
-        { ...noDelay, seats: fourSeats },
+        { ...noDelay, seats: threeSeats },
       ),
-    /exactly 5 seats are required, got 4/,
+    /exactly 4 seats are required, got 3/,
   );
   assert.equal(calls, 0);
 });
 
-test("the council judge defaults to Opus 5 and is env-overridable", () => {
-  assert.equal(COUNCIL_JUDGE, "claude-opus-5");
-  assert.equal(resolveCouncilJudge({}), "claude-opus-5");
+test("the council judge defaults to Opus 5.5 and is env-overridable", () => {
+  assert.equal(COUNCIL_JUDGE, "claude-opus-5-5");
+  assert.equal(resolveCouncilJudge({}), "claude-opus-5-5");
   assert.equal(
     resolveCouncilJudge({ COUNCIL_JUDGE: "claude-opus-4-8" }),
     "claude-opus-4-8",
   );
 });
 
-test("the council judge call receives the Opus 5 token budget", async () => {
+test("the council judge call receives the Opus 5.5 token budget", async () => {
   let observed: { model?: string; maxTokens?: number } | undefined;
   const result = await conveneCouncilWithCompleter(
     { question: "Review this matter." },
@@ -275,17 +285,17 @@ test("the council judge call receives the Opus 5 token budget", async () => {
     noDelay,
   );
 
-  assert.deepEqual(observed, { model: "claude-opus-5", maxTokens: 16000 });
-  assert.match(result.finalAnswer, /reconciled by Opus 5/);
+  assert.deepEqual(observed, { model: "claude-opus-5-5", maxTokens: 16000 });
+  assert.match(result.finalAnswer, /reconciled by Opus 5\.5/);
 });
 
-test("min_quorum=4 with one empty seat still judges the successful opinions", async () => {
+test("min_quorum=3 with one empty seat still judges the successful opinions", async () => {
   const empty = COUNCIL_MEMBERS[0];
   const invoked: string[] = [];
   let judgeUser = "";
   let judgeSystem = "";
   const result = await conveneCouncilWithCompleter(
-    { question: "Review this matter.", minQuorum: 4 },
+    { question: "Review this matter.", minQuorum: 3 },
     async ({ model, user, systemPrompt }) => {
       invoked.push(model);
       if (model === empty) return "   ";
@@ -299,16 +309,17 @@ test("min_quorum=4 with one empty seat still judges the successful opinions", as
     { ...noDelay, maxAttempts: 2 },
   );
 
-  assert.equal(result.respondedCount, 4);
+  assert.equal(result.respondedCount, 3);
   assert.equal(invoked.filter((model) => model === empty).length, 2);
   assert.equal(invoked.includes(COUNCIL_JUDGE), true);
-  assert.match(result.finalAnswer, /4\/5 opinions received/);
+  assert.match(result.finalAnswer, /3\/4 opinions received/);
   assert.match(result.finalAnswer, /failed: Fable 5\.1/);
-  assert.match(result.finalAnswer, /reconciled by Opus 5/);
-  assert.doesNotMatch(result.finalAnswer, /mandatory 5\/5/);
+  assert.match(result.finalAnswer, /reconciled by Opus 5\.5/);
+  assert.doesNotMatch(result.finalAnswer, /mandatory 4\/4/);
   assert.match(judgeUser, /FAILED SEATS/);
   assert.match(judgeUser, /Fable 5\.1/);
-  assert.match(judgeUser, /Answer from fugu-ultra-20260615/);
+  assert.match(judgeUser, /Answer from gpt-6-astra/);
+  assert.doesNotMatch(judgeUser, /fugu-/);
   assert.doesNotMatch(judgeUser, /Answer from claude-fable-5-1/);
   assert.match(judgeSystem, /do not invent/i);
   assert.equal(
@@ -317,7 +328,7 @@ test("min_quorum=4 with one empty seat still judges the successful opinions", as
   );
 });
 
-test("min_quorum=5 with one empty seat still fails and never invokes the judge", async () => {
+test("min_quorum above the seat count is clamped and one empty seat still fails", async () => {
   const empty = COUNCIL_MEMBERS[3];
   const invoked: string[] = [];
 
@@ -333,12 +344,12 @@ test("min_quorum=5 with one empty seat still fails and never invokes the judge",
       ),
     (error: unknown) => {
       assert.ok(error instanceof CouncilQuorumError);
-      assert.equal(error.respondedCount, 4);
-      assert.equal(error.requiredCount, 5);
-      assert.match(error.message, /Gemini 3\.1 Pro Preview/);
+      assert.equal(error.respondedCount, 3);
+      assert.equal(error.requiredCount, 4);
+      assert.match(error.message, /Grok 4\.7/);
       assert.equal(
         error.members.filter((member) => member.ok).length,
-        4,
+        3,
       );
       return true;
     },
@@ -348,13 +359,13 @@ test("min_quorum=5 with one empty seat still fails and never invokes the judge",
   assert.equal(invoked.includes(COUNCIL_JUDGE), false);
 });
 
-test("COUNCIL_MIN_QUORUM env is clamped to 1–5 and overridden by the call", () => {
-  assert.equal(resolveCouncilMinQuorum(undefined, {}), 5);
-  assert.equal(resolveCouncilMinQuorum(undefined, { COUNCIL_MIN_QUORUM: "4" }), 4);
+test("COUNCIL_MIN_QUORUM env is clamped to 1–4 and overridden by the call", () => {
+  assert.equal(resolveCouncilMinQuorum(undefined, {}), 4);
+  assert.equal(resolveCouncilMinQuorum(undefined, { COUNCIL_MIN_QUORUM: "3" }), 3);
   assert.equal(resolveCouncilMinQuorum(undefined, { COUNCIL_MIN_QUORUM: "0" }), 1);
-  assert.equal(resolveCouncilMinQuorum(undefined, { COUNCIL_MIN_QUORUM: "9" }), 5);
-  assert.equal(resolveCouncilMinQuorum(4, { COUNCIL_MIN_QUORUM: "5" }), 4);
-  assert.equal(resolveCouncilMinQuorum("3", {}), 3);
+  assert.equal(resolveCouncilMinQuorum(undefined, { COUNCIL_MIN_QUORUM: "9" }), 4);
+  assert.equal(resolveCouncilMinQuorum(3, { COUNCIL_MIN_QUORUM: "4" }), 3);
+  assert.equal(resolveCouncilMinQuorum("2", {}), 2);
 });
 
 test("formatCouncilQuorumFailure dumps successful answers and failed seat errors", () => {
@@ -367,13 +378,6 @@ test("formatCouncilQuorumFailure dumps successful answers and failed seat errors
         answer: longAnswer,
         ok: true,
         attempts: 1,
-      },
-      {
-        model: "fugu-ultra-20260615",
-        label: "Fugu Ultra",
-        answer: "Keep the Fugu view",
-        ok: true,
-        attempts: 2,
       },
       {
         model: "gpt-6-astra",
@@ -391,19 +395,19 @@ test("formatCouncilQuorumFailure dumps successful answers and failed seat errors
         attempts: 1,
       },
       {
-        model: "grok-4.6",
-        label: "Grok 4.6",
+        model: "grok-4.7",
+        label: "Grok 4.7",
         answer: "Grok view",
         ok: true,
         attempts: 1,
       },
     ],
-    5,
+    4,
   );
 
   const dump = formatCouncilQuorumFailure(error);
   assert.match(dump, /no council opinion was produced/);
-  assert.match(dump, /Keep the Fugu view/);
+  assert.doesNotMatch(dump, /Fugu|fugu-|sakana/i);
   assert.match(dump, /Gemini view/);
   assert.match(dump, /Grok view/);
   assert.match(dump, /GPT-6 Astra/);
@@ -441,7 +445,8 @@ test("duplicate model configuration is rejected before any provider call", async
   let calls = 0;
   const duplicateSeats = resolveCouncilSeats({
     COUNCIL_ANTHROPIC_MODEL: "same-model",
-    COUNCIL_SAKANA_MODEL: "same-model",
+    COUNCIL_OPENAI_MODEL: "same-model",
+    COUNCIL_SAKANA_MODEL: "fugu-ignored",
   });
 
   await assert.rejects(

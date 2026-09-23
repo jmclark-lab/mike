@@ -194,11 +194,11 @@ async function main(): Promise<void> {
 
   if (opts.council) {
     console.warn(
-      "WARNING: --council convenes the full 5-seat council + judge per fixture. " +
+      "WARNING: --council convenes the full 4-seat council + judge per fixture. " +
         "This is several paid calls each and is not for CI.",
     );
   } else {
-    console.log("Live mode: main-model completeText (not the 5-seat council).");
+    console.log("Live mode: main-model completeText (not the 4-seat council).");
   }
 
   const { scores, model } = await runLive(fixtures, opts.council);

@@ -413,7 +413,7 @@ export function formatReport(report: EvalReport): string {
   lines.push("", "## Cost warning", "");
   lines.push(
     "Live mode calls the **main model complete** path once per fixture. " +
-      "`--council` convenes the full 5-seat council plus judge — that is several paid calls per fixture and is **not** for CI. " +
+      "`--council` convenes the full 4-seat council plus judge — that is several paid calls per fixture and is **not** for CI. " +
       "Default `npm test` never calls this harness in live mode.",
   );
   lines.push("");
@@ -488,7 +488,7 @@ Usage:
 
 Flags:
   --dry-run     Validate fixtures and print the plan. No paid API calls.
-  --council     Live mode only: 5-seat council + judge (expensive; not for CI).
+  --council     Live mode only: 4-seat council + judge (expensive; not for CI).
   --limit N     Run the first N selected fixtures.
   --id id[,id]  Run specific fixture id(s).
   --help        Show this help.
