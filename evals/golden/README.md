@@ -33,7 +33,7 @@ From the repo root or `backend/` (`--` forwards flags through npm):
 # Validate fixtures + print the plan. No API keys. Safe for CI humans.
 npm run eval:golden -- --dry-run
 
-# Live: one main-model completeText call per fixture (not the 5-seat council).
+# Live: one main-model completeText call per fixture (not the 4-seat council).
 # Requires ANTHROPIC_API_KEY and/or LLM_MODEL (set LLM_MODEL if you are
 # pointing at Gemini/OpenAI/etc. instead of Anthropic).
 ANTHROPIC_API_KEY=… npm run eval:golden --prefix backend
@@ -42,7 +42,7 @@ ANTHROPIC_API_KEY=… npm run eval:golden --prefix backend
 npm run eval:golden --prefix backend -- --id contract-cta-indemnity-01
 npm run eval:golden --prefix backend -- --limit 3
 
-# Optional: full 5-seat council + judge. Documented, not required for green CI.
+# Optional: full 4-seat council + judge. Documented, not required for green CI.
 npm run eval:golden --prefix backend -- --council --limit 1
 ```
 
@@ -68,7 +68,7 @@ Limitations (accepted for v1): a correct answer that uses a synonym can fail; a 
 | --- | --- | --- |
 | `--dry-run` | None | Default. Commit/CI-safe. |
 | Live (default without `--dry-run`) | 1× `completeText` per fixture on the **active main model** (`LLM_MODEL` or `resolveActiveModel()`, currently Fable 5.1 unless overridden) | Model-upgrade comparisons |
-| `--council` | Full **5-seat council + judge** per fixture (`conveneCouncil`) | Occasional high-stakes checks only |
+| `--council` | Full **4-seat council + judge** per fixture (`conveneCouncil`) | Occasional high-stakes checks only |
 
 Do **not** put live or council mode on default CI. Thirty live completes are already a noticeable bill; council is a multiple of that.
 

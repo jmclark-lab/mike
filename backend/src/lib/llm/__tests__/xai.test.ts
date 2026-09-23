@@ -47,10 +47,10 @@ function sseResponse(events: unknown[]): Response {
 }
 
 describe("xAI Grok selectable-only wiring", { concurrency: false }, () => {
-  test("GROK_MAIN_MODELS is grok-4.6 and resolves to provider xai", () => {
-    assert.deepEqual([...GROK_MAIN_MODELS], ["grok-4.6"]);
-    assert.equal(providerForModel("grok-4.6"), "xai");
-    assert.equal(resolveModel("grok-4.6", DEFAULT_MAIN_MODEL), "grok-4.6");
+  test("GROK_MAIN_MODELS is grok-4.7 and resolves to provider xai", () => {
+    assert.deepEqual([...GROK_MAIN_MODELS], ["grok-4.7"]);
+    assert.equal(providerForModel("grok-4.7"), "xai");
+    assert.equal(resolveModel("grok-4.7", DEFAULT_MAIN_MODEL), "grok-4.7");
     assert.equal(DEFAULT_MAIN_MODEL, "claude-fable-5-1");
   });
 
@@ -66,17 +66,18 @@ describe("xAI Grok selectable-only wiring", { concurrency: false }, () => {
     );
     assert.deepEqual(chain, [
       "claude-fable-5-1",
-      "claude-opus-5",
+      "claude-opus-5-5",
       "gpt-6-astra",
     ]);
   });
 
-  test("Grok is the fifth legal-council seat (Astra OpenAI slot stays)", () => {
-    assert.equal(COUNCIL_MEMBERS.includes("grok-4.6"), true);
+  test("Grok 4.7 is the fourth legal-council seat (Astra OpenAI slot stays)", () => {
+    assert.equal(COUNCIL_MEMBERS.includes("grok-4.7"), true);
+    assert.equal(COUNCIL_MEMBERS.includes("grok-4.6"), false);
     assert.equal(COUNCIL_MEMBERS.includes("gpt-6-astra"), true);
     assert.equal(COUNCIL_MEMBERS.includes("claude-fable-5-1"), true);
-    assert.equal(COUNCIL_MEMBERS.length, 5);
-    assert.equal(COUNCIL_MEMBERS.at(-1), "grok-4.6");
+    assert.equal(COUNCIL_MEMBERS.length, 4);
+    assert.equal(COUNCIL_MEMBERS.at(-1), "grok-4.7");
   });
 
   test("xAI client uses https://api.x.ai/v1 and XAI_API_KEY", () => {
@@ -99,7 +100,7 @@ describe("xAI Grok selectable-only wiring", { concurrency: false }, () => {
     assert.throws(() => xaiClient(), /XAI_API_KEY/);
   });
 
-  test("completeXaiText posts grok-4.6 to the xAI Responses URL", async () => {
+  test("completeXaiText posts grok-4.7 to the xAI Responses URL", async () => {
     process.env.XAI_API_KEY = "test-xai-key";
     delete process.env.XAI_BASE_URL;
     const originalFetch = globalThis.fetch;
@@ -128,12 +129,12 @@ describe("xAI Grok selectable-only wiring", { concurrency: false }, () => {
 
     try {
       const result = await completeXaiText({
-        model: "grok-4.6",
+        model: "grok-4.7",
         user: "ping",
       });
       assert.equal(result, "grok ok");
       assert.equal(requestedUrl, "https://api.x.ai/v1/responses");
-      assert.equal(requestBody?.model, "grok-4.6");
+      assert.equal(requestBody?.model, "grok-4.7");
       assert.equal(requestBody?.stream, true);
       assert.equal(authHeader.startsWith("Bearer "), true);
     } finally {

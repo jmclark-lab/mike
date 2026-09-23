@@ -34,11 +34,11 @@ function restoreRoutingEnv() {
 afterEach(restoreRoutingEnv);
 
 describe("LLM routing chain", { concurrency: false }, () => {
-  test("default chain is Fable 5.1 → Opus 5 → GPT-6 Astra with no Fugu hop", () => {
+  test("default chain is Fable 5.1 → Opus 5.5 → GPT-6 Astra with no Fugu hop", () => {
     clearRoutingEnv();
     assert.deepEqual(resolveModelChain(), [
       "claude-fable-5-1",
-      "claude-opus-5",
+      "claude-opus-5-5",
       "gpt-6-astra",
     ]);
     assert.equal(resolveActiveModel(), "claude-fable-5-1");
@@ -51,7 +51,7 @@ describe("LLM routing chain", { concurrency: false }, () => {
     assert.equal(resolveActiveModel(), "claude-fable-5-1");
     assert.deepEqual(chain, [
       "claude-fable-5-1",
-      "claude-opus-5",
+      "claude-opus-5-5",
       "gpt-6-astra",
     ]);
     assert.equal(
@@ -67,7 +67,7 @@ describe("LLM routing chain", { concurrency: false }, () => {
     assert.equal(resolveActiveModel(), "claude-fable-5-1");
     assert.deepEqual(resolveModelChain(), [
       "claude-fable-5-1",
-      "claude-opus-5",
+      "claude-opus-5-5",
       "gpt-6-astra",
     ]);
   });
@@ -78,25 +78,35 @@ describe("LLM routing chain", { concurrency: false }, () => {
     assert.equal(resolveActiveModel(), "claude-fable-5-1");
   });
 
-  test("LLM_MODEL is a deliberate primary override, including Sakana", () => {
+  test("LLM_MODEL naming Fugu is ignored and cannot become primary", () => {
     clearRoutingEnv();
     process.env.LLM_MODEL = "fugu-ultra-20260615";
-    assert.equal(resolveActiveModel(), "fugu-ultra-20260615");
+    assert.equal(resolveActiveModel(), "claude-fable-5-1");
     assert.deepEqual(resolveModelChain(), [
-      "fugu-ultra-20260615",
-      "claude-opus-5",
+      "claude-fable-5-1",
+      "claude-opus-5-5",
       "gpt-6-astra",
     ]);
   });
 
-  test("LLM_FALLBACK_MODEL replaces the tail and can name Fugu explicitly", () => {
+  test("LLM_MODEL still overrides the primary for a non-Sakana model", () => {
+    clearRoutingEnv();
+    process.env.LLM_MODEL = "claude-fable-5";
+    assert.equal(resolveActiveModel(), "claude-fable-5");
+    assert.deepEqual(resolveModelChain(), [
+      "claude-fable-5",
+      "claude-opus-5-5",
+      "gpt-6-astra",
+    ]);
+  });
+
+  test("LLM_FALLBACK_MODEL drops Fugu and keeps the other hops", () => {
     clearRoutingEnv();
     process.env.LLM_MODEL = "claude-fable-5";
     process.env.LLM_FALLBACK_MODEL =
       "fugu-ultra-20260615,claude-opus-4-8,gpt-5.6-sol";
     assert.deepEqual(resolveModelChain(), [
       "claude-fable-5",
-      "fugu-ultra-20260615",
       "claude-opus-4-8",
       "gpt-5.6-sol",
     ]);
@@ -104,10 +114,11 @@ describe("LLM routing chain", { concurrency: false }, () => {
 
   test("LLM_FALLBACK_MODEL dedupes the primary if it is repeated", () => {
     clearRoutingEnv();
-    process.env.LLM_FALLBACK_MODEL = "claude-fable-5-1,claude-opus-5,gpt-6-astra";
+    process.env.LLM_FALLBACK_MODEL =
+      "claude-fable-5-1,claude-opus-5-5,gpt-6-astra";
     assert.deepEqual(resolveModelChain(), [
       "claude-fable-5-1",
-      "claude-opus-5",
+      "claude-opus-5-5",
       "gpt-6-astra",
     ]);
   });
@@ -117,8 +128,8 @@ describe("provider_metadata routing trail", { concurrency: false }, () => {
   test("keeps answering-model keys and adds depth/attempted/skipped", () => {
     const skipped = [
       {
-        provider_name: "sakana_fugu",
-        model_name: "fugu-ultra-20260615",
+        provider_name: "claude",
+        model_name: "claude-opus-5-5",
         failure_class: "timeout",
         failure_reason: "timed out",
       },
@@ -131,7 +142,7 @@ describe("provider_metadata routing trail", { concurrency: false }, () => {
       },
       "claude-fable-5",
       1,
-      ["fugu-ultra-20260615", "claude-fable-5"],
+      ["claude-opus-5-5", "claude-fable-5"],
       skipped,
     );
     const persisted = persistableProviderMetadata(merged);
@@ -140,7 +151,7 @@ describe("provider_metadata routing trail", { concurrency: false }, () => {
     assert.equal(persisted.provider_response_id, "msg_123");
     assert.equal(persisted.fallback_depth, 1);
     assert.deepEqual(persisted.attempted_models, [
-      "fugu-ultra-20260615",
+      "claude-opus-5-5",
       "claude-fable-5",
     ]);
     assert.deepEqual(persisted.skipped_models, skipped);

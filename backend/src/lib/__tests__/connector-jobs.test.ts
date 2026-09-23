@@ -72,7 +72,7 @@ test("SSE reader preserves a terminal Mike error", async () => {
 
 test("SSE reader keeps a council synthesis even if the writer dies before DONE", async () => {
   const synthesis =
-    "[Council: 3/5 opinions received (Fugu Ultra, GPT-6 Astra, Grok 4.6); failed: Fable 5.1, Gemini 3.1 Pro Preview; reconciled by Opus 5]\n\nHold the send.";
+    "[Council: 3/4 opinions received (GPT-6 Astra, Gemini 3.1 Pro Preview, Grok 4.7); failed: Fable 5.1; reconciled by Opus 5.5]\n\nHold the send.";
   const response = new Response(
     `data: ${JSON.stringify({ type: "content_delta", text: synthesis })}\n\n`,
     { status: 200, headers: { "content-type": "text/event-stream" } },
@@ -96,7 +96,7 @@ test("SSE reader treats an abort error as failure when only a preamble was strea
 
 test("SSE reader keeps a council synthesis even if the writer then emits an abort error", async () => {
   const synthesis =
-    "[Council: 3/5 opinions received (Fugu Ultra, GPT-6 Astra, Grok 4.6); failed: Fable 5.1, Gemini 3.1 Pro Preview; reconciled by Opus 5]\n\nHold the send.";
+    "[Council: 3/4 opinions received (GPT-6 Astra, Gemini 3.1 Pro Preview, Grok 4.7); failed: Fable 5.1; reconciled by Opus 5.5]\n\nHold the send.";
   const response = new Response(
     `data: ${JSON.stringify({ type: "content_delta", text: synthesis })}\n\ndata: {"type":"error","message":"Stream aborted."}\n\ndata: [DONE]\n\n`,
     { status: 200, headers: { "content-type": "text/event-stream" } },
@@ -139,7 +139,7 @@ test("connector jobs refuse a council intake preamble as the terminal answer", a
 
 test("connector jobs store the synthesis and drop a leading preamble", async () => {
   const synthesis =
-    "[Council: 3/5 opinions received (Fugu Ultra, GPT-6 Astra, Grok 4.6); failed: Fable 5.1, Gemini 3.1 Pro Preview; reconciled by Opus 5]\n\nHold the send.";
+    "[Council: 3/4 opinions received (GPT-6 Astra, Gemini 3.1 Pro Preview, Grok 4.7); failed: Fable 5.1; reconciled by Opus 5.5]\n\nHold the send.";
   const manager = new ConnectorJobManager(async () => {
     return `I'll convene the five-seat Council.\n\n${synthesis}`;
   });

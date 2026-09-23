@@ -39,6 +39,5 @@ export function modelGroupToProvider(
     if (group === "Anthropic") return "claude";
     if (group === "OpenAI") return "openai";
     if (group === "xAI") return "xai";
-    if (group === "DeepSeek") return "deepseek";
     return "gemini";
 }

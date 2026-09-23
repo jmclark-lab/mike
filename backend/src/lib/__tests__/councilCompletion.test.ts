@@ -16,7 +16,7 @@ const PREAMBLE =
   "I'll convene the five-seat Council on the full v6.6 text plus the v6.5→v6.6 change log so all seats reason over identical evidence. I'm setting quorum at 3 so a Fable seat failure does not suppress the judge synthesis; the actual roster will be reported regardless.";
 
 const SYNTHESIS =
-  "[Council: 4/5 opinions received (Fugu Ultra, GPT-6 Astra, Gemini 3.1 Pro Preview, Grok 4.6); failed: Fable 5.1; reconciled by Opus 5]\n\nThe PTA amendment is approvable with conditions.";
+  "[Council: 3/4 opinions received (GPT-6 Astra, Gemini 3.1 Pro Preview, Grok 4.7); failed: Fable 5.1; reconciled by Opus 5.5]\n\nThe PTA amendment is approvable with conditions.";
 
 const QUORUM_FAIL =
   "Council deliberation failed and no council opinion was produced — Council quorum incomplete: 2/3 required opinions received after retries. Missing: Fable 5.1: empty response.";
@@ -28,6 +28,7 @@ test("promptRequestsCouncil matches operational council language, not generic 'c
     ),
     true,
   );
+  assert.equal(promptRequestsCouncil("Convene the 4-seat council."), true);
   assert.equal(promptRequestsCouncil("Please convene_council on this NDA."), true);
   assert.equal(promptRequestsCouncil("Run the legal council on this MSA."), true);
   assert.equal(

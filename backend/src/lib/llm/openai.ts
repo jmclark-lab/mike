@@ -472,7 +472,9 @@ export async function completeOpenAIText(
       previousResponseId,
       reasoningEffort: params.reasoningEffort,
       reasoningContext:
-        params.model.startsWith("gpt-5.6") || params.model === "gpt-6-astra"
+        params.model.startsWith("gpt-5.6") ||
+        params.model === "gpt-6-astra" ||
+        params.model === "gpt-6-sol"
           ? "all_turns"
           : undefined,
       client: resolvedClient,

@@ -3,8 +3,8 @@
  *
  * Grok is OpenAI-compatible at https://api.x.ai/v1 (Chat Completions and
  * Responses). Mike reuses the Responses adapter with this base URL. Grok is
- * selectable in chat (not in the default fallback chain) and is the fifth
- * legal-council seat.
+ * selectable in chat (not in the default fallback chain) and is the fourth
+ * legal-council seat (`grok-4.7`).
  */
 
 import {

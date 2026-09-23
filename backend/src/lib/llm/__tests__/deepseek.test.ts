@@ -77,7 +77,7 @@ describe("DeepSeek selectable-only wiring", { concurrency: false }, () => {
     );
     assert.deepEqual(chain, [
       "claude-fable-5-1",
-      "claude-opus-5",
+      "claude-opus-5-5",
       "gpt-6-astra",
     ]);
   });
@@ -87,8 +87,12 @@ describe("DeepSeek selectable-only wiring", { concurrency: false }, () => {
       COUNCIL_MEMBERS.some((id) => id.startsWith("deepseek-")),
       false,
     );
-    assert.equal(COUNCIL_MEMBERS.length, 5);
-    assert.equal(COUNCIL_MEMBERS.includes("grok-4.6"), true);
+    assert.equal(COUNCIL_MEMBERS.length, 4);
+    assert.equal(COUNCIL_MEMBERS.includes("grok-4.7"), true);
+    assert.equal(
+      COUNCIL_MEMBERS.some((id) => id.startsWith("fugu-")),
+      false,
+    );
   });
 
   test("DeepSeek client uses https://api.deepseek.com and DEEPSEEK_API_KEY", () => {

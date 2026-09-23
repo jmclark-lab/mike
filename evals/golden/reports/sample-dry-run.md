@@ -57,4 +57,4 @@ v1 scores are **keyword / rubric checks**, not LLM-as-judge. A fixture **passes*
 
 ## Cost warning
 
-Live mode calls the **main model complete** path once per fixture. `--council` convenes the full 5-seat council plus judge — that is several paid calls per fixture and is **not** for CI. Default `npm test` never calls this harness in live mode.
+Live mode calls the **main model complete** path once per fixture. `--council` convenes the full 4-seat council plus judge — that is several paid calls per fixture and is **not** for CI. Default `npm test` never calls this harness in live mode.
