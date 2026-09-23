@@ -41,6 +41,7 @@ import {
     userExportFilename,
 } from "../lib/userDataExport";
 import { rejectedOrganisationDetail } from "../lib/outboundAttribution";
+import { isSponsorCiMode } from "../lib/sponsorCiMode";
 
 export const userRouter = Router();
 
@@ -294,6 +295,7 @@ function serializeProfile(row: UserProfileRow, apiKeyStatus?: ApiKeyStatus) {
         tabularModel: resolveModel(row.tabular_model, DEFAULT_TABULAR_MODEL),
         mfaOnLogin: row.mfa_on_login === true,
         legalResearchUs: row.legal_research_us !== false,
+        sponsorCiMode: isSponsorCiMode(),
         ...(apiKeyStatus ? { apiKeyStatus } : {}),
     };
 }

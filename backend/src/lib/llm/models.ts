@@ -1,4 +1,5 @@
 import type { Provider } from "./types";
+import { isSponsorCiFencedModel } from "../sponsorCiMode";
 
 // ---------------------------------------------------------------------------
 // Canonical model IDs
@@ -89,7 +90,12 @@ export function isSakanaModelId(model: string): boolean {
     return model.startsWith("fugu-");
 }
 
-export function resolveModel(id: string | null | undefined, fallback: string): string {
-    if (id && ALL_MODELS.has(id)) return id;
+export function resolveModel(
+    id: string | null | undefined,
+    fallback: string,
+    env: NodeJS.ProcessEnv = process.env,
+): string {
+    if (id && ALL_MODELS.has(id) && !isSponsorCiFencedModel(id, env)) return id;
+    if (isSponsorCiFencedModel(fallback, env)) return DEFAULT_MAIN_MODEL;
     return fallback;
 }

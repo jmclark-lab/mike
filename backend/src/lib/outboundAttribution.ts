@@ -25,7 +25,9 @@
  * "assisted-by", "prepared-with", or banned author label remains in body
  * text, footnotes, endnotes, comments, headers, footers, tracked-change
  * authors, or Word core creator / lastModifiedBy. It does not scrub and
- * continue when something is left.
+ * continue when something is left. There is no switch that turns this
+ * gate off. `SPONSOR_CI_MODE=1` also scans plain text and any other
+ * download that would otherwise pass through.
  *
  * Legacy `w:author` values (and banned creator / lastModifiedBy) are
  * rewritten to the organisation or "Author" by `rewriteBannedDocxAuthors`
@@ -34,6 +36,7 @@
  */
 
 import JSZip from "jszip";
+import { isSponsorCiMode } from "./sponsorCiMode";
 
 export const NEUTRAL_TRACKED_CHANGE_AUTHOR = "Author";
 
@@ -619,14 +622,20 @@ function findLooseBinaryAttribution(bytes: Buffer, location: string) {
   ].slice(0, 20);
 }
 
+const PLAIN_EXPORT =
+  /\.(txt|text|md|markdown|html|htm|eml|csv|json)$/i;
+
 /**
  * Prepare bytes that a client will receive. `.docx` is scrubbed then
  * gated. `.pdf` and legacy `.doc` are gated and not rewritten. Other
- * types pass through.
+ * types pass through unless Sponsor-CI mode is on, in which case plain
+ * text is fail-closed and every other payload is scanned so a rename
+ * cannot skip the gate.
  */
 export async function prepareOutboundFileBytes(
   bytes: Buffer,
   filename: string,
+  env: NodeJS.ProcessEnv = process.env,
 ): Promise<Buffer> {
   const lower = filename.toLowerCase();
   if (lower.endsWith(".docx")) return prepareOutboundDocxBytes(bytes);
@@ -635,6 +644,14 @@ export async function prepareOutboundFileBytes(
     const hits = findLooseBinaryAttribution(bytes, "doc text");
     if (hits.length > 0) throw new OutboundAttributionError(hits);
     return bytes;
+  }
+  if (isSponsorCiMode(env)) {
+    if (PLAIN_EXPORT.test(lower)) {
+      assertOutboundPlainText(bytes.toString("utf8"), lower || "plain");
+      return bytes;
+    }
+    const hits = findLooseBinaryAttribution(bytes, lower || "file");
+    if (hits.length > 0) throw new OutboundAttributionError(hits);
   }
   return bytes;
 }

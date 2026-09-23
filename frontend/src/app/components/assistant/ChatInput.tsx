@@ -307,6 +307,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput(
                                 value={model}
                                 onChange={setModel}
                                 apiKeys={apiKeys}
+                                sponsorCiMode={profile?.sponsorCiMode === true}
                             />
                             <button
                                 type="button"

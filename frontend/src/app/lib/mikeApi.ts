@@ -223,6 +223,8 @@ export interface UserProfile {
     tabularModel: string;
     mfaOnLogin: boolean;
     legalResearchUs: boolean;
+    /** True when the backend process has SPONSOR_CI_MODE on. */
+    sponsorCiMode?: boolean;
     apiKeyStatus: ApiKeyStatus;
 }
 

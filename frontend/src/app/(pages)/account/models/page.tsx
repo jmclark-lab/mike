@@ -15,6 +15,7 @@ import type { ApiKeyState } from "@/app/lib/mikeApi";
 import {
     MODELS,
     SETTINGS_MODELS,
+    visiblePickerModels,
     type ModelOption,
 } from "@/app/components/assistant/ModelToggle";
 import {
@@ -72,6 +73,10 @@ export default function ModelPreferencesPage() {
         }
     };
 
+    const sponsorCiMode = profile?.sponsorCiMode === true;
+    const titleOptions = visiblePickerModels(SETTINGS_MODELS, sponsorCiMode);
+    const tabularOptions = visiblePickerModels(MODELS, sponsorCiMode);
+
     return (
         <div>
             <div className="flex items-center gap-2 mb-4">
@@ -93,7 +98,7 @@ export default function ModelPreferencesPage() {
                             profile?.titleModel ??
                             "gemini-3.1-flash-lite-preview"
                         }
-                        options={SETTINGS_MODELS}
+                        options={titleOptions}
                         apiKeys={profile?.apiKeys}
                         isSaving={savingField === "titleModel"}
                         isSaved={savedField === "titleModel"}
@@ -115,7 +120,7 @@ export default function ModelPreferencesPage() {
                             profile?.tabularModel ??
                             "gemini-3-flash-preview"
                         }
-                        options={MODELS}
+                        options={tabularOptions}
                         apiKeys={profile?.apiKeys}
                         isSaving={savingField === "tabularModel"}
                         isSaved={savedField === "tabularModel"}
