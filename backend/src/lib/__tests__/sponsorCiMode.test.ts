@@ -219,8 +219,8 @@ test("library /url gates stored bytes before getSignedUrl and does not rewrite t
   const exportStart = src.indexOf('"/:documentId/export"');
   assert.ok(urlStart > 0 && docxStart > urlStart && exportStart > docxStart);
   const urlFn = src.slice(urlStart, docxStart);
-  const gateAt = urlFn.indexOf("bytesSafeForSignedUrl");
-  const signAt = urlFn.indexOf("getSignedUrl");
+  const gateAt = urlFn.indexOf("bytesSafeForSignedUrl(");
+  const signAt = urlFn.indexOf("await getSignedUrl(");
   assert.ok(gateAt >= 0 && signAt > gateAt);
   assert.match(urlFn, /bytesSafeForSignedUrl\(\s*stored,/);
   assert.equal(/uploadFile/.test(urlFn), false);
