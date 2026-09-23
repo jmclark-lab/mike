@@ -88,7 +88,19 @@ export function useFetchDocxBytes(
                 const bin = await fetch(url, {
                     headers: token ? { Authorization: `Bearer ${token}` } : {},
                 });
-                if (!bin.ok) throw new Error(`HTTP ${bin.status}`);
+                if (!bin.ok) {
+                    const text = await bin.text();
+                    let detail = `HTTP ${bin.status}`;
+                    try {
+                        const parsed = JSON.parse(text) as { detail?: unknown };
+                        if (typeof parsed.detail === "string" && parsed.detail) {
+                            detail = parsed.detail;
+                        }
+                    } catch {
+                        if (text.trim()) detail = text.trim().slice(0, 500);
+                    }
+                    throw new Error(detail);
+                }
                 const buf = await bin.arrayBuffer();
                 bytesCache.set(key, buf);
                 return buf;

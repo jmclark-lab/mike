@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { Download, Trash2, X } from "lucide-react";
 import { DocView } from "./DocView";
-import { getDocumentUrl } from "@/app/lib/mikeApi";
+import { downloadGatedDocument, saveBlobDownload } from "@/app/lib/mikeApi";
 import type { Document } from "./types";
 
 interface Props {
@@ -31,11 +31,12 @@ export function DocViewModal({
 
     async function handleDownload() {
         if (!doc) return;
-        const { url, filename } = await getDocumentUrl(doc.id, versionId ?? null);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = filename;
-        a.click();
+        try {
+            const file = await downloadGatedDocument(doc.id, versionId ?? null);
+            saveBlobDownload(file.blob, file.filename || doc.filename);
+        } catch (e) {
+            window.alert(e instanceof Error ? e.message : "Export blocked.");
+        }
     }
 
     return createPortal(

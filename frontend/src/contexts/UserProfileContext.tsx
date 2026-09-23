@@ -15,6 +15,7 @@ import {
     type UserProfile as ApiUserProfile,
     getUserProfile,
     isMfaRequiredError,
+    MikeApiError,
     saveApiKey,
     updateUserMfaOnLogin,
     updateUserProfile,
@@ -172,6 +173,9 @@ export function UserProfileProvider({ children }: { children: ReactNode }) {
                 return true;
             } catch (error) {
                 if (isMfaRequiredError(error)) throw error;
+                if (error instanceof MikeApiError && error.status === 400) {
+                    throw error;
+                }
                 return false;
             }
         },

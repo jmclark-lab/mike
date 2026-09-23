@@ -57,7 +57,19 @@ export function useFetchSingleDoc(
                             : {},
                     },
                 );
-                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                if (!response.ok) {
+                    const text = await response.text();
+                    let detail = `HTTP ${response.status}`;
+                    try {
+                        const parsed = JSON.parse(text) as { detail?: unknown };
+                        if (typeof parsed.detail === "string" && parsed.detail) {
+                            detail = parsed.detail;
+                        }
+                    } catch {
+                        if (text.trim()) detail = text.trim().slice(0, 500);
+                    }
+                    throw new Error(detail);
+                }
                 if (cancelled) return;
 
                 const contentType =
@@ -72,8 +84,14 @@ export function useFetchSingleDoc(
                     await response.arrayBuffer().catch(() => {});
                     if (!cancelled) setResult({ type: "docx" });
                 }
-            } catch {
-                if (!cancelled) setError("Failed to load document.");
+            } catch (e) {
+                if (!cancelled) {
+                    setError(
+                        e instanceof Error && e.message
+                            ? e.message
+                            : "Failed to load document.",
+                    );
+                }
             } finally {
                 if (!cancelled) setLoading(false);
             }

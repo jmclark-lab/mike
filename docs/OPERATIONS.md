@@ -121,3 +121,21 @@ order by created_at desc;
 ## 12. Related docs (project folder)
 
 `Mike_Architecture_Roadmap.md` (prioritized roadmap + Mike's second opinion) · `Staging_Setup_Plan_for_Comet.md` · `Staging_Schema.sql` · `EFS_v0.4_Review_MIKE.md` / `EFS_v0.4_Review_bioaccess.md` · `Flux_Robotics_EFS_Protocol_Synopsis_v0.5.docx`.
+
+## 13. Outbound attribution (company voice)
+
+Sponsor-facing Word, PDF, and download links must not attribute the work to Mike or an AI tool. The chat persona can still be Mike.
+
+- **Company voice** is `user_profiles.organisation` (Account → Organisation). There is no tenant table. bioaccess, Amavita Research, Amavita Practice, and Amavita Sciences each keep their own name. `TRACKED_CHANGE_AUTHOR` is used only when that field is empty or is a banned label. Otherwise the Word author is `Author`. A missing organisation never emits Mike or AI.
+- **Do not bulk-assign one company name.** Migration `20260923_01_user_profile_organisation_company_voice.sql` only clears banned labels (Mike, AI, legal assistant, and the same set the app rejects). It leaves real names and NULL rows alone. Backfill NULL rows only after the company name is confirmed:
+
+```sql
+update public.user_profiles
+set organisation = 'bioaccess', updated_at = now()
+where user_id = '<uuid>'
+  and organisation is null;
+```
+
+  Or, from `/backend`: `npx tsx src/scripts/bootstrapOrganisation.ts --list-missing` then `--user-id <uuid> --organisation "bioaccess"`. The script refuses banned labels and will not replace a safe name unless `--force` is passed. It prints user ids only.
+- **Export gate.** Downloads (`/download/:token`, `/single-documents/:id/export`, zip, inline docx/PDF) scrub known disclosure phrases and then reject the file with HTTP 422 `outbound_attribution_blocked` if any remain in body text, footnotes, comments, headers/footers, tracked-change authors, or Word core creator / lastModifiedBy. A direct storage link is not issued for a docx that still needs that scrub. If a Word file's PDF rendition fails the gate, that PDF is not sent and the viewer is given the gated docx instead. A PDF original that fails is rejected. Ordinary prose such as "Mike Smith" or "the AI vendor clause" is left in place.
+- **Legacy authors.** Opening a docx (viewer, edit, upload, accept/reject) rewrites `w:author` values, plus banned `dc:creator` / `cp:lastModifiedBy`, to the organisation or `Author`. "Mike Smith" is not rewritten. Body text is not rewritten and no personal name is invented. To fix stored files that have not been opened: `npx tsx src/scripts/rewriteBannedDocxAuthors.ts` (dry-run) and the same command with `--apply`. This does not deploy by itself.

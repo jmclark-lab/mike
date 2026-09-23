@@ -16,7 +16,15 @@ import {
   resolveTrackedChange,
 } from "../lib/docxTrackedChanges";
 import { buildDownloadUrl } from "../lib/downloadTokens";
-import { scrubOutboundDocxBytes } from "../lib/outboundAttribution";
+import {
+  bufferToArrayBuffer,
+  DOCX_MIME,
+  OutboundAttributionError,
+  outboundAttributionStatusBody,
+  prepareOutboundFileBytes,
+  rewriteAndPersistBannedDocxAuthors,
+  trackedChangeAuthorForUser,
+} from "../lib/outboundAttribution";
 import {
   attachActiveVersionPaths,
   attachLatestVersionNumbers,
@@ -27,6 +35,35 @@ import { singleFileUpload } from "../lib/upload";
 
 export const documentsRouter = Router();
 const ALLOWED_TYPES = new Set(["pdf", "docx", "doc"]);
+
+function attributionBlocked(
+  res: import("express").Response,
+  err: unknown,
+): boolean {
+  if (!(err instanceof OutboundAttributionError)) return false;
+  res.status(422).json(outboundAttributionStatusBody(err));
+  return true;
+}
+
+async function companyAuthor(
+  db: ReturnType<typeof createServerSupabase>,
+  userId: string,
+) {
+  return trackedChangeAuthorForUser(db, userId);
+}
+
+async function storedDocxBytes(
+  bytes: Buffer,
+  userId: string,
+  db: ReturnType<typeof createServerSupabase>,
+  storagePath?: string | null,
+): Promise<Buffer> {
+  const author = await companyAuthor(db, userId);
+  return rewriteAndPersistBannedDocxAuthors(bytes, author, async (next) => {
+    if (!storagePath) return;
+    await uploadFile(storagePath, bufferToArrayBuffer(next), DOCX_MIME);
+  });
+}
 const isDev = process.env.NODE_ENV !== "production";
 const devLog = (...args: Parameters<typeof console.log>) => {
   if (isDev) console.log(...args);
@@ -148,15 +185,49 @@ documentsRouter.get("/:documentId/display", requireAuth, async (req, res) => {
       .status(404)
       .json({ detail: "Document not found in storage" });
 
-  if (fileType === "pdf" || (isDocx && active.pdf_storage_path)) {
-    res.setHeader("Content-Type", "application/pdf");
-    res.setHeader(
-      "Content-Disposition",
-      buildContentDisposition("inline", displayFilename),
+  try {
+    const servingPdf =
+      fileType === "pdf" || (isDocx && !!active.pdf_storage_path);
+    if (servingPdf) {
+      try {
+        const payload = await prepareOutboundFileBytes(
+          Buffer.from(raw),
+          "document.pdf",
+        );
+        res.setHeader("Content-Type", "application/pdf");
+        res.setHeader(
+          "Content-Disposition",
+          buildContentDisposition("inline", displayFilename),
+        );
+        res.send(payload);
+        return;
+      } catch (err) {
+        // A dirty PDF rendition of a Word file is not sent. The viewer
+        // falls back to the gated docx. A PDF original still fails closed.
+        if (!(err instanceof OutboundAttributionError) || !isDocx) {
+          if (attributionBlocked(res, err)) return;
+          throw err;
+        }
+      }
+    }
+    const sourceRaw =
+      isDocx && servePath !== active.storage_path
+        ? await downloadFile(active.storage_path)
+        : raw;
+    if (!sourceRaw)
+      return void res
+        .status(404)
+        .json({ detail: "Document not found in storage" });
+    const docxName = displayFilename.toLowerCase().endsWith(".docx")
+      ? displayFilename
+      : `${displayFilename}.docx`;
+    const rewritten = await storedDocxBytes(
+      Buffer.from(sourceRaw),
+      userId,
+      db,
+      active.storage_path,
     );
-    res.send(Buffer.from(raw));
-  } else {
-    // Fallback: serve raw DOCX (mammoth will handle it client-side)
+    const payload = await prepareOutboundFileBytes(rewritten, docxName);
     res.setHeader(
       "Content-Type",
       "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -165,7 +236,10 @@ documentsRouter.get("/:documentId/display", requireAuth, async (req, res) => {
       "Content-Disposition",
       buildContentDisposition("inline", displayFilename),
     );
-    res.send(await scrubOutboundDocxBytes(Buffer.from(raw)));
+    res.send(payload);
+  } catch (err) {
+    if (attributionBlocked(res, err)) return;
+    throw err;
   }
 });
 
@@ -206,6 +280,7 @@ documentsRouter.post("/download-zip", requireAuth, async (req, res) => {
   const JSZip = (await import("jszip")).default;
   const zip = new JSZip();
 
+  try {
   await Promise.all(
     docs.map(async (doc) => {
       const active = await loadActiveVersion(doc.id, db);
@@ -217,13 +292,19 @@ documentsRouter.post("/download-zip", requireAuth, async (req, res) => {
         active.version_number,
         active.source === "assistant_edit",
       );
-      const bytes = Buffer.from(raw);
-      zip.file(
-        filename,
-        filename.toLowerCase().endsWith(".docx")
-          ? await scrubOutboundDocxBytes(bytes)
-          : bytes,
-      );
+      let bytes: Buffer = Buffer.from(raw);
+      const lower = filename.toLowerCase();
+      if (lower.endsWith(".docx") || (active.file_type ?? "") === "docx") {
+        bytes = await storedDocxBytes(bytes, userId, db, active.storage_path);
+      }
+      const gateName = lower.endsWith(".docx") || lower.endsWith(".pdf") || lower.endsWith(".doc")
+        ? filename
+        : active.file_type === "pdf"
+          ? `${filename}.pdf`
+          : active.file_type === "doc"
+            ? `${filename}.doc`
+            : `${filename}.docx`;
+      zip.file(filename, await prepareOutboundFileBytes(bytes, gateName));
     }),
   );
 
@@ -231,6 +312,10 @@ documentsRouter.post("/download-zip", requireAuth, async (req, res) => {
   res.setHeader("Content-Type", "application/zip");
   res.setHeader("Content-Disposition", 'attachment; filename="documents.zip"');
   res.send(content);
+  } catch (err) {
+    if (attributionBlocked(res, err)) return;
+    throw err;
+  }
 });
 
 // GET /single-documents/:documentId/url
@@ -263,6 +348,43 @@ documentsRouter.get("/:documentId/url", requireAuth, async (req, res) => {
     active.version_number,
     active.source === "assistant_edit",
   );
+  const rawForGate = await downloadFile(active.storage_path);
+  if (!rawForGate)
+    return void res.status(404).json({ detail: "No file available" });
+  const fileType = (active.file_type ?? "").toLowerCase();
+  const lowerName = downloadFilename.toLowerCase();
+  const isDocx = fileType === "docx" || lowerName.endsWith(".docx");
+  const isPdf = fileType === "pdf" || lowerName.endsWith(".pdf");
+  const isDoc = fileType === "doc" || lowerName.endsWith(".doc");
+  try {
+    let stored: Buffer = Buffer.from(rawForGate);
+    if (isDocx) {
+      stored = await storedDocxBytes(stored, userId, db, active.storage_path);
+      const gateName = lowerName.endsWith(".docx")
+        ? downloadFilename
+        : `${downloadFilename}.docx`;
+      const prepared = await prepareOutboundFileBytes(stored, gateName);
+      if (!prepared.equals(stored)) {
+        return void res.status(422).json({
+          detail:
+            "A direct file link was not issued because this document still contains Mike or AI attribution in the stored file. Use Download so the export gate can remove known phrases and block anything that remains.",
+          code: "outbound_attribution_blocked",
+        });
+      }
+    } else if (isPdf || isDoc) {
+      const gateName = isPdf
+        ? lowerName.endsWith(".pdf")
+          ? downloadFilename
+          : `${downloadFilename}.pdf`
+        : lowerName.endsWith(".doc")
+          ? downloadFilename
+          : `${downloadFilename}.doc`;
+      await prepareOutboundFileBytes(stored, gateName);
+    }
+  } catch (err) {
+    if (attributionBlocked(res, err)) return;
+    throw err;
+  }
   const url = await getSignedUrl(
     active.storage_path,
     3600,
@@ -313,24 +435,104 @@ documentsRouter.get("/:documentId/docx", requireAuth, async (req, res) => {
   if (!raw)
     return void res.status(404).json({ detail: "Document bytes not available" });
 
-  const payload = await scrubOutboundDocxBytes(Buffer.from(raw));
+  const docxName = downloadFilenameForVersion(
+    active.filename,
+    active.version_number,
+    active.source === "assistant_edit",
+  );
+  try {
+    const rewritten = await storedDocxBytes(
+      Buffer.from(raw),
+      userId,
+      db,
+      active.storage_path,
+    );
+    const gateName = docxName.toLowerCase().endsWith(".docx")
+      ? docxName
+      : `${docxName}.docx`;
+    const payload = await prepareOutboundFileBytes(rewritten, gateName);
+    res.setHeader(
+      "Content-Type",
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    );
+    res.setHeader(
+      "Content-Disposition",
+      buildContentDisposition("inline", docxName),
+    );
+    res.send(payload);
+  } catch (err) {
+    if (attributionBlocked(res, err)) return;
+    throw err;
+  }
+});
 
-  res.setHeader(
-    "Content-Type",
-    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+// GET /single-documents/:documentId/export
+// Attachment download. Rewrites banned Word authors, scrubs known disclosure
+// phrases, then fails closed if any attribution remains. This is the path
+// the document menu uses so a storage signed URL cannot skip the gate.
+documentsRouter.get("/:documentId/export", requireAuth, async (req, res) => {
+  const userId = res.locals.userId as string;
+  const userEmail = res.locals.userEmail as string | undefined;
+  const { documentId } = req.params;
+  const versionIdParam =
+    typeof req.query.version_id === "string" ? req.query.version_id : null;
+  const db = createServerSupabase();
+
+  const { data: doc, error } = await db
+    .from("documents")
+    .select("id, user_id, project_id")
+    .eq("id", documentId)
+    .single();
+  if (error || !doc)
+    return void res.status(404).json({ detail: "Document not found" });
+  const access = await ensureDocAccess(doc, userId, userEmail, db);
+  if (!access.ok)
+    return void res.status(404).json({ detail: "Document not found" });
+
+  const active = await loadActiveVersion(documentId, db, versionIdParam);
+  if (!active)
+    return void res.status(404).json({ detail: "No file available" });
+
+  const raw = await downloadFile(active.storage_path);
+  if (!raw)
+    return void res.status(404).json({ detail: "Document bytes not available" });
+
+  const filename = downloadFilenameForVersion(
+    active.filename,
+    active.version_number,
+    active.source === "assistant_edit",
   );
-  res.setHeader(
-    "Content-Disposition",
-    buildContentDisposition(
-      "inline",
-      downloadFilenameForVersion(
-        active.filename,
-        active.version_number,
-        active.source === "assistant_edit",
-      ),
-    ),
-  );
-  res.send(payload);
+  const fileType = (active.file_type ?? "").toLowerCase();
+  const lowerName = filename.toLowerCase();
+  const isDocx = fileType === "docx" || lowerName.endsWith(".docx");
+  const isPdf = fileType === "pdf" || lowerName.endsWith(".pdf");
+  try {
+    let bytes: Buffer = Buffer.from(raw);
+    let gateName = filename;
+    let contentType = "application/octet-stream";
+    if (isDocx) {
+      bytes = await storedDocxBytes(bytes, userId, db, active.storage_path);
+      gateName = lowerName.endsWith(".docx") ? filename : `${filename}.docx`;
+      contentType =
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+    } else if (isPdf) {
+      gateName = lowerName.endsWith(".pdf") ? filename : `${filename}.pdf`;
+      contentType = "application/pdf";
+    } else if (fileType === "doc" || lowerName.endsWith(".doc")) {
+      gateName = lowerName.endsWith(".doc") ? filename : `${filename}.doc`;
+      contentType = "application/msword";
+    }
+    const payload = await prepareOutboundFileBytes(bytes, gateName);
+    res.setHeader("Content-Type", contentType);
+    res.setHeader(
+      "Content-Disposition",
+      buildContentDisposition("attachment", filename),
+    );
+    res.send(payload);
+  } catch (err) {
+    if (attributionBlocked(res, err)) return;
+    throw err;
+  }
 });
 
 // Produce the filename a download should present to the user. Version
@@ -467,8 +669,13 @@ documentsRouter.post(
         ? "application/pdf"
         : "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
 
+    let storedBytes: Buffer = Buffer.from(bytes);
+    if (suffix === "docx") {
+      storedBytes = await storedDocxBytes(storedBytes, userId, db, null);
+    }
+
     try {
-      await uploadFile(key, bytes, contentType);
+      await uploadFile(key, bufferToArrayBuffer(storedBytes), contentType);
     } catch (e) {
       console.error("[versions/copy] storage write failed", e);
       return void res
@@ -492,7 +699,7 @@ documentsRouter.post(
       }
     } else if (suffix === "docx" || suffix === "doc") {
       try {
-        const pdfBuf = await docxToPdf(Buffer.from(bytes));
+        const pdfBuf = await docxToPdf(storedBytes);
         const pdfKey = `converted-pdfs/${userId}/${documentId}/${versionSlug}.pdf`;
         await uploadFile(
           pdfKey,
@@ -625,15 +832,12 @@ documentsRouter.post(
       suffix === "pdf"
         ? "application/pdf"
         : "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+    const versionBytes =
+      suffix === "docx"
+        ? await storedDocxBytes(file.buffer, userId, db, null)
+        : file.buffer;
     try {
-      await uploadFile(
-        key,
-        file.buffer.buffer.slice(
-          file.buffer.byteOffset,
-          file.buffer.byteOffset + file.buffer.byteLength,
-        ) as ArrayBuffer,
-        contentType,
-      );
+      await uploadFile(key, bufferToArrayBuffer(versionBytes), contentType);
     } catch (e) {
       console.error("[versions/upload] storage write failed", e);
       return void res
@@ -647,7 +851,7 @@ documentsRouter.post(
     let pdfStoragePath: string | null = null;
     if (suffix === "docx" || suffix === "doc") {
       try {
-        const pdfBuf = await docxToPdf(file.buffer);
+        const pdfBuf = await docxToPdf(versionBytes);
         const pdfKey = `converted-pdfs/${userId}/${documentId}/${versionSlug}.pdf`;
         await uploadFile(
           pdfKey,
@@ -669,10 +873,7 @@ documentsRouter.post(
       pdfStoragePath = key;
     }
 
-    const rawBuf = file.buffer.buffer.slice(
-      file.buffer.byteOffset,
-      file.buffer.byteOffset + file.buffer.byteLength,
-    ) as ArrayBuffer;
+    const rawBuf = bufferToArrayBuffer(versionBytes);
     const pageCount = suffix === "pdf" ? await countPdfPages(rawBuf) : null;
 
     // Per-document sequential version_number — the upload is V1 and
@@ -844,13 +1045,14 @@ documentsRouter.put(
         ? "application/pdf"
         : "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
 
+    const replacementBytes =
+      suffix === "docx"
+        ? await storedDocxBytes(file.buffer, userId, db, null)
+        : file.buffer;
     try {
       await uploadFile(
         key,
-        file.buffer.buffer.slice(
-          file.buffer.byteOffset,
-          file.buffer.byteOffset + file.buffer.byteLength,
-        ) as ArrayBuffer,
+        bufferToArrayBuffer(replacementBytes),
         contentType,
       );
     } catch (e) {
@@ -863,7 +1065,7 @@ documentsRouter.put(
     let pdfStoragePath: string | null = null;
     if (suffix === "docx" || suffix === "doc") {
       try {
-        const pdfBuf = await docxToPdf(file.buffer);
+        const pdfBuf = await docxToPdf(replacementBytes);
         const pdfKey = `converted-pdfs/${userId}/${documentId}/${versionSlug}.pdf`;
         await uploadFile(
           pdfKey,
@@ -884,10 +1086,7 @@ documentsRouter.put(
       pdfStoragePath = key;
     }
 
-    const rawBuf = file.buffer.buffer.slice(
-      file.buffer.byteOffset,
-      file.buffer.byteOffset + file.buffer.byteLength,
-    ) as ArrayBuffer;
+    const rawBuf = bufferToArrayBuffer(replacementBytes);
     const pageCount = suffix === "pdf" ? await countPdfPages(rawBuf) : null;
     const requestedFilename =
       typeof req.body?.filename === "string" && req.body.filename.trim()
@@ -1234,10 +1433,13 @@ async function handleEditResolution(
   // new row. This keeps document_versions lean (one row per assistant
   // edit, not one per accept/reject click) and avoids the N-versions-
   // per-doc churn as users resolve pending changes.
-  const ab = resolvedBytes.buffer.slice(
-    resolvedBytes.byteOffset,
-    resolvedBytes.byteOffset + resolvedBytes.byteLength,
-  ) as ArrayBuffer;
+  const rewrittenResolved = await storedDocxBytes(
+    resolvedBytes,
+    userId,
+    db,
+    null,
+  );
+  const ab = bufferToArrayBuffer(rewrittenResolved);
   devLog(`[edit-resolution] overwriting bytes in place`, {
     latestPath,
     byteLength: ab.byteLength,
@@ -1349,26 +1551,20 @@ async function handleDocumentUpload(
       suffix === "pdf"
         ? "application/pdf"
         : "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
-    await uploadFile(
-      key,
-      content.buffer.slice(
-        content.byteOffset,
-        content.byteOffset + content.byteLength,
-      ) as ArrayBuffer,
-      contentType,
-    );
+    const uploadBytes =
+      suffix === "docx"
+        ? await storedDocxBytes(content, userId, db, null)
+        : content;
+    await uploadFile(key, bufferToArrayBuffer(uploadBytes), contentType);
 
-    const rawBuf = content.buffer.slice(
-      content.byteOffset,
-      content.byteOffset + content.byteLength,
-    ) as ArrayBuffer;
+    const rawBuf = bufferToArrayBuffer(uploadBytes);
     const pageCount = suffix === "pdf" ? await countPdfPages(rawBuf) : null;
 
     // Convert DOCX/DOC → PDF for display. PDFs are their own rendition.
     let pdfStoragePath: string | null = null;
     if (suffix === "docx" || suffix === "doc") {
       try {
-        const pdfBuf = await docxToPdf(content);
+        const pdfBuf = await docxToPdf(uploadBytes);
         const pdfKey = convertedPdfKey(userId, docId);
         await uploadFile(
           pdfKey,
@@ -1402,7 +1598,7 @@ async function handleDocumentUpload(
         version_number: 1,
         filename: filename,
         file_type: suffix,
-        size_bytes: content.byteLength,
+        size_bytes: uploadBytes.byteLength,
         page_count: pageCount,
       })
       .select("id")
@@ -1435,7 +1631,7 @@ async function handleDocumentUpload(
           storage_path: key,
           pdf_storage_path: pdfStoragePath,
           file_type: suffix,
-          size_bytes: content.byteLength,
+          size_bytes: uploadBytes.byteLength,
           page_count: pageCount,
           active_version_number: 1,
         }

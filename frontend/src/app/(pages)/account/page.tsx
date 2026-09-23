@@ -13,7 +13,11 @@ import {
     needsMfaVerification,
 } from "@/app/components/shared/MfaVerificationPopup";
 import { WarningPopup } from "@/app/components/shared/WarningPopup";
-import { deleteAccount, isMfaRequiredError } from "@/app/lib/mikeApi";
+import {
+    deleteAccount,
+    isMfaRequiredError,
+    MikeApiError,
+} from "@/app/lib/mikeApi";
 import {
     accountGlassDangerOutlineButtonClassName,
     accountGlassInputClassName,
@@ -153,14 +157,22 @@ export default function AccountPage() {
 
     const handleSaveOrganisation = async () => {
         setIsSavingOrg(true);
-        const success = await updateOrganisation(organisation.trim());
-        setIsSavingOrg(false);
-
-        if (success) {
-            setOrgSaved(true);
-            setTimeout(() => setOrgSaved(false), 2000);
-        } else {
-            alert("Failed to update organisation. Please try again.");
+        try {
+            const success = await updateOrganisation(organisation.trim());
+            setIsSavingOrg(false);
+            if (success) {
+                setOrgSaved(true);
+                setTimeout(() => setOrgSaved(false), 2000);
+            } else {
+                alert("Failed to update organisation. Please try again.");
+            }
+        } catch (error) {
+            setIsSavingOrg(false);
+            alert(
+                error instanceof MikeApiError
+                    ? error.message
+                    : "Failed to update organisation. Please try again.",
+            );
         }
     };
 
@@ -215,6 +227,11 @@ export default function AccountPage() {
                             <label className="text-sm text-gray-600 block mb-2">
                                 Organisation
                             </label>
+                            <p className="text-xs text-gray-500 mb-2">
+                                Company name used as the Word tracked-change
+                                author. Mike, AI, and legal-assistant labels
+                                are not accepted.
+                            </p>
                             <div className="space-y-2">
                                 <Input
                                     type="text"
