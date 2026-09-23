@@ -25,7 +25,6 @@ import {
   prepareLibraryDownload,
   prepareOutboundFileBytes,
   rewriteAndPersistBannedDocxAuthors,
-  rewriteBannedDocxAuthors,
   trackedChangeAuthorForUser,
 } from "../lib/outboundAttribution";
 import {
@@ -354,31 +353,14 @@ documentsRouter.get("/:documentId/url", requireAuth, async (req, res) => {
   const rawForGate = await downloadFile(active.storage_path);
   if (!rawForGate)
     return void res.status(404).json({ detail: "No file available" });
-  // Sign only an object that already matches the export gate. A scrubbed
-  // in-memory copy is not that object: the signed GET still reads the
-  // storage key. Author-only rewrites may be uploaded below when the
-  // uploaded bytes themselves pass the gate with no further scrub.
+  // The signed GET returns this storage key unchanged. Gate those exact
+  // bytes before getSignedUrl. Do not rewrite, scrub, or upload a
+  // replacement here: a cleaned in-memory copy is not the object the URL
+  // serves, and writing one back races the sponsor download.
   try {
-    const original = Buffer.from(rawForGate);
-    const author = await companyAuthor(db, userId);
-    const rewritten = (await rewriteBannedDocxAuthors(original, author)).bytes;
-    const safe = await bytesSafeForSignedUrl(
-      original,
-      downloadFilename,
-      active.file_type,
-      rewritten,
-    );
-    if (!safe.equals(original)) {
-      await uploadFile(
-        active.storage_path,
-        bufferToArrayBuffer(safe),
-        DOCX_MIME,
-      );
-    }
-    // Gate the bytes the signed URL will return. No rewritten substitute:
-    // a scrub that only exists in memory must not mint the URL.
+    const stored = Buffer.from(rawForGate);
     await bytesSafeForSignedUrl(
-      safe,
+      stored,
       downloadFilename,
       active.file_type,
     );

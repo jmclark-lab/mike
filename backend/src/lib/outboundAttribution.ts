@@ -732,22 +732,28 @@ export async function prepareLibraryDownload(
 }
 
 /**
- * Signed-URL path (`/url`). A presigned GET returns the stored object, not
- * the in-memory scrub. Publish only when that object is already the gated
- * bytes. `rewritten` may be an author-rewritten copy that the caller will
- * upload before signing; it is refused when a body scrub would still be
- * required, because the stored object would otherwise stay dirty.
+ * Signed-URL path (`/url`). A presigned GET returns the stored object.
+ * Mint only when those exact bytes are already clean. An in-memory author
+ * rewrite or body scrub is not that object, and this function does not
+ * upload a replacement. `rewritten` is ignored so a caller cannot pass a
+ * cleaned copy and still sign the dirty storage key.
  */
 export async function bytesSafeForSignedUrl(
   stored: Buffer,
   filename: string,
   fileType: string | null | undefined,
-  rewritten: Buffer = stored,
+  _rewrittenIgnored: Buffer = stored,
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<Buffer> {
+  // A rewritten buffer is not the object a signed GET returns.
+  void _rewrittenIgnored;
   const gateName = libraryGateFilename(filename, fileType, stored);
-  const prepared = await prepareOutboundFileBytes(rewritten, gateName, env);
-  if (!prepared.equals(rewritten)) {
+  if (gateName.toLowerCase().endsWith(".docx")) {
+    const hits = await findOutboundDocxAttribution(stored);
+    if (hits.length > 0) throw new OutboundAttributionError(hits);
+  }
+  const prepared = await prepareOutboundFileBytes(stored, gateName, env);
+  if (!prepared.equals(stored)) {
     throw new OutboundAttributionError([
       {
         location: gateName,
@@ -755,7 +761,7 @@ export async function bytesSafeForSignedUrl(
       },
     ]);
   }
-  return rewritten;
+  return stored;
 }
 
 function rewriteAuthorAttributes(xml: string, replacement: string): {

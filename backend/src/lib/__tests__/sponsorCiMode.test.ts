@@ -184,7 +184,7 @@ test("library signed url refuses a scrubbable body and the stream returns clean 
   assert.match(xml, /Mike Smith shall review the AI vendor clause/);
 });
 
-test("library signed url allows a clean docx and an author-only rewrite", async () => {
+test("library signed url allows a clean docx and refuses author-only dirty storage", async () => {
   const clean = await docxPackage({
     "word/document.xml": `<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Mike Smith shall review the AI vendor clause.</w:t></w:r></w:p></w:body></w:document>`,
     "docProps/core.xml": `<?xml version="1.0"?><cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:creator>bioaccess</dc:creator><cp:lastModifiedBy>Amavita Research</cp:lastModifiedBy></cp:coreProperties>`,
@@ -200,25 +200,42 @@ test("library signed url allows a clean docx and an author-only rewrite", async 
     "docProps/core.xml": `<?xml version="1.0"?><cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:creator>${PHRASE}</dc:creator><cp:lastModifiedBy>bioaccess</cp:lastModifiedBy></cp:coreProperties>`,
   });
   const rewritten = (await rewriteBannedDocxAuthors(dirtyCreator, "bioaccess")).bytes;
-  const safe = await bytesSafeForSignedUrl(dirtyCreator, "memo.docx", "docx", rewritten);
-  assert.equal(safe.equals(rewritten), true);
-  assert.equal(safe.equals(dirtyCreator), false);
-  const core = await (await JSZip.loadAsync(safe)).file("docProps/core.xml")!.async("string");
-  assert.equal(core.includes(PHRASE), false);
-  assert.match(core, /bioaccess/);
+  assert.equal(rewritten.equals(dirtyCreator), false);
+  await assert.rejects(
+    () => bytesSafeForSignedUrl(dirtyCreator, "memo.docx", "docx", rewritten),
+    (err: unknown) => {
+      assert.ok(err instanceof OutboundAttributionError);
+      assert.equal(err.code, "outbound_attribution_blocked");
+      return true;
+    },
+  );
 });
 
-test("library /url gates before getSignedUrl and /docx streams the gated bytes", () => {
+test("library /url gates stored bytes before getSignedUrl and does not rewrite them", () => {
   const src = readFileSync(path.join(__dirname, "../../routes/documents.ts"), "utf8");
+  const helper = readFileSync(path.join(__dirname, "../outboundAttribution.ts"), "utf8");
   const urlStart = src.indexOf('"/:documentId/url"');
   const docxStart = src.indexOf('"/:documentId/docx"');
   const exportStart = src.indexOf('"/:documentId/export"');
   assert.ok(urlStart > 0 && docxStart > urlStart && exportStart > docxStart);
   const urlFn = src.slice(urlStart, docxStart);
-  const firstGate = urlFn.indexOf("bytesSafeForSignedUrl");
-  const secondGate = urlFn.indexOf("bytesSafeForSignedUrl", firstGate + 1);
+  const gateAt = urlFn.indexOf("bytesSafeForSignedUrl");
   const signAt = urlFn.indexOf("getSignedUrl");
-  assert.ok(firstGate >= 0 && secondGate > firstGate && signAt > secondGate);
+  assert.ok(gateAt >= 0 && signAt > gateAt);
+  assert.match(urlFn, /bytesSafeForSignedUrl\(\s*stored,/);
+  assert.equal(/uploadFile/.test(urlFn), false);
+  assert.equal(/rewriteBannedDocxAuthors/.test(urlFn), false);
+  assert.equal(/rewriteAndPersistBannedDocxAuthors/.test(urlFn), false);
+  const helperStart = helper.indexOf("export async function bytesSafeForSignedUrl");
+  const helperEnd = helper.indexOf("function rewriteAuthorAttributes");
+  assert.ok(helperStart > 0 && helperEnd > helperStart);
+  const helperFn = helper.slice(helperStart, helperEnd);
+  const hitAt = helperFn.indexOf("findOutboundDocxAttribution(stored)");
+  const scrubAt = helperFn.indexOf("prepareOutboundFileBytes");
+  assert.ok(hitAt >= 0 && scrubAt > hitAt);
+  assert.equal(/findOutboundDocxAttribution\(\s*rewritten/.test(helperFn), false);
+  assert.equal(/prepareOutboundFileBytes\(\s*rewritten/.test(helperFn), false);
+  assert.match(helperFn, /return stored/);
   const docxFn = src.slice(docxStart, exportStart);
   assert.match(docxFn, /prepareLibraryDownload/);
   assert.ok(docxFn.indexOf("bytesSafeForSignedUrl") > docxFn.indexOf("prepareLibraryDownload"));
