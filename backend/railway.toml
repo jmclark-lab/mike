@@ -1,3 +1,15 @@
+# Production Sponsor-CI expectation (comment only — this file does not set
+# variables and nothing here calls the Railway API).
+# The production service is expected to define both:
+#   SPONSOR_CI_MODE=1
+#   NEXT_PUBLIC_SPONSOR_CI_MODE=1
+# NEXT_PUBLIC_SPONSOR_CI_MODE is inlined at frontend build time and can drift
+# from the API. SPONSOR_CI_MODE on the backend process is what refuses
+# Sakana/DeepSeek and the plain-text export bypass.
+# backend/Dockerfile sets NODE_ENV=production. In that runtime a missing
+# SPONSOR_CI_MODE stays on. Explicit off (0/false/off/no) is honored only
+# with a non-empty SPONSOR_CI_CHANGE_CONTROL_NOTE. See docs/OPERATIONS.md §14.
+
 [build]
 builder = "DOCKERFILE"
 dockerfilePath = "Dockerfile"

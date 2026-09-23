@@ -18,11 +18,14 @@ import {
 import { buildDownloadUrl } from "../lib/downloadTokens";
 import {
   bufferToArrayBuffer,
+  bytesSafeForSignedUrl,
   DOCX_MIME,
   OutboundAttributionError,
   outboundAttributionStatusBody,
+  prepareLibraryDownload,
   prepareOutboundFileBytes,
   rewriteAndPersistBannedDocxAuthors,
+  rewriteBannedDocxAuthors,
   trackedChangeAuthorForUser,
 } from "../lib/outboundAttribution";
 import {
@@ -351,35 +354,25 @@ documentsRouter.get("/:documentId/url", requireAuth, async (req, res) => {
   const rawForGate = await downloadFile(active.storage_path);
   if (!rawForGate)
     return void res.status(404).json({ detail: "No file available" });
-  const fileType = (active.file_type ?? "").toLowerCase();
-  const lowerName = downloadFilename.toLowerCase();
-  const isDocx = fileType === "docx" || lowerName.endsWith(".docx");
-  const isPdf = fileType === "pdf" || lowerName.endsWith(".pdf");
-  const isDoc = fileType === "doc" || lowerName.endsWith(".doc");
+  // Sign only an object that already matches the export gate. Do not persist
+  // an author rewrite first: that would replace storage with a file whose
+  // body can still be dirty, and a signed URL would serve those bytes.
   try {
-    let stored: Buffer = Buffer.from(rawForGate);
-    if (isDocx) {
-      stored = await storedDocxBytes(stored, userId, db, active.storage_path);
-      const gateName = lowerName.endsWith(".docx")
-        ? downloadFilename
-        : `${downloadFilename}.docx`;
-      const prepared = await prepareOutboundFileBytes(stored, gateName);
-      if (!prepared.equals(stored)) {
-        return void res.status(422).json({
-          detail:
-            "A direct file link was not issued because this document still contains Mike or AI attribution in the stored file. Use Download so the export gate can remove known phrases and block anything that remains.",
-          code: "outbound_attribution_blocked",
-        });
-      }
-    } else if (isPdf || isDoc) {
-      const gateName = isPdf
-        ? lowerName.endsWith(".pdf")
-          ? downloadFilename
-          : `${downloadFilename}.pdf`
-        : lowerName.endsWith(".doc")
-          ? downloadFilename
-          : `${downloadFilename}.doc`;
-      await prepareOutboundFileBytes(stored, gateName);
+    const original = Buffer.from(rawForGate);
+    const author = await companyAuthor(db, userId);
+    const rewritten = (await rewriteBannedDocxAuthors(original, author)).bytes;
+    const safe = await bytesSafeForSignedUrl(
+      original,
+      downloadFilename,
+      active.file_type,
+      rewritten,
+    );
+    if (!safe.equals(original)) {
+      await uploadFile(
+        active.storage_path,
+        bufferToArrayBuffer(safe),
+        DOCX_MIME,
+      );
     }
   } catch (err) {
     if (attributionBlocked(res, err)) return;
@@ -447,10 +440,11 @@ documentsRouter.get("/:documentId/docx", requireAuth, async (req, res) => {
       db,
       active.storage_path,
     );
-    const gateName = docxName.toLowerCase().endsWith(".docx")
-      ? docxName
-      : `${docxName}.docx`;
-    const payload = await prepareOutboundFileBytes(rewritten, gateName);
+    const payload = await prepareLibraryDownload(
+      rewritten,
+      docxName,
+      active.file_type,
+    );
     res.setHeader(
       "Content-Type",
       "application/vnd.openxmlformats-officedocument.wordprocessingml.document",

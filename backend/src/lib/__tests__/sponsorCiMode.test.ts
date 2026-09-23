@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import { describe, test } from "node:test";
 import JSZip from "jszip";
 import {
@@ -14,6 +16,8 @@ import {
   OutboundAttributionError,
   findOutboundDocxAttribution,
   findOutboundPdfAttribution,
+  bytesSafeForSignedUrl,
+  prepareLibraryDownload,
   prepareOutboundFileBytes,
   rewriteBannedDocxAuthors,
 } from "../outboundAttribution";
@@ -21,12 +25,15 @@ import {
   assertSponsorCiAllowsModel,
   isFencedModelId,
   isSponsorCiMode,
+  resolveSponsorCiMode,
+  sponsorCiBootWarning,
 } from "../sponsorCiMode";
 
 const PHRASE = "Mike, an AI legal assistant";
 const sponsorOn = { SPONSOR_CI_MODE: "1" } as NodeJS.ProcessEnv;
 
 test("SPONSOR_CI_MODE accepts 1, true, yes, and on", () => {
+  // NODE_ENV is unset here: non-production behavior. Unset stays off.
   for (const value of ["1", "true", "TRUE", "yes", "on"]) {
     assert.equal(isSponsorCiMode({ SPONSOR_CI_MODE: value }), true, value);
   }
@@ -34,6 +41,184 @@ test("SPONSOR_CI_MODE accepts 1, true, yes, and on", () => {
     assert.equal(isSponsorCiMode({ SPONSOR_CI_MODE: value }), false, value);
   }
   assert.equal(isSponsorCiMode({}), false);
+  assert.equal(isSponsorCiMode({ NODE_ENV: "development" }), false);
+  assert.equal(isSponsorCiMode({ NODE_ENV: "test", SPONSOR_CI_MODE: "0" }), false);
+});
+
+const production = { NODE_ENV: "production" } as NodeJS.ProcessEnv;
+
+test("production treats unset SPONSOR_CI_MODE as on", () => {
+  for (const env of [
+    production,
+    { ...production, SPONSOR_CI_MODE: "" },
+    { ...production, SPONSOR_CI_MODE: "   " },
+    { ...production, SPONSOR_CI_MODE: "maybe" },
+  ]) {
+    const decision = resolveSponsorCiMode(env);
+    assert.equal(decision.enabled, true);
+    assert.equal(decision.disableRefused, false);
+    assert.equal(sponsorCiBootWarning(env), null);
+  }
+});
+
+test("production explicit 1 is on", () => {
+  for (const value of ["1", "true", "yes", "on", " TRUE "]) {
+    const decision = resolveSponsorCiMode({
+      ...production,
+      SPONSOR_CI_MODE: value,
+    });
+    assert.equal(decision.enabled, true, value);
+    assert.equal(decision.disableRefused, false, value);
+  }
+});
+
+test("production explicit 0 without a change-control note refuses OFF", () => {
+  for (const value of ["0", "false", "off", "no", "FALSE", " Off "]) {
+    const decision = resolveSponsorCiMode({
+      ...production,
+      SPONSOR_CI_MODE: value,
+    });
+    assert.equal(decision.enabled, true, value);
+    assert.equal(decision.disableRefused, true, value);
+    assert.match(sponsorCiBootWarning({ ...production, SPONSOR_CI_MODE: value }) ?? "", /Refusing OFF/);
+  }
+  const blankNote = resolveSponsorCiMode({
+    ...production,
+    SPONSOR_CI_MODE: "0",
+    SPONSOR_CI_CHANGE_CONTROL_NOTE: "   ",
+  });
+  assert.equal(blankNote.enabled, true);
+  assert.equal(blankNote.disableRefused, true);
+});
+
+test("production explicit 0 with a change-control note is off", () => {
+  for (const value of ["0", "false", "off", "no"]) {
+    const decision = resolveSponsorCiMode({
+      ...production,
+      SPONSOR_CI_MODE: value,
+      SPONSOR_CI_CHANGE_CONTROL_NOTE: "CoS 2026-09-23 fence paused",
+    });
+    assert.equal(decision.enabled, false, value);
+    assert.equal(decision.disableRefused, false, value);
+    assert.equal(
+      sponsorCiBootWarning({
+        ...production,
+        SPONSOR_CI_MODE: value,
+        SPONSOR_CI_CHANGE_CONTROL_NOTE: "CoS 2026-09-23 fence paused",
+      }),
+      null,
+    );
+  }
+});
+
+test("GET /healthz echoes sponsorCiMode from isSponsorCiMode and stays unauthenticated", () => {
+  const src = readFileSync(path.join(__dirname, "../../index.ts"), "utf8");
+  assert.match(src, /app\.get\("\/healthz"/);
+  assert.match(src, /sponsorCiMode:\s*isSponsorCiMode\(\)/);
+  assert.equal(/app\.get\("\/healthz"[\s\S]*requireAuth/.test(src), false);
+  assert.equal(isSponsorCiMode(production), true);
+  assert.equal(isSponsorCiMode({ SPONSOR_CI_MODE: "1" }), true);
+});
+
+test("checked-in templates expect production Sponsor-CI flags on", () => {
+  const repoRoot = path.resolve(__dirname, "../../../..");
+  const railway = readFileSync(path.join(repoRoot, "backend/railway.toml"), "utf8");
+  const operations = readFileSync(path.join(repoRoot, "docs/OPERATIONS.md"), "utf8");
+  const backendEnv = readFileSync(path.join(repoRoot, "backend/.env.example"), "utf8");
+  const frontendEnv = readFileSync(
+    path.join(repoRoot, "frontend/.env.local.example"),
+    "utf8",
+  );
+  for (const [name, text] of [
+    ["backend/railway.toml", railway],
+    ["docs/OPERATIONS.md", operations],
+    ["backend/.env.example", backendEnv],
+  ] as const) {
+    assert.match(text, /SPONSOR_CI_MODE=1/, name);
+    assert.match(text, /NEXT_PUBLIC_SPONSOR_CI_MODE=1/, name);
+  }
+  assert.match(frontendEnv, /NEXT_PUBLIC_SPONSOR_CI_MODE=1/);
+  assert.match(operations, /SPONSOR_CI_CHANGE_CONTROL_NOTE/);
+  assert.match(operations, /build time/);
+});
+
+test("library signed url refuses a dirty docx and an unlabeled zip", async () => {
+  const dirty = await docxPackage(dirtyDocxParts());
+  for (const filename of ["memo.docx", "download"]) {
+    await assert.rejects(
+      () => bytesSafeForSignedUrl(dirty, filename, filename.endsWith(".docx") ? "docx" : null),
+      (err: unknown) => {
+        assert.ok(err instanceof OutboundAttributionError);
+        assert.equal(err.code, "outbound_attribution_blocked");
+        return true;
+      },
+    );
+  }
+  await assert.rejects(
+    () => prepareLibraryDownload(dirty, "memo.docx", "docx"),
+    (err: unknown) => {
+      assert.ok(err instanceof OutboundAttributionError);
+      assert.equal(err.code, "outbound_attribution_blocked");
+      return true;
+    },
+  );
+});
+
+test("library signed url refuses a scrubbable body and the stream returns clean bytes", async () => {
+  const bodyOnly = await docxPackage({
+    "word/document.xml": `<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Cover note from ${PHRASE}. Mike Smith shall review the AI vendor clause.</w:t></w:r></w:p></w:body></w:document>`,
+    "docProps/core.xml": `<?xml version="1.0"?><cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:creator>bioaccess</dc:creator><cp:lastModifiedBy>bioaccess</cp:lastModifiedBy></cp:coreProperties>`,
+  });
+  await assert.rejects(
+    () => bytesSafeForSignedUrl(bodyOnly, "memo", null),
+    (err: unknown) => {
+      assert.ok(err instanceof OutboundAttributionError);
+      assert.equal(err.code, "outbound_attribution_blocked");
+      return true;
+    },
+  );
+  const streamed = await prepareLibraryDownload(bodyOnly, "memo", null);
+  const xml = await (await JSZip.loadAsync(streamed)).file("word/document.xml")!.async("string");
+  assert.equal(xml.includes(PHRASE), false);
+  assert.match(xml, /Mike Smith shall review the AI vendor clause/);
+});
+
+test("library signed url allows a clean docx and an author-only rewrite", async () => {
+  const clean = await docxPackage({
+    "word/document.xml": `<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Mike Smith shall review the AI vendor clause.</w:t></w:r></w:p></w:body></w:document>`,
+    "docProps/core.xml": `<?xml version="1.0"?><cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:creator>bioaccess</dc:creator><cp:lastModifiedBy>Amavita Research</cp:lastModifiedBy></cp:coreProperties>`,
+  });
+  const signed = await bytesSafeForSignedUrl(clean, "memo.docx", "docx");
+  assert.equal(signed.equals(clean), true);
+  const streamed = await prepareLibraryDownload(clean, "memo.docx", "docx");
+  const cleanXml = await (await JSZip.loadAsync(streamed)).file("word/document.xml")!.async("string");
+  assert.match(cleanXml, /Mike Smith shall review the AI vendor clause/);
+
+  const dirtyCreator = await docxPackage({
+    "word/document.xml": `<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Mike Smith shall review the AI vendor clause.</w:t></w:r></w:p></w:body></w:document>`,
+    "docProps/core.xml": `<?xml version="1.0"?><cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:creator>${PHRASE}</dc:creator><cp:lastModifiedBy>bioaccess</cp:lastModifiedBy></cp:coreProperties>`,
+  });
+  const rewritten = (await rewriteBannedDocxAuthors(dirtyCreator, "bioaccess")).bytes;
+  const safe = await bytesSafeForSignedUrl(dirtyCreator, "memo.docx", "docx", rewritten);
+  assert.equal(safe.equals(rewritten), true);
+  assert.equal(safe.equals(dirtyCreator), false);
+  const core = await (await JSZip.loadAsync(safe)).file("docProps/core.xml")!.async("string");
+  assert.equal(core.includes(PHRASE), false);
+  assert.match(core, /bioaccess/);
+});
+
+test("library /url gates before getSignedUrl and /docx streams the gated bytes", () => {
+  const src = readFileSync(path.join(__dirname, "../../routes/documents.ts"), "utf8");
+  const urlStart = src.indexOf('"/:documentId/url"');
+  const docxStart = src.indexOf('"/:documentId/docx"');
+  const exportStart = src.indexOf('"/:documentId/export"');
+  assert.ok(urlStart > 0 && docxStart > urlStart && exportStart > docxStart);
+  const urlFn = src.slice(urlStart, docxStart);
+  assert.ok(urlFn.indexOf("bytesSafeForSignedUrl") >= 0);
+  assert.ok(urlFn.indexOf("bytesSafeForSignedUrl") < urlFn.indexOf("getSignedUrl"));
+  const docxFn = src.slice(docxStart, exportStart);
+  assert.match(docxFn, /prepareLibraryDownload/);
+  assert.equal(/res\.send\(raw\)/.test(docxFn), false);
 });
 
 test("Sponsor-CI fences Sakana and DeepSeek ids even when a key is present", () => {

@@ -17,6 +17,7 @@ import { createServerSupabase } from "./lib/supabase";
 import { getRoutingHealth } from "./lib/llm";
 import { ConnectorJobManager, readMikeSseText } from "./lib/connectorJobs";
 import { requireConnectorKey } from "./middleware/auth";
+import { isSponsorCiMode, sponsorCiBootWarning } from "./lib/sponsorCiMode";
 
 // SAKANA_API_KEY is not required. Council and chat do not call Sakana.
 // A leftover Railway value must not block boot and is not read here.
@@ -201,7 +202,8 @@ app.use("/kb", kbRouter);
 app.get("/health", (_req, res) => res.json({ ok: true }));
 
 // Deeper health probe for external monitors: checks DB connectivity and reports
-// live LLM routing/cooldown state. Returns 503 if the DB check fails.
+// live LLM routing/cooldown state plus sponsorCiMode (same predicate as
+// GET /user/profile). No auth. Returns 503 if the DB check fails.
 app.get("/healthz", async (_req, res) => {
   const started = Date.now();
   let db = "ok";
@@ -220,8 +222,14 @@ app.get("/healthz", async (_req, res) => {
     uptime_s: Math.round(process.uptime()),
     latency_ms: Date.now() - started,
     routing: getRoutingHealth(),
+    sponsorCiMode: isSponsorCiMode(),
   });
 });
+
+const sponsorCiWarning = sponsorCiBootWarning();
+if (sponsorCiWarning) {
+  console.warn(`[sponsor-ci] ${sponsorCiWarning}`);
+}
 
 const server = app.listen(PORT, () => {
   console.log(`Mike backend running on port ${PORT}`);
