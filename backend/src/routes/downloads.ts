@@ -4,6 +4,7 @@ import { createServerSupabase } from "../lib/supabase";
 import { buildContentDisposition, downloadFile } from "../lib/storage";
 import { verifyDownload } from "../lib/downloadTokens";
 import { ensureDocAccess } from "../lib/access";
+import { scrubOutboundDocxBytes } from "../lib/outboundAttribution";
 
 export const downloadsRouter = Router();
 
@@ -62,10 +63,15 @@ downloadsRouter.get("/:token", requireAuth, async (req, res) => {
     if (!raw)
         return void res.status(404).json({ detail: "File not found" });
 
+    let payload: Buffer = Buffer.from(raw);
+    if (info.filename.toLowerCase().endsWith(".docx")) {
+        payload = await scrubOutboundDocxBytes(payload);
+    }
+
     res.setHeader("Content-Type", contentTypeFor(info.filename));
     res.setHeader(
         "Content-Disposition",
         buildContentDisposition("attachment", info.filename),
     );
-    res.send(Buffer.from(raw));
+    res.send(payload);
 });

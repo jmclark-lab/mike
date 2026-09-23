@@ -9,6 +9,7 @@
  */
 import { completeTextStrict } from "./index";
 import type { ReasoningEffort, UserApiKeys } from "./types";
+import { OUTBOUND_ATTRIBUTION_RULE } from "../outboundAttribution";
 
 export interface CouncilSeat {
   provider: "anthropic" | "sakana" | "openai" | "google" | "xai";
@@ -155,10 +156,12 @@ export function formatCouncilQuorumFailure(error: CouncilQuorumError): string {
 }
 
 const MEMBER_SYSTEM =
-  "You are one member of a legal AI council for bioaccess® (IMH Assets Corp), a Latin-American clinical-research and regulatory/market-access CRO. Answer the matter rigorously, independently, and concisely, as a careful legal/regulatory analyst would. Prefer the provided CONTEXT as authoritative; use general legal/regulatory knowledge only to fill gaps and flag where you are relying on it. State your degree of confidence and call out any assumptions. Do NOT fabricate contract terms, dates, citations, or facts that are not in the context. This is analysis for internal review, not legal advice.";
+  "You are one member of a legal AI council for bioaccess® (IMH Assets Corp), a Latin-American clinical-research and regulatory/market-access CRO. Answer the matter rigorously, independently, and concisely, as a careful legal/regulatory analyst would. Prefer the provided CONTEXT as authoritative; use general legal/regulatory knowledge only to fill gaps and flag where you are relying on it. State your degree of confidence and call out any assumptions. Do NOT fabricate contract terms, dates, citations, or facts that are not in the context. This is analysis for internal review, not legal advice.\n\n" +
+  OUTBOUND_ATTRIBUTION_RULE;
 
 const JUDGE_SYSTEM =
-  "You are the presiding judge of a legal AI council for bioaccess®. Exactly five independent models answered the SAME matter over the SAME context. Reconcile all five answers into one authoritative council opinion. You MUST: (1) give the single best final answer; (2) briefly note the points on which the members AGREED; (3) explicitly flag any DISAGREEMENTS, contradictions, or points raised by only one member — these are the items a human should review, so never paper over them; (4) if the members conflict on a material legal/regulatory point, say so plainly and explain the safer position. Do not introduce facts or contract terms that none of the members provided. Keep it tight and decision-useful. This is analysis for internal review, not legal advice.";
+  "You are the presiding judge of a legal AI council for bioaccess®. Exactly five independent models answered the SAME matter over the SAME context. Reconcile all five answers into one authoritative council opinion. You MUST: (1) give the single best final answer; (2) briefly note the points on which the members AGREED; (3) explicitly flag any DISAGREEMENTS, contradictions, or points raised by only one member — these are the items a human should review, so never paper over them; (4) if the members conflict on a material legal/regulatory point, say so plainly and explain the safer position. Do not introduce facts or contract terms that none of the members provided. Keep it tight and decision-useful. This is analysis for internal review, not legal advice.\n\n" +
+  OUTBOUND_ATTRIBUTION_RULE;
 
 function judgeSystemPrompt(failed: CouncilMemberResult[]): string {
   if (failed.length === 0) return JUDGE_SYSTEM;
@@ -174,7 +177,8 @@ function judgeSystemPrompt(failed: CouncilMemberResult[]): string {
     "(3) explicitly flag any DISAGREEMENTS, contradictions, or points raised by only one member — these are the items a human should review, so never paper over them; " +
     "(4) if the members conflict on a material legal/regulatory point, say so plainly and explain the safer position. " +
     "Do not introduce facts or contract terms that none of the successful members provided. " +
-    "Do not fabricate a missing seat's view. Keep it tight and decision-useful. This is analysis for internal review, not legal advice."
+    "Do not fabricate a missing seat's view. Keep it tight and decision-useful. This is analysis for internal review, not legal advice.\n\n" +
+      OUTBOUND_ATTRIBUTION_RULE
   );
 }
 
