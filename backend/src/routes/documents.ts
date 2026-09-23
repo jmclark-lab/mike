@@ -354,9 +354,10 @@ documentsRouter.get("/:documentId/url", requireAuth, async (req, res) => {
   const rawForGate = await downloadFile(active.storage_path);
   if (!rawForGate)
     return void res.status(404).json({ detail: "No file available" });
-  // Sign only an object that already matches the export gate. Do not persist
-  // an author rewrite first: that would replace storage with a file whose
-  // body can still be dirty, and a signed URL would serve those bytes.
+  // Sign only an object that already matches the export gate. A scrubbed
+  // in-memory copy is not that object: the signed GET still reads the
+  // storage key. Author-only rewrites may be uploaded below when the
+  // uploaded bytes themselves pass the gate with no further scrub.
   try {
     const original = Buffer.from(rawForGate);
     const author = await companyAuthor(db, userId);
@@ -374,6 +375,13 @@ documentsRouter.get("/:documentId/url", requireAuth, async (req, res) => {
         DOCX_MIME,
       );
     }
+    // Gate the bytes the signed URL will return. No rewritten substitute:
+    // a scrub that only exists in memory must not mint the URL.
+    await bytesSafeForSignedUrl(
+      safe,
+      downloadFilename,
+      active.file_type,
+    );
   } catch (err) {
     if (attributionBlocked(res, err)) return;
     throw err;
@@ -445,6 +453,9 @@ documentsRouter.get("/:documentId/docx", requireAuth, async (req, res) => {
       docxName,
       active.file_type,
     );
+    // Same fail-closed check as /url. Do not stream a buffer that still
+    // contains Mike / AI attribution after scrub.
+    await bytesSafeForSignedUrl(payload, docxName, active.file_type);
     res.setHeader(
       "Content-Type",
       "application/vnd.openxmlformats-officedocument.wordprocessingml.document",

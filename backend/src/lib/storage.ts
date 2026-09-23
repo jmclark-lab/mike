@@ -78,6 +78,16 @@ export async function uploadFile(
 // Download
 // ---------------------------------------------------------------------------
 
+/**
+ * Copy a download view into its own ArrayBuffer.
+ * `transformToByteArray()` may hand back a view into a larger pool.
+ * Returning that pool makes the export gate scan bytes the signed URL
+ * will not serve, or miss the object the signed URL will serve.
+ */
+export function byteViewToArrayBuffer(view: Uint8Array): ArrayBuffer {
+  return new Uint8Array(view).buffer;
+}
+
 export async function downloadFile(key: string): Promise<ArrayBuffer | null> {
   if (!storageEnabled) return null;
   try {
@@ -87,7 +97,7 @@ export async function downloadFile(key: string): Promise<ArrayBuffer | null> {
     )) as any;
     if (!response.Body) return null;
     const bytes = await response.Body.transformToByteArray();
-    return bytes.buffer as ArrayBuffer;
+    return byteViewToArrayBuffer(bytes);
   } catch {
     return null;
   }
