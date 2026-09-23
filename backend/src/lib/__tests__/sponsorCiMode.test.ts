@@ -21,6 +21,7 @@ import {
   prepareOutboundFileBytes,
   rewriteBannedDocxAuthors,
 } from "../outboundAttribution";
+import { byteViewToArrayBuffer } from "../storage";
 import {
   assertSponsorCiAllowsModel,
   isFencedModelId,
@@ -214,11 +215,105 @@ test("library /url gates before getSignedUrl and /docx streams the gated bytes",
   const exportStart = src.indexOf('"/:documentId/export"');
   assert.ok(urlStart > 0 && docxStart > urlStart && exportStart > docxStart);
   const urlFn = src.slice(urlStart, docxStart);
-  assert.ok(urlFn.indexOf("bytesSafeForSignedUrl") >= 0);
-  assert.ok(urlFn.indexOf("bytesSafeForSignedUrl") < urlFn.indexOf("getSignedUrl"));
+  const firstGate = urlFn.indexOf("bytesSafeForSignedUrl");
+  const secondGate = urlFn.indexOf("bytesSafeForSignedUrl", firstGate + 1);
+  const signAt = urlFn.indexOf("getSignedUrl");
+  assert.ok(firstGate >= 0 && secondGate > firstGate && signAt > secondGate);
   const docxFn = src.slice(docxStart, exportStart);
   assert.match(docxFn, /prepareLibraryDownload/);
+  assert.ok(docxFn.indexOf("bytesSafeForSignedUrl") > docxFn.indexOf("prepareLibraryDownload"));
+  assert.ok(docxFn.indexOf("bytesSafeForSignedUrl") < docxFn.indexOf("res.send(payload)"));
   assert.equal(/res\.send\(raw\)/.test(docxFn), false);
+});
+
+test("smoke dirty fixture blocks signed URL even after author rewrite", async () => {
+  const dirty = readFileSync(
+    path.join(__dirname, "fixtures/smoke-dirty-mike-ai-attribution.docx"),
+  );
+  assert.equal(dirty.subarray(0, 2).toString("latin1"), "PK");
+  const hits = await findOutboundDocxAttribution(dirty);
+  assert.equal(
+    hits.some((hit) => hit.match.toLowerCase() === PHRASE.toLowerCase()),
+    true,
+  );
+  assert.equal(
+    hits.some((hit) => hit.location.includes("dc:creator")),
+    true,
+  );
+
+  const rewritten = (await rewriteBannedDocxAuthors(dirty, "bioaccess")).bytes;
+  assert.equal(rewritten.equals(dirty), false);
+  for (const candidate of [dirty, rewritten]) {
+    await assert.rejects(
+      () =>
+        bytesSafeForSignedUrl(
+          dirty,
+          "smoke-dirty-mike-ai-attribution.docx",
+          "docx",
+          candidate,
+          sponsorOn,
+        ),
+      (err: unknown) => {
+        assert.ok(err instanceof OutboundAttributionError);
+        assert.equal(err.code, "outbound_attribution_blocked");
+        return true;
+      },
+    );
+  }
+  await assert.rejects(
+    () =>
+      prepareLibraryDownload(
+        dirty,
+        "smoke-dirty-mike-ai-attribution.docx",
+        "docx",
+        sponsorOn,
+      ),
+    (err: unknown) => {
+      assert.ok(err instanceof OutboundAttributionError);
+      assert.equal(err.code, "outbound_attribution_blocked");
+      return true;
+    },
+  );
+
+  const streamed = await prepareLibraryDownload(
+    rewritten,
+    "smoke-dirty-mike-ai-attribution.docx",
+    "docx",
+    sponsorOn,
+  );
+  assert.equal(streamed.includes(Buffer.from(PHRASE)), false);
+  const streamedHits = await findOutboundDocxAttribution(streamed);
+  assert.deepEqual(streamedHits, []);
+  await bytesSafeForSignedUrl(
+    streamed,
+    "smoke-dirty-mike-ai-attribution.docx",
+    "docx",
+    streamed,
+    sponsorOn,
+  );
+
+  const pool = new Uint8Array(dirty.length + 64);
+  pool.fill(0x41);
+  pool.set(dirty, 32);
+  const view = pool.subarray(32, 32 + dirty.length);
+  const exact = Buffer.from(byteViewToArrayBuffer(view));
+  assert.equal(exact.equals(dirty), true);
+  assert.equal(Buffer.from(view.buffer).equals(dirty), false);
+  await assert.rejects(
+    () =>
+      bytesSafeForSignedUrl(
+        exact,
+        "smoke-dirty-mike-ai-attribution.docx",
+        "docx",
+        exact,
+        sponsorOn,
+      ),
+    (err: unknown) => {
+      assert.ok(err instanceof OutboundAttributionError);
+      assert.equal(err.code, "outbound_attribution_blocked");
+      return true;
+    },
+  );
 });
 
 test("Sponsor-CI fences Sakana and DeepSeek ids even when a key is present", () => {
