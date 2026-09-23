@@ -17,6 +17,11 @@
 import JSZip from "jszip";
 import { XMLParser, XMLBuilder } from "fast-xml-parser";
 import fastDiff from "fast-diff";
+import {
+    isSafeCompanyAuthor,
+    resolveTrackedChangeAuthor,
+    scrubOutboundAttribution,
+} from "./outboundAttribution";
 
 // ---------------------------------------------------------------------------
 // JSZip path helpers
@@ -789,7 +794,10 @@ export async function applyTrackedEdits(
     edits: EditInput[],
     opts?: { author?: string },
 ): Promise<ApplyTrackedEditsResult> {
-    const author = opts?.author ?? "Mike";
+    const requested = opts?.author;
+    const author = isSafeCompanyAuthor(requested)
+        ? requested.trim()
+        : resolveTrackedChangeAuthor();
     const now = new Date().toISOString();
 
     const zip = await JSZip.loadAsync(bytes);
@@ -851,7 +859,7 @@ export async function applyTrackedEdits(
     for (let editIdx = 0; editIdx < edits.length; editIdx++) {
         const edit = edits[editIdx];
         const find = edit.find ?? "";
-        const replace = edit.replace ?? "";
+        const replace = scrubOutboundAttribution(edit.replace ?? "");
         const ctxBefore = edit.context_before ?? "";
         const ctxAfter = edit.context_after ?? "";
 

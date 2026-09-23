@@ -25,6 +25,7 @@ import {
     type UserApiKeys,
 } from "../lib/llm";
 import { getUserModelSettings } from "../lib/userSettings";
+import { OUTBOUND_ATTRIBUTION_RULE } from "../lib/outboundAttribution";
 import {
     checkProjectAccess,
     ensureReviewAccess,
@@ -1141,7 +1142,9 @@ Rules:
 - quote should be verbatim text from the cell's summary
 - Omit <CITATIONS> if you make no citations
 - Do not fabricate cell content
-- Answer in clear, concise prose. You may use markdown formatting.`;
+- Answer in clear, concise prose. You may use markdown formatting.
+
+${OUTBOUND_ATTRIBUTION_RULE}`;
 
     const formatted: unknown[] = [{ role: "system", content: systemContent }];
     for (const msg of messages) {

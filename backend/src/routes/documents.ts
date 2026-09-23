@@ -16,6 +16,7 @@ import {
   resolveTrackedChange,
 } from "../lib/docxTrackedChanges";
 import { buildDownloadUrl } from "../lib/downloadTokens";
+import { scrubOutboundDocxBytes } from "../lib/outboundAttribution";
 import {
   attachActiveVersionPaths,
   attachLatestVersionNumbers,
@@ -164,7 +165,7 @@ documentsRouter.get("/:documentId/display", requireAuth, async (req, res) => {
       "Content-Disposition",
       buildContentDisposition("inline", displayFilename),
     );
-    res.send(Buffer.from(raw));
+    res.send(await scrubOutboundDocxBytes(Buffer.from(raw)));
   }
 });
 
@@ -211,13 +212,17 @@ documentsRouter.post("/download-zip", requireAuth, async (req, res) => {
       if (!active) return;
       const raw = await downloadFile(active.storage_path);
       if (!raw) return;
+      const filename = downloadFilenameForVersion(
+        active.filename,
+        active.version_number,
+        active.source === "assistant_edit",
+      );
+      const bytes = Buffer.from(raw);
       zip.file(
-        downloadFilenameForVersion(
-          active.filename,
-          active.version_number,
-          active.source === "assistant_edit",
-        ),
-        Buffer.from(raw),
+        filename,
+        filename.toLowerCase().endsWith(".docx")
+          ? await scrubOutboundDocxBytes(bytes)
+          : bytes,
       );
     }),
   );
@@ -308,6 +313,8 @@ documentsRouter.get("/:documentId/docx", requireAuth, async (req, res) => {
   if (!raw)
     return void res.status(404).json({ detail: "Document bytes not available" });
 
+  const payload = await scrubOutboundDocxBytes(Buffer.from(raw));
+
   res.setHeader(
     "Content-Type",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -323,7 +330,7 @@ documentsRouter.get("/:documentId/docx", requireAuth, async (req, res) => {
       ),
     ),
   );
-  res.send(Buffer.from(raw));
+  res.send(payload);
 });
 
 // Produce the filename a download should present to the user. Version

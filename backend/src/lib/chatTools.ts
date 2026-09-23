@@ -49,6 +49,12 @@ import {
   isWebsiteAuditEnabled,
 } from "./websiteAudit";
 import {
+  OUTBOUND_ATTRIBUTION_RULE,
+  scrubOutboundAttribution,
+  scrubOutboundDocxBytes,
+  trackedChangeAuthorForUser,
+} from "./outboundAttribution";
+import {
   searchKnowledge,
   formatKnowledgeForModel,
   isKnowledgeBaseConfigured,
@@ -146,6 +152,8 @@ export type ChatMessage = {
 // ---------------------------------------------------------------------------
 
 const SYSTEM_PROMPT_BEFORE_RESEARCH = `You are Mike, an AI legal assistant for lawyers and legal professionals. Help analyze documents, answer legal questions, and draft legal documents.
+
+${OUTBOUND_ATTRIBUTION_RULE}
 
 CORE RULES:
 - Be precise, professional, and evidence-aware.
@@ -1188,6 +1196,9 @@ export async function generateDocx(
 
     const FONT = "Times New Roman";
     const SIZE = 22; // 11pt in half-points
+    const documentAuthor = await trackedChangeAuthorForUser(db, userId);
+    const displayTitle =
+      scrubOutboundAttribution(title).trim() || "Document";
 
     type DocChild = InstanceType<typeof Paragraph> | InstanceType<typeof Table>;
     const children: DocChild[] = [];
@@ -1198,7 +1209,7 @@ export async function generateDocx(
         alignment: AlignmentType.CENTER,
         children: [
           new TextRun({
-            text: title.toUpperCase(),
+            text: displayTitle.toUpperCase(),
             color: "000000",
             font: FONT,
             size: SIZE,
@@ -1297,7 +1308,11 @@ export async function generateDocx(
       const raw = table as { headers?: unknown; rows?: unknown };
       const headers = Array.isArray(raw.headers)
         ? raw.headers
-            .map((header) => (typeof header === "string" ? header.trim() : ""))
+            .map((header) =>
+              scrubOutboundAttribution(
+                typeof header === "string" ? header.trim() : "",
+              ).trim(),
+            )
             .filter(Boolean)
         : [];
       if (headers.length === 0) return null;
@@ -1306,7 +1321,9 @@ export async function generateDocx(
       const rows = rawRows
         .filter((row): row is unknown[] => Array.isArray(row))
         .map((row) =>
-          headers.map((_, i) => (typeof row[i] === "string" ? row[i] : "")),
+          headers.map((_, i) =>
+            typeof row[i] === "string" ? scrubOutboundAttribution(row[i]) : "",
+          ),
         );
 
       return { headers, rows };
@@ -1401,8 +1418,11 @@ export async function generateDocx(
       if (section.pageBreak) {
         children.push(new Paragraph({ children: [new PageBreak()] }));
       }
-      if (section.heading) {
-        const stripped = stripManualNumbering(section.heading);
+      const headingSource = section.heading
+        ? scrubOutboundAttribution(section.heading)
+        : "";
+      if (headingSource.trim()) {
+        const stripped = stripManualNumbering(headingSource);
         const isUnnumbered = isUnnumberedHeading(stripped.text, sectionIndex);
         const skipHeading = isTitleLikeFirstHeading(
           stripped.text,
@@ -1502,14 +1522,17 @@ export async function generateDocx(
         );
         children.push(new Paragraph({ text: "" }));
       }
-      if (section.content) {
+      const scrubbedContent = section.content
+        ? scrubOutboundAttribution(section.content)
+        : "";
+      if (scrubbedContent.trim()) {
         let numberedBodyParagraphs = 0;
         const contentIsSignatureBlock =
-          section.heading &&
-          normalizeHeadingText(section.heading).includes("signature")
+          headingSource.trim() &&
+          normalizeHeadingText(headingSource).includes("signature")
             ? true
-            : looksLikeSignatureBlock(section.content);
-        for (const line of section.content.split("\n")) {
+            : looksLikeSignatureBlock(scrubbedContent);
+        for (const line of scrubbedContent.split("\n")) {
           const trimmed = line.trim();
           if (!trimmed) continue;
           const bulletMatch = trimmed.match(/^[-•*]\s+(.+)/);
@@ -1559,6 +1582,9 @@ export async function generateDocx(
       : {};
 
     const doc = new Document({
+      creator: documentAuthor,
+      lastModifiedBy: documentAuthor,
+      title: displayTitle,
       numbering: {
         config: [
           {
@@ -1569,7 +1595,7 @@ export async function generateDocx(
       },
       sections: [{ properties: pageSetup, children }],
     });
-    const buf = await Packer.toBuffer(doc);
+    let buf = await Packer.toBuffer(doc);
     const zip = await import("jszip");
     const packageZip = await zip.default.loadAsync(buf);
     for (const requiredPath of [
@@ -1583,9 +1609,10 @@ export async function generateDocx(
         };
       }
     }
+    buf = Buffer.from(await scrubOutboundDocxBytes(Buffer.from(buf)));
     const docId = crypto.randomUUID().replace(/-/g, "");
     const safeTitle =
-      title
+      displayTitle
         .replace(/[^a-zA-Z0-9 -]/g, "")
         .trim()
         .slice(0, 64) || "document";
@@ -1731,11 +1758,12 @@ export async function runEditDocument(params: {
   const current = await loadCurrentVersionBytes(documentId, db);
   if (!current) return { ok: false, error: "Could not load document bytes." };
 
+  const author = await trackedChangeAuthorForUser(db, userId);
   const {
     bytes: editedBytes,
     changes,
     errors,
-  } = await applyTrackedEdits(current.bytes, edits, { author: "Mike" });
+  } = await applyTrackedEdits(current.bytes, edits, { author });
 
   if (changes.length === 0) {
     return {
@@ -1746,9 +1774,10 @@ export async function runEditDocument(params: {
     };
   }
 
-  const ab = editedBytes.buffer.slice(
-    editedBytes.byteOffset,
-    editedBytes.byteOffset + editedBytes.byteLength,
+  const outboundBytes = await scrubOutboundDocxBytes(editedBytes);
+  const ab = outboundBytes.buffer.slice(
+    outboundBytes.byteOffset,
+    outboundBytes.byteOffset + outboundBytes.byteLength,
   ) as ArrayBuffer;
 
   let versionRowId: string;
@@ -1770,7 +1799,7 @@ export async function runEditDocument(params: {
       .from("document_versions")
       .update({
         file_type: "docx",
-        size_bytes: editedBytes.byteLength,
+        size_bytes: outboundBytes.byteLength,
         page_count: null,
       })
       .eq("id", versionRowId);
@@ -1821,7 +1850,7 @@ export async function runEditDocument(params: {
         version_number: nextVersionNumber,
         filename: inheritedFilename,
         file_type: "docx",
-        size_bytes: editedBytes.byteLength,
+        size_bytes: outboundBytes.byteLength,
         page_count: null,
       })
       .select("id")
