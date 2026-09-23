@@ -16,6 +16,8 @@ import {
   OutboundAttributionError,
   findOutboundDocxAttribution,
   findOutboundPdfAttribution,
+  bytesSafeForSignedUrl,
+  prepareLibraryDownload,
   prepareOutboundFileBytes,
   rewriteBannedDocxAuthors,
 } from "../outboundAttribution";
@@ -138,6 +140,85 @@ test("checked-in templates expect production Sponsor-CI flags on", () => {
   assert.match(frontendEnv, /NEXT_PUBLIC_SPONSOR_CI_MODE=1/);
   assert.match(operations, /SPONSOR_CI_CHANGE_CONTROL_NOTE/);
   assert.match(operations, /build time/);
+});
+
+test("library signed url refuses a dirty docx and an unlabeled zip", async () => {
+  const dirty = await docxPackage(dirtyDocxParts());
+  for (const filename of ["memo.docx", "download"]) {
+    await assert.rejects(
+      () => bytesSafeForSignedUrl(dirty, filename, filename.endsWith(".docx") ? "docx" : null),
+      (err: unknown) => {
+        assert.ok(err instanceof OutboundAttributionError);
+        assert.equal(err.code, "outbound_attribution_blocked");
+        return true;
+      },
+    );
+  }
+  await assert.rejects(
+    () => prepareLibraryDownload(dirty, "memo.docx", "docx"),
+    (err: unknown) => {
+      assert.ok(err instanceof OutboundAttributionError);
+      assert.equal(err.code, "outbound_attribution_blocked");
+      return true;
+    },
+  );
+});
+
+test("library signed url refuses a scrubbable body and the stream returns clean bytes", async () => {
+  const bodyOnly = await docxPackage({
+    "word/document.xml": `<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Cover note from ${PHRASE}. Mike Smith shall review the AI vendor clause.</w:t></w:r></w:p></w:body></w:document>`,
+    "docProps/core.xml": `<?xml version="1.0"?><cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:creator>bioaccess</dc:creator><cp:lastModifiedBy>bioaccess</cp:lastModifiedBy></cp:coreProperties>`,
+  });
+  await assert.rejects(
+    () => bytesSafeForSignedUrl(bodyOnly, "memo", null),
+    (err: unknown) => {
+      assert.ok(err instanceof OutboundAttributionError);
+      assert.equal(err.code, "outbound_attribution_blocked");
+      return true;
+    },
+  );
+  const streamed = await prepareLibraryDownload(bodyOnly, "memo", null);
+  const xml = await (await JSZip.loadAsync(streamed)).file("word/document.xml")!.async("string");
+  assert.equal(xml.includes(PHRASE), false);
+  assert.match(xml, /Mike Smith shall review the AI vendor clause/);
+});
+
+test("library signed url allows a clean docx and an author-only rewrite", async () => {
+  const clean = await docxPackage({
+    "word/document.xml": `<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Mike Smith shall review the AI vendor clause.</w:t></w:r></w:p></w:body></w:document>`,
+    "docProps/core.xml": `<?xml version="1.0"?><cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:creator>bioaccess</dc:creator><cp:lastModifiedBy>Amavita Research</cp:lastModifiedBy></cp:coreProperties>`,
+  });
+  const signed = await bytesSafeForSignedUrl(clean, "memo.docx", "docx");
+  assert.equal(signed.equals(clean), true);
+  const streamed = await prepareLibraryDownload(clean, "memo.docx", "docx");
+  const cleanXml = await (await JSZip.loadAsync(streamed)).file("word/document.xml")!.async("string");
+  assert.match(cleanXml, /Mike Smith shall review the AI vendor clause/);
+
+  const dirtyCreator = await docxPackage({
+    "word/document.xml": `<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Mike Smith shall review the AI vendor clause.</w:t></w:r></w:p></w:body></w:document>`,
+    "docProps/core.xml": `<?xml version="1.0"?><cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:creator>${PHRASE}</dc:creator><cp:lastModifiedBy>bioaccess</cp:lastModifiedBy></cp:coreProperties>`,
+  });
+  const rewritten = (await rewriteBannedDocxAuthors(dirtyCreator, "bioaccess")).bytes;
+  const safe = await bytesSafeForSignedUrl(dirtyCreator, "memo.docx", "docx", rewritten);
+  assert.equal(safe.equals(rewritten), true);
+  assert.equal(safe.equals(dirtyCreator), false);
+  const core = await (await JSZip.loadAsync(safe)).file("docProps/core.xml")!.async("string");
+  assert.equal(core.includes(PHRASE), false);
+  assert.match(core, /bioaccess/);
+});
+
+test("library /url gates before getSignedUrl and /docx streams the gated bytes", () => {
+  const src = readFileSync(path.join(__dirname, "../../routes/documents.ts"), "utf8");
+  const urlStart = src.indexOf('"/:documentId/url"');
+  const docxStart = src.indexOf('"/:documentId/docx"');
+  const exportStart = src.indexOf('"/:documentId/export"');
+  assert.ok(urlStart > 0 && docxStart > urlStart && exportStart > docxStart);
+  const urlFn = src.slice(urlStart, docxStart);
+  assert.ok(urlFn.indexOf("bytesSafeForSignedUrl") >= 0);
+  assert.ok(urlFn.indexOf("bytesSafeForSignedUrl") < urlFn.indexOf("getSignedUrl"));
+  const docxFn = src.slice(docxStart, exportStart);
+  assert.match(docxFn, /prepareLibraryDownload/);
+  assert.equal(/res\.send\(raw\)/.test(docxFn), false);
 });
 
 test("Sponsor-CI fences Sakana and DeepSeek ids even when a key is present", () => {

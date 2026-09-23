@@ -656,6 +656,108 @@ export async function prepareOutboundFileBytes(
   return bytes;
 }
 
+function replaceExtension(name: string, ext: string): string {
+  const slash = Math.max(name.lastIndexOf("/"), name.lastIndexOf("\\"));
+  const base = slash >= 0 ? name.slice(slash + 1) : name;
+  const dot = base.lastIndexOf(".");
+  if (dot <= 0) return `${name}${ext}`;
+  return name.slice(0, name.length - (base.length - dot)) + ext;
+}
+
+/**
+ * Filename passed to `prepareOutboundFileBytes` for a Library download.
+ * Magic bytes win over a missing or wrong label so a docx stored as
+ * "download" still hits the Word gate. Word, PDF, and legacy .doc stay
+ * fail-closed with Sponsor-CI off. Other names are unchanged so Sponsor-CI
+ * can scan them and non-production passthrough stays as it is.
+ */
+export function libraryGateFilename(
+  filename: string,
+  fileType: string | null | undefined,
+  bytes: Buffer,
+): string {
+  const trimmed = filename.trim() || "document";
+  const lower = trimmed.toLowerCase();
+  if (bytes.length >= 5 && bytes.subarray(0, 5).toString("latin1") === "%PDF-") {
+    return lower.endsWith(".pdf") ? trimmed : replaceExtension(trimmed, ".pdf");
+  }
+  if (
+    bytes.length >= 4 &&
+    bytes[0] === 0x50 &&
+    bytes[1] === 0x4b &&
+    bytes[2] === 0x03 &&
+    bytes[3] === 0x04
+  ) {
+    return lower.endsWith(".docx") ? trimmed : replaceExtension(trimmed, ".docx");
+  }
+  if (
+    bytes.length >= 8 &&
+    bytes[0] === 0xd0 &&
+    bytes[1] === 0xcf &&
+    bytes[2] === 0x11 &&
+    bytes[3] === 0xe0
+  ) {
+    const alreadyDoc = lower.endsWith(".doc") && !lower.endsWith(".docx");
+    return alreadyDoc ? trimmed : replaceExtension(trimmed, ".doc");
+  }
+  const type = (fileType ?? "").trim().toLowerCase().replace(/^\./, "");
+  if (type === "pdf" || lower.endsWith(".pdf") || type.includes("pdf")) {
+    return lower.endsWith(".pdf") ? trimmed : replaceExtension(trimmed, ".pdf");
+  }
+  if (
+    type === "docx" ||
+    lower.endsWith(".docx") ||
+    type.includes("wordprocessingml")
+  ) {
+    return lower.endsWith(".docx") ? trimmed : replaceExtension(trimmed, ".docx");
+  }
+  if (type === "doc" || (lower.endsWith(".doc") && !lower.endsWith(".docx"))) {
+    return lower.endsWith(".doc") ? trimmed : replaceExtension(trimmed, ".doc");
+  }
+  return trimmed;
+}
+
+/** Stream path (`/docx`, export): scrub, then throw if anything remains. */
+export async function prepareLibraryDownload(
+  bytes: Buffer,
+  filename: string,
+  fileType: string | null | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<Buffer> {
+  return prepareOutboundFileBytes(
+    bytes,
+    libraryGateFilename(filename, fileType, bytes),
+    env,
+  );
+}
+
+/**
+ * Signed-URL path (`/url`). A presigned GET returns the stored object, not
+ * the in-memory scrub. Publish only when that object is already the gated
+ * bytes. `rewritten` may be an author-rewritten copy that the caller will
+ * upload before signing; it is refused when a body scrub would still be
+ * required, because the stored object would otherwise stay dirty.
+ */
+export async function bytesSafeForSignedUrl(
+  stored: Buffer,
+  filename: string,
+  fileType: string | null | undefined,
+  rewritten: Buffer = stored,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<Buffer> {
+  const gateName = libraryGateFilename(filename, fileType, stored);
+  const prepared = await prepareOutboundFileBytes(rewritten, gateName, env);
+  if (!prepared.equals(rewritten)) {
+    throw new OutboundAttributionError([
+      {
+        location: gateName,
+        match: "Stored file still contains attribution a signed URL would serve",
+      },
+    ]);
+  }
+  return rewritten;
+}
+
 function rewriteAuthorAttributes(xml: string, replacement: string): {
   xml: string;
   count: number;
