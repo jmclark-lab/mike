@@ -49,9 +49,15 @@ import {
   isWebsiteAuditEnabled,
 } from "./websiteAudit";
 import {
+  bufferToArrayBuffer,
+  DOCX_MIME,
+  OutboundAttributionError,
   OUTBOUND_ATTRIBUTION_RULE,
+  prepareOutboundDocxBytes,
+  resolveTrackedChangeAuthor,
+  rewriteAndPersistBannedDocxAuthors,
+  rewriteBannedDocxAuthors,
   scrubOutboundAttribution,
-  scrubOutboundDocxBytes,
   trackedChangeAuthorForUser,
 } from "./outboundAttribution";
 import {
@@ -1609,7 +1615,7 @@ export async function generateDocx(
         };
       }
     }
-    buf = Buffer.from(await scrubOutboundDocxBytes(Buffer.from(buf)));
+    buf = Buffer.from(await prepareOutboundDocxBytes(Buffer.from(buf)));
     const docId = crypto.randomUUID().replace(/-/g, "");
     const safeTitle =
       displayTitle
@@ -1705,7 +1711,27 @@ export async function loadCurrentVersionBytes(
   if (!active) return null;
   const raw = await downloadFile(active.storage_path);
   if (!raw) return null;
-  return { bytes: Buffer.from(raw), storage_path: active.storage_path };
+  const { data: owner } = await db
+    .from("documents")
+    .select("user_id")
+    .eq("id", documentId)
+    .maybeSingle();
+  const ownerId = typeof owner?.user_id === "string" ? owner.user_id : "";
+  const author = ownerId
+    ? await trackedChangeAuthorForUser(db, ownerId)
+    : resolveTrackedChangeAuthor();
+  const bytes = await rewriteAndPersistBannedDocxAuthors(
+    Buffer.from(raw),
+    author,
+    async (next) => {
+      await uploadFile(
+        active.storage_path,
+        bufferToArrayBuffer(next),
+        DOCX_MIME,
+      );
+    },
+  );
+  return { bytes, storage_path: active.storage_path };
 }
 
 /**
@@ -1759,11 +1785,13 @@ export async function runEditDocument(params: {
   if (!current) return { ok: false, error: "Could not load document bytes." };
 
   const author = await trackedChangeAuthorForUser(db, userId);
+  const sourceBytes = (await rewriteBannedDocxAuthors(current.bytes, author))
+    .bytes;
   const {
     bytes: editedBytes,
     changes,
     errors,
-  } = await applyTrackedEdits(current.bytes, edits, { author });
+  } = await applyTrackedEdits(sourceBytes, edits, { author });
 
   if (changes.length === 0) {
     return {
@@ -1774,7 +1802,15 @@ export async function runEditDocument(params: {
     };
   }
 
-  const outboundBytes = await scrubOutboundDocxBytes(editedBytes);
+  let outboundBytes: Buffer;
+  try {
+    outboundBytes = await prepareOutboundDocxBytes(editedBytes);
+  } catch (err) {
+    if (err instanceof OutboundAttributionError) {
+      return { ok: false, error: err.message };
+    }
+    throw err;
+  }
   const ab = outboundBytes.buffer.slice(
     outboundBytes.byteOffset,
     outboundBytes.byteOffset + outboundBytes.byteLength,
@@ -4116,6 +4152,14 @@ export async function runToolCalls(
                 sourceInfo.file_type === "pdf"
                   ? "application/pdf"
                   : "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+              const author = await trackedChangeAuthorForUser(db, userId);
+              const copyBytes =
+                sourceInfo.file_type === "docx"
+                  ? bufferToArrayBuffer(
+                      (await rewriteBannedDocxAuthors(Buffer.from(raw), author))
+                        .bytes,
+                    )
+                  : raw;
 
               // Parallel uploads: the doc bytes (and PDF
               // rendition if any) for every new copy.
@@ -4125,7 +4169,7 @@ export async function runToolCalls(
               for (const d of newDocs) {
                 const key = storageKey(userId, d.id, d.filename);
                 newKeys.push(key);
-                uploadJobs.push(uploadFile(key, raw, contentType));
+                uploadJobs.push(uploadFile(key, copyBytes, contentType));
                 if (pdfBytes) {
                   const pdfKey = convertedPdfKey(userId, d.id);
                   newPdfKeys.push(pdfKey);

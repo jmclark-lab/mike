@@ -1,10 +1,18 @@
 import { Router } from "express";
 import { requireAuth } from "../middleware/auth";
 import { createServerSupabase } from "../lib/supabase";
-import { buildContentDisposition, downloadFile } from "../lib/storage";
+import { buildContentDisposition, downloadFile, uploadFile } from "../lib/storage";
 import { verifyDownload } from "../lib/downloadTokens";
 import { ensureDocAccess } from "../lib/access";
-import { scrubOutboundDocxBytes } from "../lib/outboundAttribution";
+import {
+    bufferToArrayBuffer,
+    DOCX_MIME,
+    OutboundAttributionError,
+    outboundAttributionStatusBody,
+    prepareOutboundFileBytes,
+    rewriteAndPersistBannedDocxAuthors,
+    trackedChangeAuthorForUser,
+} from "../lib/outboundAttribution";
 
 export const downloadsRouter = Router();
 
@@ -64,8 +72,23 @@ downloadsRouter.get("/:token", requireAuth, async (req, res) => {
         return void res.status(404).json({ detail: "File not found" });
 
     let payload: Buffer = Buffer.from(raw);
-    if (info.filename.toLowerCase().endsWith(".docx")) {
-        payload = await scrubOutboundDocxBytes(payload);
+    try {
+        if (info.filename.toLowerCase().endsWith(".docx")) {
+            const author = await trackedChangeAuthorForUser(db, userId);
+            payload = await rewriteAndPersistBannedDocxAuthors(
+                payload,
+                author,
+                async (next) => {
+                    await uploadFile(info.path, bufferToArrayBuffer(next), DOCX_MIME);
+                },
+            );
+        }
+        payload = await prepareOutboundFileBytes(payload, info.filename);
+    } catch (err) {
+        if (err instanceof OutboundAttributionError) {
+            return void res.status(422).json(outboundAttributionStatusBody(err));
+        }
+        throw err;
     }
 
     res.setHeader("Content-Type", contentTypeFor(info.filename));

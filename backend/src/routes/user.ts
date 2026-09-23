@@ -40,6 +40,7 @@ import {
     buildUserTabularReviewsExport,
     userExportFilename,
 } from "../lib/userDataExport";
+import { rejectedOrganisationDetail } from "../lib/outboundAttribution";
 
 export const userRouter = Router();
 
@@ -358,7 +359,14 @@ function validateProfilePayload(body: unknown):
                 detail: "organisation must be a string or null",
             };
         }
-        update.organisation = raw.organisation?.trim() || null;
+        const organisation = raw.organisation?.trim() || null;
+        if (organisation) {
+            const organisationError = rejectedOrganisationDetail(organisation);
+            if (organisationError) {
+                return { ok: false, detail: organisationError };
+            }
+        }
+        update.organisation = organisation;
     }
 
     if ("tabularModel" in raw) {

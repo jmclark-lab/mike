@@ -2,9 +2,9 @@
  * Sponsor-facing Word, redlines, comments, emails, and other exports must
  * never attribute the work to Mike or to an AI tool.
  *
- * The chat persona can still be Mike. This module only governs what is
- * written into outbound documents and the Word author on tracked changes
- * we create.
+ * The chat persona can still be Mike. This module governs what is written
+ * into outbound documents, the Word author on tracked changes we create,
+ * and the fail-closed check that runs before a client-facing file is sent.
  *
  * Author resolution (first safe value wins), for every tenant:
  * 1. The acting user's organisation (`user_profiles.organisation`), which
@@ -16,7 +16,21 @@
  * 3. The neutral fallback "Author".
  *
  * "Mike", "AI", "Legal AI", and similar labels are never used, even if
- * they are stored as the organisation or set in the environment.
+ * they are stored as the organisation or set in the environment. A missing
+ * organisation therefore resolves to a company env override or "Author",
+ * never to Mike or AI.
+ *
+ * Export path: phrase scrub may run first. `prepareOutboundFileBytes` then
+ * rejects the file if any disclosure phrase, "legal assistant",
+ * "assisted-by", "prepared-with", or banned author label remains in body
+ * text, footnotes, endnotes, comments, headers, footers, tracked-change
+ * authors, or Word core creator / lastModifiedBy. It does not scrub and
+ * continue when something is left.
+ *
+ * Legacy `w:author` values (and banned creator / lastModifiedBy) are
+ * rewritten to the organisation or "Author" by `rewriteBannedDocxAuthors`
+ * on open and re-save. Body text is not rewritten by that pass, and no
+ * personal name is invented.
  */
 
 import JSZip from "jszip";
@@ -246,4 +260,480 @@ export async function scrubOutboundDocxBytes(bytes: Buffer): Promise<Buffer> {
   if (!changed) return bytes;
   const out = await zip.generateAsync({ type: "nodebuffer" });
   return Buffer.from(out);
+}
+
+export type OutboundAttributionHit = {
+  location: string;
+  match: string;
+};
+
+/**
+ * Thrown when a client-facing Word, PDF, or plain-text body still contains
+ * Mike / AI attribution after phrase scrub. Callers must not send the bytes.
+ */
+export class OutboundAttributionError extends Error {
+  readonly code = "outbound_attribution_blocked";
+  readonly hits: OutboundAttributionHit[];
+
+  constructor(hits: OutboundAttributionHit[]) {
+    const sample = hits
+      .slice(0, 5)
+      .map((hit) => `${hit.location} ("${hit.match}")`)
+      .join("; ");
+    super(
+      `Export blocked: this file still attributes the work to Mike or an AI tool. ${sample}. Nothing was downloaded or sent.`,
+    );
+    this.name = "OutboundAttributionError";
+    this.hits = hits;
+  }
+}
+
+export function outboundAttributionStatusBody(err: OutboundAttributionError) {
+  return {
+    detail: err.message,
+    code: err.code,
+    hits: err.hits.slice(0, 12),
+  };
+}
+
+/**
+ * Profile organisation that must not be stored. Empty input is not an
+ * error here; callers treat blank as "unset" and fall back to Author.
+ */
+export function rejectedOrganisationDetail(value: string): string | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  if (trimmed.length > 120) {
+    return "Organisation must be 120 characters or fewer.";
+  }
+  if (/[\r\n\u0000]/.test(trimmed)) {
+    return "Organisation cannot contain line breaks.";
+  }
+  if (isBannedTrackedChangeAuthor(trimmed)) {
+    return "Organisation cannot be Mike, AI, legal assistant, or another banned assistant label. Enter the company name that should appear as the document author.";
+  }
+  return null;
+}
+
+/**
+ * Extra disclosure shapes the phrase scrubber does not delete. The export
+ * gate fails closed when any of these remain. Bare "Mike" and bare "AI"
+ * in ordinary prose (Mike Smith, the AI vendor clause) are not matches.
+ */
+const RESIDUAL_ATTRIBUTION_SOURCES: { source: string; flags: string }[] = [
+  { source: "\\blegal\\s+assistant\\b", flags: "gi" },
+  { source: "\\blegal\\s+ai\\b", flags: "gi" },
+  { source: "\\bassisted-by\\b", flags: "gi" },
+  { source: "\\bprepared-with\\b", flags: "gi" },
+  {
+    source: "\\bassisted\\s+by\\s+(?:mike|an?\\s+ai|ai)\\b",
+    flags: "gi",
+  },
+  {
+    source: "\\bprepared\\s+with\\s+(?:mike|an?\\s+ai|ai)\\b",
+    flags: "gi",
+  },
+];
+
+function clipMatch(value: string): string {
+  return value.replace(/\s+/g, " ").trim().slice(0, 120);
+}
+
+export function findAttributionHitsInText(
+  text: string,
+  location: string,
+): OutboundAttributionHit[] {
+  if (!text) return [];
+  const hits: OutboundAttributionHit[] = [];
+  const seen = new Set<string>();
+  const patterns = [
+    ...ATTRIBUTION_PATTERNS.map(
+      (pattern) => new RegExp(pattern.source, pattern.flags),
+    ),
+    ...RESIDUAL_ATTRIBUTION_SOURCES.map(
+      (pattern) => new RegExp(pattern.source, pattern.flags),
+    ),
+  ];
+  for (const pattern of patterns) {
+    let match: RegExpExecArray | null;
+    while ((match = pattern.exec(text))) {
+      const clipped = clipMatch(match[0]);
+      if (!clipped) continue;
+      const key = clipped.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      hits.push({ location, match: clipped });
+      if (hits.length >= 20) return hits;
+    }
+  }
+  return hits;
+}
+
+export function assertOutboundPlainText(text: string, location = "text"): void {
+  const hits = findAttributionHitsInText(text, location);
+  if (hits.length > 0) throw new OutboundAttributionError(hits);
+}
+
+function authorFieldHit(
+  location: string,
+  rawValue: string,
+): OutboundAttributionHit | null {
+  const value = decodeXml(rawValue).trim();
+  if (!value) return null;
+  if (isBannedTrackedChangeAuthor(value)) {
+    return { location, match: clipMatch(value) };
+  }
+  return findAttributionHitsInText(value, location)[0] ?? null;
+}
+
+function pushAuthorHit(
+  hits: OutboundAttributionHit[],
+  seen: Set<string>,
+  location: string,
+  rawValue: string,
+) {
+  const hit = authorFieldHit(location, rawValue);
+  if (!hit) return;
+  const key = `${hit.location}|${hit.match.toLowerCase()}`;
+  if (seen.has(key)) return;
+  seen.add(key);
+  hits.push(hit);
+}
+
+const TEXT_PART =
+  /^word\/(?:document|comments|footnotes|endnotes|header\d*|footer\d*)\.xml$/i;
+
+function visibleParagraphs(xml: string): string[] {
+  const paragraphs: string[] = [];
+  for (const part of xml.split(/<\/w:p>/i)) {
+    const chunks: string[] = [];
+    const re = /<w:(t|delText)\b[^>]*>([^<]*)<\/w:\1>/gi;
+    let match: RegExpExecArray | null;
+    while ((match = re.exec(part))) {
+      chunks.push(decodeXml(match[2] ?? ""));
+    }
+    if (chunks.length > 0) paragraphs.push(chunks.join(""));
+  }
+  return paragraphs;
+}
+
+function collectXmlAttributionHits(
+  xml: string,
+  location: string,
+  hits: OutboundAttributionHit[],
+  seen: Set<string>,
+  opts: { text: boolean; authors: boolean; core: boolean },
+) {
+  if (opts.text) {
+    for (const paragraph of visibleParagraphs(xml)) {
+      for (const hit of findAttributionHitsInText(paragraph, location)) {
+        const key = `${location}|${hit.match.toLowerCase()}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        hits.push(hit);
+        if (hits.length >= 20) return;
+      }
+    }
+  }
+  if (opts.authors) {
+    const authorRe =
+      /\b((?:w|w15):author)\s*=\s*(?:"([^"]*)"|'([^']*)')/gi;
+    let match: RegExpExecArray | null;
+    while ((match = authorRe.exec(xml))) {
+      pushAuthorHit(
+        hits,
+        seen,
+        `${location} ${match[1]}`,
+        match[2] ?? match[3] ?? "",
+      );
+      if (hits.length >= 20) return;
+    }
+  }
+  if (opts.core) {
+    const coreRe =
+      /<((?:dc:creator|cp:lastModifiedBy))\b[^>]*>([\s\S]*?)<\/\1>/gi;
+    let match: RegExpExecArray | null;
+    while ((match = coreRe.exec(xml))) {
+      pushAuthorHit(hits, seen, `${location} ${match[1]}`, match[2] ?? "");
+      if (hits.length >= 20) return;
+    }
+  }
+}
+
+async function loadZip(bytes: Buffer): Promise<JSZip | null> {
+  try {
+    return await JSZip.loadAsync(bytes);
+  } catch {
+    return null;
+  }
+}
+
+function zipDocumentPart(zip: JSZip) {
+  return zip.file("word/document.xml") ?? zip.file("word\\document.xml");
+}
+
+/**
+ * Scan a .docx for attribution that must not leave the building.
+ * Paragraph text is joined across `w:t` runs so a phrase split by Word
+ * still matches. Author attributes and core creator / lastModifiedBy use
+ * the banned-label set. "Mike Smith" is not a hit.
+ */
+export async function findOutboundDocxAttribution(
+  bytes: Buffer,
+): Promise<OutboundAttributionHit[]> {
+  const zip = await loadZip(bytes);
+  if (!zip || !zipDocumentPart(zip)) {
+    return [
+      {
+        location: "package",
+        match: "Not a Word document; export blocked",
+      },
+    ];
+  }
+  const hits: OutboundAttributionHit[] = [];
+  const seen = new Set<string>();
+  for (const name of Object.keys(zip.files)) {
+    if (zip.files[name]?.dir) continue;
+    const normalized = name.replace(/\\/g, "/");
+    const text = TEXT_PART.test(normalized);
+    const core = /^docProps\/core\.xml$/i.test(normalized);
+    const wordXml = /^word\/.+\.xml$/i.test(normalized);
+    if (!text && !core && !wordXml) continue;
+    const file = zip.file(name);
+    if (!file) continue;
+    const xml = await file.async("string");
+    collectXmlAttributionHits(xml, normalized, hits, seen, {
+      text,
+      authors: wordXml || core,
+      core,
+    });
+    if (hits.length >= 20) break;
+  }
+  return hits;
+}
+
+/**
+ * Phrase-scrub a .docx, then fail closed if any attribution remains.
+ * Does not rewrite authors. Callers that open or re-save a stored file
+ * should rewrite banned authors before calling this.
+ */
+export async function prepareOutboundDocxBytes(bytes: Buffer): Promise<Buffer> {
+  const scrubbed = await scrubOutboundDocxBytes(bytes);
+  const hits = await findOutboundDocxAttribution(scrubbed);
+  if (hits.length > 0) throw new OutboundAttributionError(hits);
+  return scrubbed;
+}
+
+const DOCX_MIME =
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+
+export function bufferToArrayBuffer(buf: Buffer): ArrayBuffer {
+  return buf.buffer.slice(
+    buf.byteOffset,
+    buf.byteOffset + buf.byteLength,
+  ) as ArrayBuffer;
+}
+
+export { DOCX_MIME };
+
+type PdfJsModule = {
+  getDocument: (opts: unknown) => {
+    promise: Promise<{
+      numPages: number;
+      getPage: (n: number) => Promise<{
+        getTextContent: () => Promise<{ items: { str?: string }[] }>;
+      }>;
+      getMetadata: () => Promise<{ info?: Record<string, unknown> | null }>;
+    }>;
+  };
+};
+
+/**
+ * Fail closed on PDF body text and on Creator / Author / Producer when
+ * those metadata fields are banned labels or disclosure phrases.
+ * A PDF that cannot be read is rejected rather than sent.
+ */
+export async function findOutboundPdfAttribution(
+  bytes: Buffer,
+): Promise<OutboundAttributionHit[]> {
+  let pdfjsLib: PdfJsModule;
+  try {
+    pdfjsLib = (await import(
+      "pdfjs-dist/legacy/build/pdf.mjs" as string
+    )) as unknown as PdfJsModule;
+  } catch {
+    return [
+      {
+        location: "pdf",
+        match: "PDF text could not be scanned; export blocked",
+      },
+    ];
+  }
+  try {
+    const pdf = await pdfjsLib
+      .getDocument({
+        data: new Uint8Array(bytes),
+        disableWorker: true,
+        isEvalSupported: false,
+        useSystemFonts: true,
+      })
+      .promise;
+    const parts: string[] = [];
+    for (let i = 1; i <= pdf.numPages; i++) {
+      const page = await pdf.getPage(i);
+      const textContent = await page.getTextContent();
+      parts.push(textContent.items.map((item) => item.str ?? "").join(" "));
+    }
+    const hits = findAttributionHitsInText(parts.join("\n"), "pdf text");
+    const meta = await pdf.getMetadata().catch(() => null);
+    const info = meta?.info ?? {};
+    const seen = new Set(hits.map((hit) => hit.match.toLowerCase()));
+    for (const field of ["Creator", "Author", "Producer"] as const) {
+      const raw = info[field];
+      if (typeof raw !== "string" || !raw.trim()) continue;
+      pushAuthorHit(hits, seen, `pdf ${field}`, raw);
+    }
+    return hits;
+  } catch {
+    return [
+      {
+        location: "pdf",
+        match: "PDF text could not be scanned; export blocked",
+      },
+    ];
+  }
+}
+
+export async function prepareOutboundPdfBytes(bytes: Buffer): Promise<Buffer> {
+  const hits = await findOutboundPdfAttribution(bytes);
+  if (hits.length > 0) throw new OutboundAttributionError(hits);
+  return bytes;
+}
+
+function findLooseBinaryAttribution(bytes: Buffer, location: string) {
+  const latin = bytes.toString("latin1");
+  const utf16 = bytes.toString("utf16le");
+  return [
+    ...findAttributionHitsInText(latin, location),
+    ...findAttributionHitsInText(utf16, `${location} utf16`),
+  ].slice(0, 20);
+}
+
+/**
+ * Prepare bytes that a client will receive. `.docx` is scrubbed then
+ * gated. `.pdf` and legacy `.doc` are gated and not rewritten. Other
+ * types pass through.
+ */
+export async function prepareOutboundFileBytes(
+  bytes: Buffer,
+  filename: string,
+): Promise<Buffer> {
+  const lower = filename.toLowerCase();
+  if (lower.endsWith(".docx")) return prepareOutboundDocxBytes(bytes);
+  if (lower.endsWith(".pdf")) return prepareOutboundPdfBytes(bytes);
+  if (lower.endsWith(".doc")) {
+    const hits = findLooseBinaryAttribution(bytes, "doc text");
+    if (hits.length > 0) throw new OutboundAttributionError(hits);
+    return bytes;
+  }
+  return bytes;
+}
+
+function rewriteAuthorAttributes(xml: string, replacement: string): {
+  xml: string;
+  count: number;
+} {
+  let count = 0;
+  const next = xml.replace(
+    /\b((?:w|w15):author)\s*=\s*(?:"([^"]*)"|'([^']*)')/gi,
+    (full, name: string, doubleQuoted?: string, singleQuoted?: string) => {
+      const current = decodeXml(doubleQuoted ?? singleQuoted ?? "");
+      const banned = isBannedTrackedChangeAuthor(current);
+      const disclosure =
+        findAttributionHitsInText(current, "author").length > 0;
+      if (!banned && !disclosure) return full;
+      count += 1;
+      const encoded = encodeXml(replacement).replace(/"/g, "&quot;");
+      return `${name}="${encoded}"`;
+    },
+  );
+  return { xml: next, count };
+}
+
+function rewriteCoreAuthorElements(xml: string, replacement: string): {
+  xml: string;
+  count: number;
+} {
+  let count = 0;
+  const next = xml.replace(
+    /<((?:dc:creator|cp:lastModifiedBy))\b([^>]*)>([\s\S]*?)<\/\1>/gi,
+    (full, tag: string, attrs: string, value: string) => {
+      const current = decodeXml(value);
+      const banned = isBannedTrackedChangeAuthor(current);
+      const disclosure =
+        findAttributionHitsInText(current, "author").length > 0;
+      if (!banned && !disclosure) return full;
+      count += 1;
+      return `<${tag}${attrs}>${encodeXml(replacement)}</${tag}>`;
+    },
+  );
+  return { xml: next, count };
+}
+
+/**
+ * Rewrite OOXML author attributes that are Mike or another banned AI
+ * label. Human names such as "Mike Smith" are left alone. Body text is
+ * not changed. The replacement is the company voice, or "Author" when
+ * the supplied name is missing or itself banned.
+ */
+export async function rewriteBannedDocxAuthors(
+  bytes: Buffer,
+  replacement: string,
+): Promise<{ bytes: Buffer; rewritten: number }> {
+  const author = isSafeCompanyAuthor(replacement)
+    ? replacement.trim()
+    : NEUTRAL_TRACKED_CHANGE_AUTHOR;
+  if (bytes.length < 4 || bytes[0] !== 0x50 || bytes[1] !== 0x4b) {
+    return { bytes, rewritten: 0 };
+  }
+  const zip = await loadZip(bytes);
+  if (!zip || !zipDocumentPart(zip)) return { bytes, rewritten: 0 };
+
+  let rewritten = 0;
+  for (const name of Object.keys(zip.files)) {
+    if (zip.files[name]?.dir) continue;
+    const normalized = name.replace(/\\/g, "/");
+    const core = /^docProps\/core\.xml$/i.test(normalized);
+    const wordXml = /^word\/.+\.xml$/i.test(normalized);
+    if (!core && !wordXml) continue;
+    const file = zip.file(name);
+    if (!file) continue;
+    const xml = await file.async("string");
+    const authors = rewriteAuthorAttributes(xml, author);
+    const cores = core
+      ? rewriteCoreAuthorElements(authors.xml, author)
+      : { xml: authors.xml, count: 0 };
+    const count = authors.count + cores.count;
+    if (count > 0) {
+      zip.file(name, cores.xml);
+      rewritten += count;
+    }
+  }
+  if (rewritten === 0) return { bytes, rewritten: 0 };
+  const out = await zip.generateAsync({ type: "nodebuffer" });
+  return { bytes: Buffer.from(out), rewritten };
+}
+
+/**
+ * Rewrite banned authors and, when anything changed, persist the package.
+ * No-op for buffers that are not a .docx.
+ */
+export async function rewriteAndPersistBannedDocxAuthors(
+  bytes: Buffer,
+  replacement: string,
+  persist?: (next: Buffer) => Promise<void>,
+): Promise<Buffer> {
+  const result = await rewriteBannedDocxAuthors(bytes, replacement);
+  if (result.rewritten > 0 && persist) await persist(result.bytes);
+  return result.bytes;
 }

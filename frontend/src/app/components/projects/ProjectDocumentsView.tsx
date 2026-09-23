@@ -14,8 +14,9 @@ import {
 import {
     deleteDocument,
     getProject,
-    getDocumentUrl,
+    downloadGatedDocument,
     downloadDocumentsZip,
+    saveBlobDownload,
     createProjectFolder,
     renameProjectFolder,
     deleteProjectFolder,
@@ -234,16 +235,13 @@ export function ProjectDocumentsView({ projectId }: Props) {
         filename: string,
     ) {
         try {
-            const resolved = await getDocumentUrl(docId, versionId);
-            const a = document.createElement("a");
-            a.href = resolved.url;
-            // Prefer the backend's resolved filename (which honours the
-            // version filename). Fall back to the passed filename
-            // if for some reason it's missing.
-            a.download = resolved.filename || filename;
-            a.click();
+            const file = await downloadGatedDocument(docId, versionId);
+            saveBlobDownload(file.blob, file.filename || filename);
         } catch (e) {
             console.error("downloadDocVersion failed", e);
+            window.alert(
+                e instanceof Error ? e.message : "Export blocked.",
+            );
         }
     }
 
@@ -934,26 +932,24 @@ export function ProjectDocumentsView({ projectId }: Props) {
     }
 
     async function downloadDoc(docId: string) {
-        const { url, filename } = await getDocumentUrl(docId);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = filename;
-        a.click();
+        const file = await downloadGatedDocument(docId);
+        saveBlobDownload(file.blob, file.filename);
     }
 
     async function handleDownloadSelectedDocs() {
         setActionsOpen(false);
         const ids = [...selectedDocIds];
-        if (ids.length === 1) {
-            await downloadDoc(ids[0]);
-            return;
+        try {
+            if (ids.length === 1) {
+                await downloadDoc(ids[0]);
+                return;
+            }
+            const blob = await downloadDocumentsZip(ids);
+            saveBlobDownload(blob, "documents.zip");
+        } catch (e) {
+            console.error("download documents failed", e);
+            window.alert(e instanceof Error ? e.message : "Export blocked.");
         }
-        const blob = await downloadDocumentsZip(ids);
-        const a = document.createElement("a");
-        a.href = URL.createObjectURL(blob);
-        a.download = "documents.zip";
-        a.click();
-        URL.revokeObjectURL(a.href);
     }
 
     async function handleRemoveSelectedFromFolder() {

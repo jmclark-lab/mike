@@ -716,10 +716,56 @@ export async function downloadDocumentsZip(
         body: JSON.stringify({ document_ids: documentIds }),
     });
     if (!response.ok) {
-        const detail = await response.text();
-        throw new Error(detail || `API error: ${response.status}`);
+        throw await toApiError(response, "/single-documents/download-zip");
     }
     return response.blob();
+}
+
+function filenameFromContentDisposition(header: string | null): string | null {
+    if (!header) return null;
+    const star = header.match(/filename\*=UTF-8''([^;]+)/i);
+    if (star?.[1]) {
+        try {
+            return decodeURIComponent(star[1]);
+        } catch {
+            return star[1];
+        }
+    }
+    const plain = header.match(/filename="([^"]+)"/i);
+    return plain?.[1] ?? null;
+}
+
+/** Stream a document through the export gate (scrub, then fail closed). */
+export async function downloadGatedDocument(
+    documentId: string,
+    versionId?: string | null,
+): Promise<{ blob: Blob; filename: string }> {
+    const authHeaders = await getAuthHeader();
+    const qs = versionId
+        ? `?version_id=${encodeURIComponent(versionId)}`
+        : "";
+    const path = `/single-documents/${documentId}/export${qs}`;
+    const response = await fetch(`${API_BASE}${path}`, {
+        cache: "no-store",
+        headers: { ...authHeaders },
+    });
+    if (!response.ok) throw await toApiError(response, path);
+    return {
+        blob: await response.blob(),
+        filename:
+            filenameFromContentDisposition(
+                response.headers.get("content-disposition"),
+            ) ?? "document",
+    };
+}
+
+export function saveBlobDownload(blob: Blob, filename: string) {
+    const href = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = href;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(href);
 }
 
 // ---------------------------------------------------------------------------

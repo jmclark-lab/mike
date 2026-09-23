@@ -7,8 +7,15 @@ import {
   NEUTRAL_TRACKED_CHANGE_AUTHOR,
   OUTBOUND_ATTRIBUTION_PHRASES,
   OUTBOUND_ATTRIBUTION_RULE,
+  OutboundAttributionError,
+  assertOutboundPlainText,
+  findOutboundPdfAttribution,
   isSafeCompanyAuthor,
+  prepareOutboundDocxBytes,
+  prepareOutboundFileBytes,
+  rejectedOrganisationDetail,
   resolveTrackedChangeAuthor,
+  rewriteBannedDocxAuthors,
   scrubOutboundAttribution,
   scrubOutboundDocxBytes,
   trackedChangeAuthorForUser,
@@ -237,6 +244,179 @@ test("applyTrackedEdits never writes Mike and uses the resolved company author",
     { author: "Amavita Practice" },
   );
   assert.match(await documentXml(company.bytes), /w:author="Amavita Practice"/);
+});
+
+async function docxPackage(parts: Record<string, string>): Promise<Buffer> {
+  const zip = new JSZip();
+  for (const [name, xml] of Object.entries(parts)) zip.file(name, xml);
+  if (!parts["word/document.xml"]) {
+    zip.file(
+      "word/document.xml",
+      `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Hello.</w:t></w:r></w:p></w:body></w:document>`,
+    );
+  }
+  return Buffer.from(await zip.generateAsync({ type: "nodebuffer" }));
+}
+
+test("export gate fails closed when a disclosure survives scrub", async () => {
+  const split = await docxPackage({
+    "word/document.xml": `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p>
+      <w:r><w:t>This memo was prepared with the </w:t></w:r>
+      <w:r><w:t>assistance of Mike.</w:t></w:r>
+    </w:p>
+    <w:p><w:r><w:t>Mike Smith shall review the AI vendor clause.</w:t></w:r></w:p>
+  </w:body>
+</w:document>`,
+  });
+  await assert.rejects(
+    () => prepareOutboundDocxBytes(split),
+    (err: unknown) => {
+      assert.ok(err instanceof OutboundAttributionError);
+      assert.equal(err.code, "outbound_attribution_blocked");
+      assert.match(err.message, /Export blocked/);
+      assert.equal(err.hits.some((hit) => /prepared with the assistance of mike/i.test(hit.match)), true);
+      return true;
+    },
+  );
+
+  const footnote = await docxPackage({
+    "word/document.xml": `<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Site shall maintain insurance.</w:t></w:r></w:p></w:body></w:document>`,
+    "word/footnotes.xml": `<w:footnotes xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:footnote><w:p><w:r><w:t>See the legal assistant note.</w:t></w:r></w:p></w:footnote></w:footnotes>`,
+  });
+  await assert.rejects(() => prepareOutboundDocxBytes(footnote), OutboundAttributionError);
+
+  const header = await docxPackage({
+    "word/header1.xml": `<w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:p><w:r><w:t>assisted-by internal draft</w:t></w:r></w:p></w:hdr>`,
+  });
+  await assert.rejects(() => prepareOutboundFileBytes(header, "memo.docx"), OutboundAttributionError);
+
+  const ordinary = await docxPackage({
+    "word/document.xml": `<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:ins w:id="1" w:author="Mike Smith"><w:r><w:t>Mike Smith shall review the AI vendor clause.</w:t></w:r></w:ins></w:p></w:body></w:document>`,
+    "docProps/core.xml": `<?xml version="1.0"?><cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:creator>Amavita Research</dc:creator><cp:lastModifiedBy>bioaccess</cp:lastModifiedBy></cp:coreProperties>`,
+  });
+  const clean = await prepareOutboundDocxBytes(ordinary);
+  const cleanXml = await documentXml(clean);
+  assert.match(cleanXml, /w:author="Mike Smith"/);
+  assert.match(cleanXml, /AI vendor clause/);
+});
+
+test("export gate rejects banned Word authors and core props until they are rewritten", async () => {
+  const bytes = await docxPackage({
+    "word/document.xml": `<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:ins w:id="2" w:author="Mike"><w:r><w:t>Site shall maintain insurance.</w:t></w:r></w:ins><w:del w:id="3" w:author="Mike Smith"><w:r><w:delText>prior</w:delText></w:r></w:del></w:p></w:body></w:document>`,
+    "word/comments.xml": `<w:comments xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:comment w:author="AI legal assistant"><w:p><w:r><w:t>Keep the indemnity.</w:t></w:r></w:p></w:comment></w:comments>`,
+    "docProps/core.xml": `<?xml version="1.0"?><cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:creator>Mike</dc:creator><cp:lastModifiedBy>Legal AI</cp:lastModifiedBy></cp:coreProperties>`,
+  });
+  await assert.rejects(() => prepareOutboundDocxBytes(bytes), OutboundAttributionError);
+
+  const rewritten = await rewriteBannedDocxAuthors(bytes, "bioaccess");
+  assert.ok(rewritten.rewritten >= 4);
+  const zip = await JSZip.loadAsync(rewritten.bytes);
+  const documentXmlText = await zip.file("word/document.xml")!.async("string");
+  const commentsXml = await zip.file("word/comments.xml")!.async("string");
+  const coreXml = await zip.file("docProps/core.xml")!.async("string");
+  assert.match(documentXmlText, /w:author="bioaccess"/);
+  assert.match(documentXmlText, /w:author="Mike Smith"/);
+  assert.equal(/w:author="Mike"/.test(documentXmlText), false);
+  assert.match(commentsXml, /w:author="bioaccess"/);
+  assert.match(coreXml, /<dc:creator>bioaccess<\/dc:creator>/);
+  assert.match(coreXml, /<cp:lastModifiedBy>bioaccess<\/cp:lastModifiedBy>/);
+  assert.match(documentXmlText, /Site shall maintain insurance/);
+  const sent = await prepareOutboundDocxBytes(rewritten.bytes);
+  assert.ok(sent.length > 0);
+
+  const bannedReplacement = await rewriteBannedDocxAuthors(bytes, "Mike");
+  const bannedXml = await (
+    await JSZip.loadAsync(bannedReplacement.bytes)
+  )
+    .file("word/document.xml")!
+    .async("string");
+  assert.match(bannedXml, /w:author="Author"/);
+  assert.equal(/w:author="Mike"/.test(bannedXml), false);
+});
+
+test("plain-text email body and organisation bootstrap reject Mike and AI labels", () => {
+  assert.throws(
+    () =>
+      assertOutboundPlainText(
+        "Cover note prepared-with the model and assisted-by Mike.",
+        "email body",
+      ),
+    OutboundAttributionError,
+  );
+  assert.doesNotThrow(() =>
+    assertOutboundPlainText(
+      "Mike Smith shall review the AI vendor clause.",
+      "email body",
+    ),
+  );
+  assert.equal(rejectedOrganisationDetail("Mike"), "Organisation cannot be Mike, AI, legal assistant, or another banned assistant label. Enter the company name that should appear as the document author.");
+  assert.equal(rejectedOrganisationDetail("AI legal assistant") !== null, true);
+  assert.equal(rejectedOrganisationDetail("bioaccess"), null);
+  assert.equal(rejectedOrganisationDetail("   "), null);
+  delete process.env.TRACKED_CHANGE_AUTHOR;
+  assert.equal(
+    resolveTrackedChangeAuthor({ organisation: null }),
+    NEUTRAL_TRACKED_CHANGE_AUTHOR,
+  );
+  assert.equal(resolveTrackedChangeAuthor({ organisation: "Mike" }), NEUTRAL_TRACKED_CHANGE_AUTHOR);
+});
+
+function minimalPdf(text: string, creator: string): Buffer {
+  const escaped = text.replace(/[()\\]/g, "\\$&");
+  const stream = `BT /F1 18 Tf 72 720 Td (${escaped}) Tj ET`;
+  const objects = [
+    "1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n",
+    "2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n",
+    "3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >> endobj\n",
+    `4 0 obj << /Length ${stream.length} >> stream\n${stream}\nendstream endobj\n`,
+    "5 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj\n",
+    `6 0 obj << /Creator (${creator.replace(/[()\\]/g, "\\$&")}) /Author (Amavita Research) >> endobj\n`,
+  ];
+  let body = "%PDF-1.4\n";
+  const offsets: number[] = [];
+  for (const object of objects) {
+    offsets.push(body.length);
+    body += object;
+  }
+  const xrefAt = body.length;
+  let xref = `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
+  for (const offset of offsets) {
+    xref += `${String(offset).padStart(10, "0")} 00000 n \n`;
+  }
+  body += xref;
+  body += `trailer << /Size ${objects.length + 1} /Root 1 0 R /Info 6 0 R >>\nstartxref\n${xrefAt}\n%%EOF`;
+  return Buffer.from(body, "latin1");
+}
+
+test("pdf export gate reads body text and creator metadata", async () => {
+  const leaked = minimalPdf(
+    "This memo was prepared with the assistance of Mike.",
+    "Amavita Research",
+  );
+  const leakedHits = await findOutboundPdfAttribution(leaked);
+  assert.equal(
+    leakedHits.some((hit) => /prepared with the assistance of mike/i.test(hit.match)),
+    true,
+  );
+  await assert.rejects(
+    () => prepareOutboundFileBytes(leaked, "memo.pdf"),
+    OutboundAttributionError,
+  );
+
+  const authored = minimalPdf("Site shall maintain insurance.", "Mike");
+  const authorHits = await findOutboundPdfAttribution(authored);
+  assert.equal(authorHits.some((hit) => hit.location === "pdf Creator" && hit.match === "Mike"), true);
+
+  const clean = minimalPdf(
+    "Mike Smith shall review the AI vendor clause.",
+    "Amavita Research",
+  );
+  const cleanHits = await findOutboundPdfAttribution(clean);
+  assert.deepEqual(cleanHits, []);
 });
 
 test("chat and council-facing system prompts carry the global attribution ban", () => {

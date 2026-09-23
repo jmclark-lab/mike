@@ -30,6 +30,9 @@ create table if not exists public.user_profiles (
 create index if not exists idx_user_profiles_user
   on public.user_profiles(user_id);
 
+comment on column public.user_profiles.organisation is
+  'Per-account company voice for Word tracked changes and exports. Not a Mike/AI label. Empty falls back to TRACKED_CHANGE_AUTHOR, then Author.';
+
 create or replace function public.handle_new_user()
 returns trigger
 language plpgsql

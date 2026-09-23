@@ -13,6 +13,11 @@ import {
   storageKey,
 } from "../lib/storage";
 import { docxToPdf, convertedPdfKey } from "../lib/convert";
+import {
+  bufferToArrayBuffer,
+  rewriteBannedDocxAuthors,
+  trackedChangeAuthorForUser,
+} from "../lib/outboundAttribution";
 import { checkProjectAccess } from "../lib/access";
 import { singleFileUpload } from "../lib/upload";
 import { deleteUserProjects } from "../lib/userDataCleanup";
@@ -519,11 +524,21 @@ projectsRouter.post(
       );
       let newPdfPath: string | null = null;
       try {
+        const copiedType = (srcV.file_type as string | null) ?? doc.file_type;
         const contentType =
-          ((srcV.file_type as string | null) ?? doc.file_type) === "pdf"
+          copiedType === "pdf"
             ? "application/pdf"
             : "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
-        await uploadFile(newKey, srcBytes, contentType);
+        let copiedBytes: ArrayBuffer = srcBytes;
+        if (copiedType === "docx") {
+          const author = await trackedChangeAuthorForUser(db, userId);
+          const rewritten = await rewriteBannedDocxAuthors(
+            Buffer.from(srcBytes),
+            author,
+          );
+          copiedBytes = bufferToArrayBuffer(rewritten.bytes);
+        }
+        await uploadFile(newKey, copiedBytes, contentType);
 
         // PDFs share one object for source + display rendition. DOCX
         // store the converted PDF at a separate `converted-pdfs/` key —
@@ -915,26 +930,21 @@ export async function handleDocumentUpload(
       suffix === "pdf"
         ? "application/pdf"
         : "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
-    await uploadFile(
-      key,
-      content.buffer.slice(
-        content.byteOffset,
-        content.byteOffset + content.byteLength,
-      ) as ArrayBuffer,
-      contentType,
-    );
+    let uploadBytes = content;
+    if (suffix === "docx") {
+      const author = await trackedChangeAuthorForUser(db, userId);
+      uploadBytes = (await rewriteBannedDocxAuthors(content, author)).bytes;
+    }
+    await uploadFile(key, bufferToArrayBuffer(uploadBytes), contentType);
 
-    const rawBuf = content.buffer.slice(
-      content.byteOffset,
-      content.byteOffset + content.byteLength,
-    ) as ArrayBuffer;
+    const rawBuf = bufferToArrayBuffer(uploadBytes);
     const pageCount = suffix === "pdf" ? await countPdfPages(rawBuf) : null;
 
     // Convert DOCX/DOC → PDF for display. PDFs are their own rendition.
     let pdfStoragePath: string | null = null;
     if (suffix === "docx" || suffix === "doc") {
       try {
-        const pdfBuf = await docxToPdf(content);
+        const pdfBuf = await docxToPdf(uploadBytes);
         const pdfKey = convertedPdfKey(userId, docId);
         await uploadFile(
           pdfKey,
@@ -967,7 +977,7 @@ export async function handleDocumentUpload(
         version_number: 1,
         filename,
         file_type: suffix,
-        size_bytes: content.byteLength,
+        size_bytes: uploadBytes.byteLength,
         page_count: pageCount,
       })
       .select("id")
@@ -999,7 +1009,7 @@ export async function handleDocumentUpload(
             storage_path: key,
             pdf_storage_path: pdfStoragePath,
             file_type: suffix,
-            size_bytes: content.byteLength,
+            size_bytes: uploadBytes.byteLength,
             page_count: pageCount,
             active_version_number: 1,
         }
