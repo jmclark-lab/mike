@@ -1,7 +1,12 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { supabase } from "@/lib/supabase";
+import {
+    confirmOutboundRelease,
+    fetchDocxBytes,
+    OutboundReleaseCancelled,
+    outboundReviewErrorMessage,
+} from "@/app/lib/mikeApi";
 
 export interface FetchDocxResult {
     bytes: ArrayBuffer | null;
@@ -79,29 +84,13 @@ export function useFetchDocxBytes(
         const pending =
             inFlight.get(key) ??
             (async () => {
-                const {
-                    data: { session },
-                } = await supabase.auth.getSession();
-                const token = session?.access_token;
-                // Stream bytes through the backend (avoids CORS on R2
-                // signed URLs).
-                const bin = await fetch(url, {
-                    headers: token ? { Authorization: `Bearer ${token}` } : {},
-                });
-                if (!bin.ok) {
-                    const text = await bin.text();
-                    let detail = `HTTP ${bin.status}`;
-                    try {
-                        const parsed = JSON.parse(text) as { detail?: unknown };
-                        if (typeof parsed.detail === "string" && parsed.detail) {
-                            detail = parsed.detail;
-                        }
-                    } catch {
-                        if (text.trim()) detail = text.trim().slice(0, 500);
-                    }
-                    throw new Error(detail);
-                }
-                const buf = await bin.arrayBuffer();
+                // /docx is an outbound byte stream, so Sponsor-CI can
+                // answer 428. Confirm once, then cache the released bytes.
+                const buf = await confirmOutboundRelease((confirm) =>
+                    fetchDocxBytes(documentId, versionId, {
+                        confirmTrackedChanges: confirm,
+                    }),
+                );
                 bytesCache.set(key, buf);
                 return buf;
             })();
@@ -115,7 +104,13 @@ export function useFetchDocxBytes(
             })
             .catch((e: unknown) => {
                 if (cancelled) return;
-                setError(e instanceof Error ? e.message : String(e));
+                if (e instanceof OutboundReleaseCancelled) {
+                    setError(
+                        "Tracked changes were not released. The document was not loaded.",
+                    );
+                    return;
+                }
+                setError(outboundReviewErrorMessage(e));
             })
             .finally(() => {
                 inFlight.delete(key);

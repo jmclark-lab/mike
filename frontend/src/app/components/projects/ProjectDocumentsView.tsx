@@ -14,6 +14,7 @@ import {
 import {
     deleteDocument,
     getProject,
+    alertOutboundFailure,
     downloadGatedDocument,
     downloadDocumentsZip,
     saveBlobDownload,
@@ -239,9 +240,7 @@ export function ProjectDocumentsView({ projectId }: Props) {
             saveBlobDownload(file.blob, file.filename || filename);
         } catch (e) {
             console.error("downloadDocVersion failed", e);
-            window.alert(
-                e instanceof Error ? e.message : "Export blocked.",
-            );
+            alertOutboundFailure(e);
         }
     }
 
@@ -932,8 +931,13 @@ export function ProjectDocumentsView({ projectId }: Props) {
     }
 
     async function downloadDoc(docId: string) {
-        const file = await downloadGatedDocument(docId);
-        saveBlobDownload(file.blob, file.filename);
+        try {
+            const file = await downloadGatedDocument(docId);
+            saveBlobDownload(file.blob, file.filename);
+        } catch (e) {
+            console.error("downloadDoc failed", e);
+            alertOutboundFailure(e);
+        }
     }
 
     async function handleDownloadSelectedDocs() {
@@ -948,7 +952,7 @@ export function ProjectDocumentsView({ projectId }: Props) {
             saveBlobDownload(blob, "documents.zip");
         } catch (e) {
             console.error("download documents failed", e);
-            window.alert(e instanceof Error ? e.message : "Export blocked.");
+            alertOutboundFailure(e);
         }
     }
 

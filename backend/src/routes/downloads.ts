@@ -13,6 +13,11 @@ import {
     rewriteAndPersistBannedDocxAuthors,
     trackedChangeAuthorForUser,
 } from "../lib/outboundAttribution";
+import {
+    gateOutboundReview,
+    sendOutboundReviewError,
+    trackedChangesConfirmed,
+} from "../lib/outboundReviewState";
 
 export const downloadsRouter = Router();
 
@@ -84,10 +89,20 @@ downloadsRouter.get("/:token", requireAuth, async (req, res) => {
             );
         }
         payload = await prepareOutboundFileBytes(payload, info.filename);
+        await gateOutboundReview(payload, info.filename, {
+            confirmed: trackedChangesConfirmed(req),
+            audit: {
+                userId,
+                documentId: version.document_id,
+                versionId: version.id,
+                route: "download",
+            },
+        });
     } catch (err) {
         if (err instanceof OutboundAttributionError) {
             return void res.status(422).json(outboundAttributionStatusBody(err));
         }
+        if (sendOutboundReviewError(res, err)) return;
         throw err;
     }
 
