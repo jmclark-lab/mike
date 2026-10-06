@@ -3,6 +3,8 @@ import test from "node:test";
 import {
   CLAUDE_MAIN_MODELS,
   DEFAULT_MAIN_MODEL,
+  DEFAULT_TITLE_MODEL,
+  GEMINI_LOW_MODELS,
   resolveModel,
 } from "../models";
 
@@ -29,4 +31,18 @@ test("CLAUDE_MAIN_MODELS lists Opus 5.5 above Opus 5 and Opus 4.8", () => {
   );
   assert.equal(resolveModel("claude-opus-5", DEFAULT_MAIN_MODEL), "claude-opus-5");
   assert.equal(DEFAULT_MAIN_MODEL, "claude-fable-5-1");
+});
+
+test("title/low tier uses stable gemini-3.1-flash-lite; retired preview id falls back", () => {
+  assert.equal(DEFAULT_TITLE_MODEL, "gemini-3.1-flash-lite");
+  assert.deepEqual([...GEMINI_LOW_MODELS], ["gemini-3.1-flash-lite"]);
+  assert.equal(
+    resolveModel("gemini-3.1-flash-lite", DEFAULT_TITLE_MODEL),
+    "gemini-3.1-flash-lite",
+  );
+  // Saved preferences that still hold the shut-down preview id resolve to the default.
+  assert.equal(
+    resolveModel("gemini-3.1-flash-lite-preview", DEFAULT_TITLE_MODEL),
+    "gemini-3.1-flash-lite",
+  );
 });

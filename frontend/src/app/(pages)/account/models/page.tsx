@@ -96,7 +96,7 @@ export default function ModelPreferencesPage() {
                         value={
                             optimisticValues.titleModel ??
                             profile?.titleModel ??
-                            "gemini-3.1-flash-lite-preview"
+                            "gemini-3.1-flash-lite"
                         }
                         options={titleOptions}
                         apiKeys={profile?.apiKeys}

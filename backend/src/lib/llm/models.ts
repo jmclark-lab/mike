@@ -50,11 +50,11 @@ export const OPENAI_MID_MODELS = ["gpt-5.4"] as const;
 // Low-tier (used for title generation, lightweight extractions) — user picks
 // one in account settings.
 export const CLAUDE_LOW_MODELS = ["claude-haiku-4-5"] as const;
-export const GEMINI_LOW_MODELS = ["gemini-3.1-flash-lite-preview"] as const;
+export const GEMINI_LOW_MODELS = ["gemini-3.1-flash-lite"] as const;
 export const OPENAI_LOW_MODELS = ["gpt-5.4-lite"] as const;
 
 export const DEFAULT_MAIN_MODEL = "claude-fable-5-1";
-export const DEFAULT_TITLE_MODEL = "gemini-3.1-flash-lite-preview";
+export const DEFAULT_TITLE_MODEL = "gemini-3.1-flash-lite";
 export const DEFAULT_TABULAR_MODEL = "gemini-3-flash-preview";
 
 const ALL_MODELS = new Set<string>([
