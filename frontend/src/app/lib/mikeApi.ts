@@ -184,6 +184,19 @@ export function isTrackedChangesConfirmationRequired(
     );
 }
 
+export function isOpenCommentsBlocked(error: unknown): error is MikeApiError {
+    return (
+        error instanceof MikeApiError &&
+        error.status === 422 &&
+        error.code === "outbound_open_comments_blocked"
+    );
+}
+
+export type OutboundReleaseFlags = {
+    confirmTrackedChanges: boolean;
+    allowOpenComments: boolean;
+};
+
 function reviewCount(value: unknown): number | null {
     return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
@@ -241,7 +254,7 @@ export function outboundReviewErrorMessage(error: unknown): string {
             const noun = count === 1 ? "comment" : "comments";
             const where =
                 documents.length > 0 ? ` in ${documents.join(", ")}` : "";
-            return `Export blocked: ${count} open ${noun}${where}. Resolve them before download. Nothing was downloaded or sent.`;
+            return `Export blocked: ${count} open ${noun}${where}. Nothing was downloaded or sent.`;
         }
     }
     return error instanceof Error && error.message
@@ -255,28 +268,225 @@ export function alertOutboundFailure(error: unknown): void {
 }
 
 export async function confirmOutboundRelease<T>(
-    attempt: (confirmTrackedChanges: boolean) => Promise<T>,
+    attempt: (flags: OutboundReleaseFlags) => Promise<T>,
 ): Promise<T> {
-    try {
-        return await attempt(false);
-    } catch (error) {
-        if (!isTrackedChangesConfirmationRequired(error)) throw error;
-        const accepted =
-            typeof window !== "undefined" &&
-            typeof window.confirm === "function" &&
-            window.confirm(trackedChangesConfirmPrompt(error));
-        if (!accepted) throw new OutboundReleaseCancelled(error);
-        return await attempt(true);
+    // Flags live only for this call. Nothing is written to storage.
+    const flags: OutboundReleaseFlags = {
+        confirmTrackedChanges: false,
+        allowOpenComments: false,
+    };
+    for (;;) {
+        try {
+            return await attempt(flags);
+        } catch (error) {
+            if (!flags.allowOpenComments && isOpenCommentsBlocked(error)) {
+                const accepted = await askSendWithComments(
+                    openCommentCount(error),
+                    openCommentFilenames(error),
+                );
+                if (!accepted) throw new OutboundReleaseCancelled(error);
+                flags.allowOpenComments = true;
+                continue;
+            }
+            if (
+                !flags.confirmTrackedChanges &&
+                isTrackedChangesConfirmationRequired(error)
+            ) {
+                const accepted =
+                    typeof window !== "undefined" &&
+                    typeof window.confirm === "function" &&
+                    window.confirm(trackedChangesConfirmPrompt(error));
+                if (!accepted) throw new OutboundReleaseCancelled(error);
+                flags.confirmTrackedChanges = true;
+                continue;
+            }
+            throw error;
+        }
     }
 }
 
-function confirmQuery(path: string, confirm: boolean): string {
-    if (!confirm) return path;
-    return `${path}${path.includes("?") ? "&" : "?"}confirm_tracked_changes=1`;
+function openCommentCount(error: MikeApiError): number {
+    const count = reviewCount(error.details?.count);
+    if (count != null) return count;
+    return Array.isArray(error.details?.comments)
+        ? error.details.comments.length
+        : 0;
 }
 
-function confirmHeaders(confirm: boolean): Record<string, string> {
-    return confirm ? { "X-Confirm-Tracked-Changes": "1" } : {};
+function openCommentFilenames(error: MikeApiError): string[] {
+    if (!Array.isArray(error.details?.documents)) return [];
+    return error.details.documents
+        .map((doc) => {
+            if (!doc || typeof doc !== "object") return null;
+            const filename = (doc as Record<string, unknown>).filename;
+            return typeof filename === "string" && filename.trim()
+                ? filename
+                : null;
+        })
+        .filter((name): name is string => !!name);
+}
+
+let commentsDialogQueue: Promise<unknown> = Promise.resolve();
+
+/**
+ * One-shot dialog. Cancel is focused. The choice is not remembered.
+ */
+function askSendWithComments(
+    count: number,
+    filenames: string[],
+): Promise<boolean> {
+    if (typeof document === "undefined") return Promise.resolve(false);
+    const run = commentsDialogQueue.then(() =>
+        openSendWithCommentsDialog(count, filenames),
+    );
+    commentsDialogQueue = run.then(
+        () => undefined,
+        () => undefined,
+    );
+    return run;
+}
+
+function openSendWithCommentsDialog(
+    count: number,
+    filenames: string[],
+): Promise<boolean> {
+    return new Promise((resolve) => {
+        const dialog = document.createElement("dialog");
+        const titleId = `outbound-comments-title-${Date.now()}`;
+        const bodyId = `outbound-comments-body-${Date.now()}`;
+        dialog.dataset.outboundDialog = "open-comments";
+        dialog.setAttribute("aria-modal", "true");
+        dialog.setAttribute("aria-labelledby", titleId);
+        dialog.setAttribute("aria-describedby", bodyId);
+        Object.assign(dialog.style, {
+            border: "none",
+            borderRadius: "16px",
+            padding: "0",
+            maxWidth: "32rem",
+            width: "calc(100% - 2rem)",
+            boxShadow: "0 25px 50px -12px rgba(0, 0, 0, 0.25)",
+        });
+        const backdrop = document.createElement("style");
+        backdrop.textContent = `dialog[data-outbound-dialog="open-comments"]::backdrop{background:rgba(0,0,0,0.4)}dialog[data-outbound-dialog="open-comments"] button:focus{outline:2px solid #1d4ed8;outline-offset:2px}`;
+
+        const panel = document.createElement("div");
+        Object.assign(panel.style, { padding: "28px 28px 24px" });
+
+        const title = document.createElement("h2");
+        title.id = titleId;
+        title.textContent = "Open comments";
+        Object.assign(title.style, {
+            margin: "0 0 12px",
+            fontFamily: "Georgia, 'Times New Roman', serif",
+            fontSize: "28px",
+            fontWeight: "400",
+            color: "#111827",
+        });
+
+        const noun = count === 1 ? "comment" : "comments";
+        const where =
+            filenames.length > 0 ? ` in ${filenames.join(", ")}` : "";
+        const body = document.createElement("p");
+        body.id = bodyId;
+        body.textContent = `This download has ${count} open ${noun}${where}. A negotiation copy keeps those comments for the counterparty. This choice applies only to this download.`;
+        Object.assign(body.style, {
+            margin: "0 0 20px",
+            fontFamily: "ui-sans-serif, system-ui, sans-serif",
+            fontSize: "14px",
+            lineHeight: "1.5",
+            color: "#4b5563",
+        });
+
+        const actions = document.createElement("div");
+        Object.assign(actions.style, {
+            display: "flex",
+            justifyContent: "flex-end",
+            gap: "8px",
+            flexWrap: "wrap",
+        });
+
+        const cancel = document.createElement("button");
+        cancel.type = "button";
+        cancel.textContent = "Cancel";
+        cancel.autofocus = true;
+        cancel.dataset.defaultFocus = "true";
+        styleDialogButton(cancel, false);
+
+        const send = document.createElement("button");
+        send.type = "button";
+        send.textContent = "Send with comments (negotiation copy)";
+        styleDialogButton(send, true);
+
+        actions.append(cancel, send);
+        panel.append(title, body, actions);
+        dialog.append(backdrop, panel);
+
+        let settled = false;
+        const finish = (accepted: boolean) => {
+            if (settled) return;
+            settled = true;
+            dialog.close();
+            dialog.remove();
+            resolve(accepted);
+        };
+        cancel.addEventListener("click", () => finish(false));
+        send.addEventListener("click", () => finish(true));
+        dialog.addEventListener("cancel", (event) => {
+            event.preventDefault();
+            finish(false);
+        });
+
+        dialog.addEventListener("keydown", (event) => {
+            if (event.key !== "Enter" || event.target !== dialog) return;
+            event.preventDefault();
+            finish(false);
+        });
+
+        try {
+            document.body.appendChild(dialog);
+            dialog.showModal();
+            cancel.focus();
+            queueMicrotask(() => {
+                if (!settled) cancel.focus();
+            });
+        } catch {
+            dialog.remove();
+            resolve(false);
+        }
+    });
+}
+
+function styleDialogButton(button: HTMLButtonElement, primary: boolean) {
+    Object.assign(button.style, {
+        fontFamily: "ui-sans-serif, system-ui, sans-serif",
+        fontSize: "13px",
+        fontWeight: "600",
+        padding: "8px 14px",
+        borderRadius: "8px",
+        cursor: "pointer",
+        border: primary ? "1px solid #111827" : "1px solid #d1d5db",
+        background: primary ? "#111827" : "#ffffff",
+        color: primary ? "#ffffff" : "#111827",
+    });
+}
+
+function withReleaseFlags(path: string, flags: OutboundReleaseFlags): string {
+    const splitAt = path.indexOf("?");
+    const base = splitAt >= 0 ? path.slice(0, splitAt) : path;
+    const params = new URLSearchParams(splitAt >= 0 ? path.slice(splitAt + 1) : "");
+    if (flags.confirmTrackedChanges) params.set("confirm_tracked_changes", "1");
+    if (flags.allowOpenComments) params.set("allow_open_comments", "1");
+    const qs = params.toString();
+    return qs ? `${base}?${qs}` : base;
+}
+
+function releaseHeaders(flags: OutboundReleaseFlags): Record<string, string> {
+    const headers: Record<string, string> = {};
+    if (flags.confirmTrackedChanges) {
+        headers["X-Confirm-Tracked-Changes"] = "1";
+    }
+    if (flags.allowOpenComments) headers["X-Allow-Open-Comments"] = "1";
+    return headers;
 }
 
 // ---------------------------------------------------------------------------
@@ -823,15 +1033,20 @@ export async function deleteDocument(documentId: string): Promise<void> {
 export async function getDocumentUrl(
     documentId: string,
     versionId?: string | null,
-    options?: { confirmTrackedChanges?: boolean },
+    options?: Partial<OutboundReleaseFlags>,
 ): Promise<{ url: string; filename: string; version_id: string | null }> {
+    const flags: OutboundReleaseFlags = {
+        confirmTrackedChanges: !!options?.confirmTrackedChanges,
+        allowOpenComments: !!options?.allowOpenComments,
+    };
     const params = new URLSearchParams();
     if (versionId) params.set("version_id", versionId);
-    if (options?.confirmTrackedChanges) params.set("confirm_tracked_changes", "1");
+    if (flags.confirmTrackedChanges) params.set("confirm_tracked_changes", "1");
+    if (flags.allowOpenComments) params.set("allow_open_comments", "1");
     const qs = params.toString();
     return apiRequest(
         `/single-documents/${documentId}/url${qs ? `?${qs}` : ""}`,
-        { headers: confirmHeaders(!!options?.confirmTrackedChanges) },
+        { headers: releaseHeaders(flags) },
     );
 }
 
@@ -843,29 +1058,24 @@ export async function getDocumentUrlWithConfirm(
     documentId: string,
     versionId?: string | null,
 ): Promise<{ url: string; filename: string; version_id: string | null }> {
-    return confirmOutboundRelease((confirm) =>
-        getDocumentUrl(documentId, versionId, {
-            confirmTrackedChanges: confirm,
-        }),
+    return confirmOutboundRelease((flags) =>
+        getDocumentUrl(documentId, versionId, flags),
     );
 }
 
 async function requestDocumentsZip(
     documentIds: string[],
-    confirm: boolean,
+    flags: OutboundReleaseFlags,
 ): Promise<Blob> {
     const authHeaders = await getAuthHeader();
-    const path = confirmQuery(
-        "/single-documents/download-zip",
-        confirm,
-    );
+    const path = withReleaseFlags("/single-documents/download-zip", flags);
     const response = await fetch(`${API_BASE}${path}`, {
         method: "POST",
         cache: "no-store",
         headers: {
             "Content-Type": "application/json",
             ...authHeaders,
-            ...confirmHeaders(confirm),
+            ...releaseHeaders(flags),
         },
         body: JSON.stringify({ document_ids: documentIds }),
     });
@@ -878,8 +1088,8 @@ async function requestDocumentsZip(
 export async function downloadDocumentsZip(
     documentIds: string[],
 ): Promise<Blob> {
-    return confirmOutboundRelease((confirm) =>
-        requestDocumentsZip(documentIds, confirm),
+    return confirmOutboundRelease((flags) =>
+        requestDocumentsZip(documentIds, flags),
     );
 }
 
@@ -900,17 +1110,18 @@ function filenameFromContentDisposition(header: string | null): string | null {
 async function requestGatedDocument(
     documentId: string,
     versionId: string | null | undefined,
-    confirm: boolean,
+    flags: OutboundReleaseFlags,
 ): Promise<{ blob: Blob; filename: string }> {
     const authHeaders = await getAuthHeader();
     const params = new URLSearchParams();
     if (versionId) params.set("version_id", versionId);
-    if (confirm) params.set("confirm_tracked_changes", "1");
+    if (flags.confirmTrackedChanges) params.set("confirm_tracked_changes", "1");
+    if (flags.allowOpenComments) params.set("allow_open_comments", "1");
     const qs = params.toString();
     const path = `/single-documents/${documentId}/export${qs ? `?${qs}` : ""}`;
     const response = await fetch(`${API_BASE}${path}`, {
         cache: "no-store",
-        headers: { ...authHeaders, ...confirmHeaders(confirm) },
+        headers: { ...authHeaders, ...releaseHeaders(flags) },
     });
     if (!response.ok) throw await toApiError(response, path);
     return {
@@ -927,45 +1138,46 @@ export async function downloadGatedDocument(
     documentId: string,
     versionId?: string | null,
 ): Promise<{ blob: Blob; filename: string }> {
-    return confirmOutboundRelease((confirm) =>
-        requestGatedDocument(documentId, versionId, confirm),
+    return confirmOutboundRelease((flags) =>
+        requestGatedDocument(documentId, versionId, flags),
     );
 }
 
 export async function fetchDocxBytes(
     documentId: string,
     versionId?: string | null,
-    options?: { confirmTrackedChanges?: boolean },
+    options?: Partial<OutboundReleaseFlags>,
 ): Promise<ArrayBuffer> {
+    const flags: OutboundReleaseFlags = {
+        confirmTrackedChanges: !!options?.confirmTrackedChanges,
+        allowOpenComments: !!options?.allowOpenComments,
+    };
     const authHeaders = await getAuthHeader();
     const params = new URLSearchParams();
     if (versionId) params.set("version_id", versionId);
-    if (options?.confirmTrackedChanges) {
-        params.set("confirm_tracked_changes", "1");
-    }
+    if (flags.confirmTrackedChanges) params.set("confirm_tracked_changes", "1");
+    if (flags.allowOpenComments) params.set("allow_open_comments", "1");
     const qs = params.toString();
     const path = `/single-documents/${documentId}/docx${qs ? `?${qs}` : ""}`;
     const response = await fetch(`${API_BASE}${path}`, {
         cache: "no-store",
         headers: {
             ...authHeaders,
-            ...confirmHeaders(!!options?.confirmTrackedChanges),
+            ...releaseHeaders(flags),
         },
     });
     if (!response.ok) throw await toApiError(response, path);
     return response.arrayBuffer();
 }
 
-/** `/docx` download used by the document panel. Confirms tracked changes. */
+/** `/docx` download used by the document panel. Confirms each release. */
 export async function downloadDocxDocument(
     documentId: string,
     filename: string,
     versionId?: string | null,
 ): Promise<{ blob: Blob; filename: string }> {
-    const buffer = await confirmOutboundRelease((confirm) =>
-        fetchDocxBytes(documentId, versionId, {
-            confirmTrackedChanges: confirm,
-        }),
+    const buffer = await confirmOutboundRelease((flags) =>
+        fetchDocxBytes(documentId, versionId, flags),
     );
     return {
         blob: new Blob([buffer], {

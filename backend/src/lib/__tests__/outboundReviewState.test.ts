@@ -15,6 +15,7 @@ import {
   gateOutboundReview,
   gateOutboundZipMembers,
   inspectDocxReviewState,
+  openCommentsAllowed,
   outboundReviewHttpError,
   trackedChangesConfirmed,
   type OutboundReviewAudit,
@@ -396,6 +397,347 @@ test("download-zip blocks the whole archive on any open comment and lists tracke
   assert.equal(events[0]?.userId, "user-9");
 });
 
+test("open comments pass only with the per-request opt-in and write one audit line", async () => {
+  const bytes = await commentsOnly();
+  assert.equal(
+    openCommentsAllowed({
+      query: { allow_open_comments: "1" },
+      get: () => undefined,
+    }),
+    true,
+  );
+  assert.equal(
+    openCommentsAllowed({
+      query: { allow_open_comments: ["1"] },
+      get: () => undefined,
+    }),
+    true,
+  );
+  assert.equal(
+    openCommentsAllowed({
+      query: {},
+      get(name: string) {
+        return name.toLowerCase() === "x-allow-open-comments" ? " 1 " : undefined;
+      },
+    }),
+    true,
+  );
+  for (const blocked of [
+    { query: {}, header: undefined },
+    { query: { allow_open_comments: "0" }, header: undefined },
+    { query: { allow_open_comments: "true" }, header: undefined },
+    { query: {}, header: "true" },
+    { query: { allow_open_comments: "" }, header: undefined },
+  ]) {
+    assert.equal(
+      openCommentsAllowed({
+        query: blocked.query,
+        get: () => blocked.header,
+      }),
+      false,
+    );
+  }
+
+  const lines = await captureInfo(() => release(bytes, false, audit, true));
+  const events = commentReleaseEvents(lines);
+  assert.equal(events.length, 1);
+  assert.equal(events[0]?.event, "outbound_open_comments_released");
+  assert.equal(events[0]?.userId, "user-1");
+  assert.deepEqual(events[0]?.documentIds, ["doc-1"]);
+  assert.equal(events[0]?.commentCount, 1);
+  assert.equal(events[0]?.tracked, false);
+  assert.equal(events[0]?.route, "export");
+  assert.match(String(events[0]?.timestamp), /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+  assert.equal(confirmedEvents(lines).length, 0);
+  const sent = await release(bytes, false, null, true);
+  const finding = await inspectDocxReviewState(sent);
+  assert.equal(finding?.comments.length, 1);
+  assert.equal(finding?.comments[0]?.excerpt, COMMENT_A);
+});
+
+test("comments plus tracked changes still need the tracked confirm", async () => {
+  const bytes = await dirtyLibrary();
+  const blocked = await captureInfo(async () => {
+    await assert.rejects(
+      () => release(bytes, false, audit, true),
+      (err: unknown) => {
+        assert.ok(err instanceof OutboundTrackedChangesNeedsConfirmationError);
+        assert.equal(err.code, "outbound_tracked_changes_needs_confirmation");
+        const http = outboundReviewHttpError(err);
+        assert.equal(http?.status, 428);
+        return true;
+      },
+    );
+  });
+  assert.equal(commentReleaseEvents(blocked).length, 0);
+  assert.equal(confirmedEvents(blocked).length, 0);
+
+  const released = await captureInfo(() => release(bytes, true, audit, true));
+  const comments = commentReleaseEvents(released);
+  const tracked = confirmedEvents(released);
+  assert.equal(comments.length, 1);
+  assert.equal(comments[0]?.commentCount, 2);
+  assert.equal(comments[0]?.tracked, true);
+  assert.deepEqual(comments[0]?.documentIds, ["doc-1"]);
+  assert.equal(tracked.length, 1);
+  assert.equal(tracked[0]?.documentId, "doc-1");
+  const sent = await release(bytes, true, null, true);
+  const finding = await inspectDocxReviewState(sent);
+  assert.equal(finding?.comments.length, 2);
+  assert.equal(finding?.counts.total, 2);
+});
+
+test("clean and tracked-only downloads ignore the comments opt-in", async () => {
+  const clean = await reviewDocx({ body: `<w:r><w:t>${CLEAN_TEXT}</w:t></w:r>` });
+  const cleanLines = await captureInfo(() => release(clean, false, audit, true));
+  assert.equal(commentReleaseEvents(cleanLines).length, 0);
+  assert.equal(confirmedEvents(cleanLines).length, 0);
+
+  const tracked = await trackedOnly();
+  const needsConfirm = await captureInfo(async () => {
+    await assert.rejects(
+      () => release(tracked, false, audit, true),
+      (err: unknown) => {
+        assert.ok(err instanceof OutboundTrackedChangesNeedsConfirmationError);
+        return true;
+      },
+    );
+  });
+  assert.equal(commentReleaseEvents(needsConfirm).length, 0);
+  assert.equal(confirmedEvents(needsConfirm).length, 0);
+
+  const released = await captureInfo(() => release(tracked, true, audit, true));
+  assert.equal(commentReleaseEvents(released).length, 0);
+  assert.equal(confirmedEvents(released).length, 1);
+});
+
+test("attribution stays 422 for every combination of release flags", async () => {
+  const bytes = await attributionDirty();
+  const flags = [
+    { confirmed: false, allowOpenComments: false },
+    { confirmed: true, allowOpenComments: false },
+    { confirmed: false, allowOpenComments: true },
+    { confirmed: true, allowOpenComments: true },
+  ];
+  for (const flag of flags) {
+    const lines = await captureInfo(async () => {
+      await assert.rejects(
+        () => release(bytes, flag.confirmed, audit, flag.allowOpenComments),
+        (err: unknown) => {
+          assert.ok(err instanceof OutboundAttributionError);
+          assert.equal(err.code, "outbound_attribution_blocked");
+          assert.equal(err instanceof OutboundOpenCommentsError, false);
+          return true;
+        },
+      );
+      await assert.rejects(
+        () => gateOutboundReview(bytes, "memo.docx", {
+          confirmed: flag.confirmed,
+          allowOpenComments: flag.allowOpenComments,
+          env: sponsorOn,
+          audit,
+        }),
+        (err: unknown) => {
+          assert.ok(err instanceof OutboundAttributionError);
+          assert.equal(err.code, "outbound_attribution_blocked");
+          return true;
+        },
+      );
+    });
+    assert.equal(commentReleaseEvents(lines).length, 0);
+    assert.equal(confirmedEvents(lines).length, 0);
+  }
+});
+
+test("attribution inside a comment stays 422 when comments are allowed", async () => {
+  const phrase = await reviewDocx({
+    body: `<w:r><w:t>Negotiation redline for the counterparty.</w:t></w:r>`,
+    comments: [
+      commentXml("0", "AAAA0001", "Please see the note from our legal assistant."),
+    ],
+  });
+  const mikeAuthor = await reviewDocx({
+    body: `<w:r><w:t>Negotiation redline for the counterparty.</w:t></w:r>`,
+    comments: [commentXmlWithAuthor("0", "AAAA0001", COMMENT_A, "Mike")],
+  });
+  const aiAuthor = await reviewDocx({
+    body: `<w:r><w:t>Negotiation redline for the counterparty.</w:t></w:r>`,
+    comments: [commentXmlWithAuthor("0", "AAAA0001", COMMENT_A, "AI")],
+  });
+
+  for (const bytes of [phrase, mikeAuthor, aiAuthor]) {
+    const lines = await captureInfo(async () => {
+      await assert.rejects(
+        () => release(bytes, true, audit, true),
+        (err: unknown) => {
+          assert.ok(err instanceof OutboundAttributionError);
+          assert.equal(err.code, "outbound_attribution_blocked");
+          assert.equal(
+            err.hits.some((hit) =>
+              hit.location.replace(/\\/g, "/").toLowerCase().includes("word/comments.xml"),
+            ),
+            true,
+          );
+          return true;
+        },
+      );
+    });
+    assert.equal(commentReleaseEvents(lines).length, 0);
+    assert.equal(confirmedEvents(lines).length, 0);
+  }
+});
+
+test("download-zip applies the comments opt-in to the whole archive", async () => {
+  const commented = await commentsOnly();
+  const second = await reviewDocx({
+    body: `<w:r><w:t>Second notes.</w:t></w:r>`,
+    comments: [commentXml("0", "AAAA0001", COMMENT_B)],
+  });
+  const tracked = await trackedOnly();
+  const clean = await reviewDocx({ body: `<w:r><w:t>${CLEAN_TEXT}</w:t></w:r>` });
+  const attributed = await attributionDirty();
+
+  const blocked = await captureInfo(async () => {
+    await assert.rejects(
+      () =>
+        gateOutboundZipMembers(
+          [
+            member("clean.docx", "doc-clean", clean),
+            member("notes.docx", "doc-notes", commented),
+          ],
+          {
+            confirmed: true,
+            allowOpenComments: false,
+            userId: "user-1",
+            route: "download-zip",
+            env: sponsorOn,
+          },
+        ),
+      (err: unknown) => {
+        assert.ok(err instanceof OutboundOpenCommentsError);
+        const http = outboundReviewHttpError(err);
+        assert.equal(http?.status, 422);
+        assert.deepEqual(http?.body.allow, {
+          query: "allow_open_comments=1",
+          header: "X-Allow-Open-Comments: 1",
+        });
+        return true;
+      },
+    );
+  });
+  assert.equal(commentReleaseEvents(blocked).length, 0);
+
+  const needsTracked = await captureInfo(async () => {
+    await assert.rejects(
+      () =>
+        gateOutboundZipMembers(
+          [
+            member("notes.docx", "doc-notes", commented),
+            member("redline.docx", "doc-redline", tracked),
+          ],
+          {
+            confirmed: false,
+            allowOpenComments: true,
+            userId: "user-1",
+            route: "download-zip",
+            env: sponsorOn,
+          },
+        ),
+      (err: unknown) => {
+        assert.ok(err instanceof OutboundTrackedChangesNeedsConfirmationError);
+        assert.equal(outboundReviewHttpError(err)?.status, 428);
+        return true;
+      },
+    );
+  });
+  assert.equal(commentReleaseEvents(needsTracked).length, 0);
+  assert.equal(confirmedEvents(needsTracked).length, 0);
+
+  const released = await captureInfo(() =>
+    gateOutboundZipMembers(
+      [
+        member("notes.docx", "doc-notes", commented),
+        member("more.docx", "doc-more", second),
+        member("redline.docx", "doc-redline", tracked),
+        member("clean.docx", "doc-clean", clean),
+      ],
+      {
+        confirmed: true,
+        allowOpenComments: true,
+        userId: "user-9",
+        route: "download-zip",
+        env: sponsorOn,
+      },
+    ),
+  );
+  const comments = commentReleaseEvents(released);
+  assert.equal(comments.length, 1);
+  assert.equal(comments[0]?.userId, "user-9");
+  assert.deepEqual(comments[0]?.documentIds, ["doc-notes", "doc-more"]);
+  assert.equal(comments[0]?.commentCount, 2);
+  assert.equal(comments[0]?.tracked, true);
+  assert.equal(comments[0]?.route, "download-zip");
+  const trackedEvents = confirmedEvents(released);
+  assert.equal(trackedEvents.length, 1);
+  assert.equal(trackedEvents[0]?.documentId, "doc-redline");
+
+  const commentsOnlyZip = await captureInfo(() =>
+    gateOutboundZipMembers(
+      [member("notes.docx", "doc-notes", commented)],
+      {
+        confirmed: false,
+        allowOpenComments: true,
+        userId: "user-2",
+        route: "download-zip",
+        env: sponsorOn,
+      },
+    ),
+  );
+  assert.equal(commentReleaseEvents(commentsOnlyZip).length, 1);
+  assert.equal(commentReleaseEvents(commentsOnlyZip)[0]?.tracked, false);
+  assert.equal(confirmedEvents(commentsOnlyZip).length, 0);
+
+  const attributedLines = await captureInfo(async () => {
+    await assert.rejects(
+      () =>
+        gateOutboundZipMembers(
+          [
+            member("notes.docx", "doc-notes", commented),
+            member("dirty.docx", "doc-dirty", attributed),
+          ],
+          {
+            confirmed: true,
+            allowOpenComments: true,
+            userId: "user-1",
+            route: "download-zip",
+            env: sponsorOn,
+          },
+        ),
+      (err: unknown) => {
+        assert.ok(err instanceof OutboundAttributionError);
+        assert.equal(err.code, "outbound_attribution_blocked");
+        return true;
+      },
+    );
+    await assert.rejects(
+      () => releaseZip(
+        [
+          member("notes.docx", "doc-notes", commented),
+          member("dirty.docx", "doc-dirty", attributed),
+        ],
+        true,
+        true,
+      ),
+      (err: unknown) => {
+        assert.ok(err instanceof OutboundAttributionError);
+        return true;
+      },
+    );
+  });
+  assert.equal(commentReleaseEvents(attributedLines).length, 0);
+  assert.equal(confirmedEvents(attributedLines).length, 0);
+});
+
 test("outbound routes call the review gate after attribution and /display does not", () => {
   const root = path.join(__dirname, "../..");
   const documents = readFileSync(path.join(root, "routes/documents.ts"), "utf8");
@@ -413,6 +755,8 @@ test("outbound routes call the review gate after attribution and /display does n
   assert.ok(urlFn.indexOf("gateOutboundReview(") > urlFn.indexOf("bytesSafeForSignedUrl("));
   assert.ok(urlFn.indexOf("await getSignedUrl(") > urlFn.indexOf("gateOutboundReview("));
   assert.match(urlFn, /trackedChangesConfirmed\(req\)/);
+  assert.match(urlFn, /openCommentsAllowed\(req\)/);
+  assert.ok(urlFn.indexOf("openCommentsAllowed(req)") > urlFn.indexOf("bytesSafeForSignedUrl("));
   assert.equal(/uploadFile/.test(urlFn), false);
   assert.equal(/rewriteBannedDocxAuthors/.test(urlFn), false);
 
@@ -423,6 +767,7 @@ test("outbound routes call the review gate after attribution and /display does n
   assert.ok(docxFn.indexOf("res.send(payload)") > docxFn.indexOf("gateOutboundReview("));
   assert.equal(/res\.send\(raw\)/.test(docxFn), false);
   assert.match(docxFn, /trackedChangesConfirmed\(req\)/);
+  assert.match(docxFn, /openCommentsAllowed\(req\)/);
 
   const exportFn = documents.slice(
     exportStart,
@@ -431,11 +776,13 @@ test("outbound routes call the review gate after attribution and /display does n
   assert.ok(exportFn.indexOf("gateOutboundReview(") > exportFn.indexOf("prepareOutboundFileBytes"));
   assert.ok(exportFn.indexOf("res.send(payload)") > exportFn.indexOf("gateOutboundReview("));
   assert.match(exportFn, /trackedChangesConfirmed\(req\)/);
+  assert.match(exportFn, /openCommentsAllowed\(req\)/);
 
   const zipFn = documents.slice(documents.indexOf('"/download-zip"'), urlStart);
   assert.ok(zipFn.indexOf("gateOutboundZipMembers(") > zipFn.indexOf("prepareOutboundFileBytes"));
   assert.ok(zipFn.indexOf("res.send(content)") > zipFn.indexOf("gateOutboundZipMembers("));
   assert.match(zipFn, /trackedChangesConfirmed\(req\)/);
+  assert.match(zipFn, /openCommentsAllowed\(req\)/);
 
   const displayFn = documents.slice(
     documents.indexOf('"/:documentId/display"'),
@@ -447,8 +794,10 @@ test("outbound routes call the review gate after attribution and /display does n
   assert.ok(downloads.indexOf("gateOutboundReview(") > downloads.indexOf("prepareOutboundFileBytes"));
   assert.ok(downloads.indexOf("res.send(payload)") > downloads.indexOf("gateOutboundReview("));
   assert.match(downloads, /trackedChangesConfirmed\(req\)/);
+  assert.match(downloads, /openCommentsAllowed\(req\)/);
 
   assert.match(index, /X-Confirm-Tracked-Changes/);
+  assert.match(index, /X-Allow-Open-Comments/);
 
   const helperStart = helper.indexOf("export async function bytesSafeForSignedUrl");
   const helperEnd = helper.indexOf("function rewriteAuthorAttributes");
@@ -464,15 +813,36 @@ test("outbound routes call the review gate after attribution and /display does n
 async function release(
   bytes: Buffer,
   confirmed: boolean,
-  reviewAudit?: OutboundReviewAudit,
+  reviewAudit?: OutboundReviewAudit | null,
+  allowOpenComments = false,
 ): Promise<Buffer> {
   const payload = await prepareOutboundFileBytes(bytes, "memo.docx", sponsorOn);
   await gateOutboundReview(payload, "memo.docx", {
     confirmed,
+    allowOpenComments,
     env: sponsorOn,
     audit: reviewAudit ?? null,
   });
   return payload;
+}
+
+async function releaseZip(
+  members: ReturnType<typeof member>[],
+  confirmed: boolean,
+  allowOpenComments: boolean,
+): Promise<void> {
+  const prepared = [];
+  for (const item of members) {
+    const bytes = await prepareOutboundFileBytes(item.bytes, item.filename, sponsorOn);
+    prepared.push({ ...item, bytes });
+  }
+  await gateOutboundZipMembers(prepared, {
+    confirmed,
+    allowOpenComments,
+    userId: "user-1",
+    route: "download-zip",
+    env: sponsorOn,
+  });
 }
 
 function member(filename: string, documentId: string, bytes: Buffer) {
@@ -509,7 +879,7 @@ async function captureInfo(run: () => Promise<unknown>): Promise<string[]> {
   return lines;
 }
 
-function confirmedEvents(lines: string[]): Array<Record<string, unknown>> {
+function parseEvents(lines: string[]): Array<Record<string, unknown>> {
   return lines
     .map((line) => {
       try {
@@ -518,14 +888,32 @@ function confirmedEvents(lines: string[]): Array<Record<string, unknown>> {
         return null;
       }
     })
-    .filter(
-      (event): event is Record<string, unknown> =>
-        !!event && event.event === "outbound_tracked_changes_confirmed_release",
-    );
+    .filter((event): event is Record<string, unknown> => !!event && typeof event.event === "string");
+}
+
+function confirmedEvents(lines: string[]): Array<Record<string, unknown>> {
+  return parseEvents(lines).filter(
+    (event) => event.event === "outbound_tracked_changes_confirmed_release",
+  );
+}
+
+function commentReleaseEvents(lines: string[]): Array<Record<string, unknown>> {
+  return parseEvents(lines).filter(
+    (event) => event.event === "outbound_open_comments_released",
+  );
 }
 
 function commentXml(id: string, paraId: string, text: string): string {
-  return `<w:comment w:id="${id}" w:author="PE Test" w:initials="PT" w:date="2026-10-06T13:00:00Z"><w:p w14:paraId="${paraId}"><w:r><w:t>${text}</w:t></w:r></w:p></w:comment>`;
+  return commentXmlWithAuthor(id, paraId, text, "PE Test");
+}
+
+function commentXmlWithAuthor(
+  id: string,
+  paraId: string,
+  text: string,
+  author: string,
+): string {
+  return `<w:comment w:id="${id}" w:author="${author}" w:initials="PT" w:date="2026-10-06T13:00:00Z"><w:p w14:paraId="${paraId}"><w:r><w:t>${text}</w:t></w:r></w:p></w:comment>`;
 }
 
 function commentAnchor(id: string): string {

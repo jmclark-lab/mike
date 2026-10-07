@@ -128,6 +128,7 @@ app.use(
       "Authorization",
       "Content-Type",
       "X-Confirm-Tracked-Changes",
+      "X-Allow-Open-Comments",
     ],
   }),
 );
