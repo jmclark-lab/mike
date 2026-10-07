@@ -2,10 +2,20 @@
  * Sponsor-CI review gate for outbound downloads.
  *
  * Runs only while `isSponsorCiMode()` is on, and only after the existing
- * attribution gate. Open Word comments block the download (422). Tracked
- * changes do not: the caller must send `confirm_tracked_changes=1` or
- * `X-Confirm-Tracked-Changes: 1` (428 until then). A confirmed release is
- * written as one JSON line on stdout. There is no audit table.
+ * attribution gate. This module scans the docx again and still throws
+ * `outbound_attribution_blocked` (422) before it will release anything.
+ * Comment text and comment authors are part of that scan. The comments
+ * opt-in does not turn the scan off.
+ *
+ * Open Word comments block the download (422) unless this request sends
+ * `allow_open_comments=1` or `X-Allow-Open-Comments: 1`. That opt-in is
+ * per request only. It is not stored, it is not a user or org setting,
+ * and it does not confirm tracked changes.
+ *
+ * Tracked changes still need `confirm_tracked_changes=1` or
+ * `X-Confirm-Tracked-Changes: 1` (428 until then). A comments release and
+ * a confirmed tracked-change release are each one JSON line on stdout.
+ * There is no outbound audit table.
  *
  * A comment is open when it is in word/comments.xml and no
  * word/commentsExtended.xml entry with `w15:done="1"` matches that
@@ -14,6 +24,10 @@
  */
 
 import JSZip from "jszip";
+import {
+  findOutboundDocxAttribution,
+  OutboundAttributionError,
+} from "./outboundAttribution";
 import { isSponsorCiMode } from "./sponsorCiMode";
 
 export type OpenComment = {
@@ -63,6 +77,8 @@ export type ZipReviewMember = {
 
 const CONFIRM_QUERY = "confirm_tracked_changes=1";
 const CONFIRM_HEADER = "X-Confirm-Tracked-Changes: 1";
+const ALLOW_QUERY = "allow_open_comments=1";
+const ALLOW_HEADER = "X-Allow-Open-Comments: 1";
 
 export class OutboundOpenCommentsError extends Error {
   readonly code = "outbound_open_comments_blocked" as const;
@@ -124,6 +140,21 @@ export function trackedChangesConfirmed(req: {
   return typeof header === "string" && header.trim() === "1";
 }
 
+/**
+ * Per-request negotiation-copy opt-in. Only the literal `1` matches.
+ * Nothing reads or writes a stored preference.
+ */
+export function openCommentsAllowed(req: {
+  query: { allow_open_comments?: unknown };
+  get(name: string): string | undefined;
+}): boolean {
+  const raw = req.query.allow_open_comments;
+  const query = Array.isArray(raw) ? raw[0] : raw;
+  if (typeof query === "string" && query.trim() === "1") return true;
+  const header = req.get("X-Allow-Open-Comments");
+  return typeof header === "string" && header.trim() === "1";
+}
+
 export function outboundReviewHttpError(
   err: unknown,
 ): { status: 422 | 428; body: Record<string, unknown> } | null {
@@ -132,6 +163,7 @@ export function outboundReviewHttpError(
       code: err.code,
       detail: err.message,
       count: err.count,
+      allow: { query: ALLOW_QUERY, header: ALLOW_HEADER },
       comments: err.comments.map((comment) => {
         const row: Record<string, string> = {
           id: comment.id,
@@ -174,6 +206,8 @@ export async function gateOutboundReview(
   _filename: string,
   options: {
     confirmed: boolean;
+    /** This request only. Never a stored user or org setting. */
+    allowOpenComments?: boolean;
     env?: NodeJS.ProcessEnv;
     audit?: OutboundReviewAudit | null;
   },
@@ -181,11 +215,24 @@ export async function gateOutboundReview(
   if (!isSponsorCiMode(options.env)) return;
   const finding = await inspectDocxReviewState(bytes);
   if (!finding) return;
-  if (finding.comments.length > 0) {
+  // Attribution stays first, including when both release flags are set.
+  // Comment text and w:author / w15:author values are part of the scan.
+  await rejectAttributedDocx(bytes);
+  const allowOpenComments = options.allowOpenComments === true;
+  if (finding.comments.length > 0 && !allowOpenComments) {
     throw new OutboundOpenCommentsError(finding.comments);
   }
   if (finding.counts.total > 0 && !options.confirmed) {
     throw new OutboundTrackedChangesNeedsConfirmationError(finding.counts);
+  }
+  if (finding.comments.length > 0 && allowOpenComments && options.audit) {
+    logOutboundOpenCommentsReleased({
+      userId: options.audit.userId,
+      documentIds: [options.audit.documentId],
+      commentCount: finding.comments.length,
+      tracked: finding.counts.total > 0,
+      route: options.audit.route,
+    });
   }
   if (finding.counts.total > 0 && options.confirmed && options.audit) {
     logOutboundTrackedChangesConfirmedRelease({
@@ -196,31 +243,38 @@ export async function gateOutboundReview(
 }
 
 /**
- * Zip rule: any open comment blocks the whole archive (422), even when
- * the confirm flag is set. Otherwise any tracked changes without
- * confirmation return 428 listing each document and its counts.
+ * Zip rule: the comments opt-in is one flag for the whole request.
+ * Without it, any open comment blocks the archive (422), even when the
+ * tracked-changes confirm flag is set. Attribution in any docx member
+ * still blocks the archive. Otherwise any tracked changes without
+ * confirmation return 428 listing each document and its counts. The
+ * comments opt-in does not confirm tracked changes.
  */
 export async function gateOutboundZipMembers(
   members: ZipReviewMember[],
   options: {
     confirmed: boolean;
+    /** This request only. Applies to every member. */
+    allowOpenComments?: boolean;
     userId: string;
     route: string;
     env?: NodeJS.ProcessEnv;
   },
 ): Promise<void> {
   if (!isSponsorCiMode(options.env)) return;
+  const allowOpenComments = options.allowOpenComments === true;
   const reviewed: Array<{ member: ZipReviewMember; finding: DocxReviewFinding }> =
     [];
   for (const member of members) {
     const finding = await inspectDocxReviewState(member.bytes);
     if (!finding) continue;
+    await rejectAttributedDocx(member.bytes);
     if (finding.comments.length === 0 && finding.counts.total === 0) continue;
     reviewed.push({ member, finding });
   }
 
   const withComments = reviewed.filter((row) => row.finding.comments.length > 0);
-  if (withComments.length > 0) {
+  if (withComments.length > 0 && !allowOpenComments) {
     const comments = withComments.flatMap((row) =>
       row.finding.comments.map((comment) => ({
         ...comment,
@@ -238,8 +292,7 @@ export async function gateOutboundZipMembers(
   }
 
   const withTracked = reviewed.filter((row) => row.finding.counts.total > 0);
-  if (withTracked.length === 0) return;
-  if (!options.confirmed) {
+  if (withTracked.length > 0 && !options.confirmed) {
     const documents = withTracked.map((row) => ({
       documentId: row.member.documentId,
       filename: row.member.filename,
@@ -251,6 +304,20 @@ export async function gateOutboundZipMembers(
       documents,
     );
   }
+
+  if (withComments.length > 0 && allowOpenComments) {
+    logOutboundOpenCommentsReleased({
+      userId: options.userId,
+      documentIds: withComments.map((row) => row.member.documentId),
+      commentCount: withComments.reduce(
+        (sum, row) => sum + row.finding.comments.length,
+        0,
+      ),
+      tracked: withTracked.length > 0,
+      route: options.route,
+    });
+  }
+
   for (const row of withTracked) {
     logOutboundTrackedChangesConfirmedRelease({
       userId: options.userId,
@@ -295,6 +362,27 @@ export async function inspectDocxReviewState(
   return { comments, counts: withTotal(counts) };
 }
 
+export function logOutboundOpenCommentsReleased(entry: {
+  userId: string;
+  documentIds: string[];
+  commentCount: number;
+  tracked: boolean;
+  route?: string;
+  timestamp?: string;
+}): void {
+  console.info(
+    JSON.stringify({
+      event: "outbound_open_comments_released",
+      userId: entry.userId,
+      documentIds: entry.documentIds,
+      commentCount: entry.commentCount,
+      tracked: entry.tracked,
+      route: entry.route,
+      timestamp: entry.timestamp ?? new Date().toISOString(),
+    }),
+  );
+}
+
 export function logOutboundTrackedChangesConfirmedRelease(entry: {
   userId: string;
   documentId: string;
@@ -314,6 +402,11 @@ export function logOutboundTrackedChangesConfirmedRelease(entry: {
       timestamp: entry.timestamp ?? new Date().toISOString(),
     }),
   );
+}
+
+async function rejectAttributedDocx(bytes: Buffer): Promise<void> {
+  const hits = await findOutboundDocxAttribution(bytes);
+  if (hits.length > 0) throw new OutboundAttributionError(hits);
 }
 
 function countsPhrase(counts: TrackedChangeCounts): string {

@@ -37,6 +37,7 @@ import { singleFileUpload } from "../lib/upload";
 import {
   gateOutboundReview,
   gateOutboundZipMembers,
+  openCommentsAllowed,
   sendOutboundReviewError,
   trackedChangesConfirmed,
 } from "../lib/outboundReviewState";
@@ -329,6 +330,7 @@ documentsRouter.post("/download-zip", requireAuth, async (req, res) => {
   );
   await gateOutboundZipMembers(members, {
     confirmed: trackedChangesConfirmed(req),
+    allowOpenComments: openCommentsAllowed(req),
     userId,
     route: "download-zip",
   });
@@ -391,6 +393,7 @@ documentsRouter.get("/:documentId/url", requireAuth, async (req, res) => {
     );
     await gateOutboundReview(stored, downloadFilename, {
       confirmed: trackedChangesConfirmed(req),
+      allowOpenComments: openCommentsAllowed(req),
       audit: {
         userId,
         documentId,
@@ -475,6 +478,7 @@ documentsRouter.get("/:documentId/docx", requireAuth, async (req, res) => {
     await bytesSafeForSignedUrl(payload, docxName, active.file_type);
     await gateOutboundReview(payload, docxName, {
       confirmed: trackedChangesConfirmed(req),
+      allowOpenComments: openCommentsAllowed(req),
       audit: {
         userId,
         documentId,
@@ -557,6 +561,7 @@ documentsRouter.get("/:documentId/export", requireAuth, async (req, res) => {
     const payload = await prepareOutboundFileBytes(bytes, gateName);
     await gateOutboundReview(payload, gateName, {
       confirmed: trackedChangesConfirmed(req),
+      allowOpenComments: openCommentsAllowed(req),
       audit: {
         userId,
         documentId,

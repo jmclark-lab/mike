@@ -15,6 +15,7 @@ import {
 } from "../lib/outboundAttribution";
 import {
     gateOutboundReview,
+    openCommentsAllowed,
     sendOutboundReviewError,
     trackedChangesConfirmed,
 } from "../lib/outboundReviewState";
@@ -91,6 +92,7 @@ downloadsRouter.get("/:token", requireAuth, async (req, res) => {
         payload = await prepareOutboundFileBytes(payload, info.filename);
         await gateOutboundReview(payload, info.filename, {
             confirmed: trackedChangesConfirmed(req),
+            allowOpenComments: openCommentsAllowed(req),
             audit: {
                 userId,
                 documentId: version.document_id,

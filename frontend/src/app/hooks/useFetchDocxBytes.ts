@@ -84,12 +84,11 @@ export function useFetchDocxBytes(
         const pending =
             inFlight.get(key) ??
             (async () => {
-                // /docx is an outbound byte stream, so Sponsor-CI can
-                // answer 428. Confirm once, then cache the released bytes.
-                const buf = await confirmOutboundRelease((confirm) =>
-                    fetchDocxBytes(documentId, versionId, {
-                        confirmTrackedChanges: confirm,
-                    }),
+                // /docx is an outbound byte stream. Sponsor-CI can answer
+                // 422 for open comments or 428 for tracked changes. Each
+                // prompt is for this fetch only, then the bytes are cached.
+                const buf = await confirmOutboundRelease((flags) =>
+                    fetchDocxBytes(documentId, versionId, flags),
                 );
                 bytesCache.set(key, buf);
                 return buf;
@@ -105,8 +104,12 @@ export function useFetchDocxBytes(
             .catch((e: unknown) => {
                 if (cancelled) return;
                 if (e instanceof OutboundReleaseCancelled) {
+                    const blockedComments =
+                        e.causeError.code === "outbound_open_comments_blocked";
                     setError(
-                        "Tracked changes were not released. The document was not loaded.",
+                        blockedComments
+                            ? "Open comments were not included. The document was not loaded."
+                            : "Tracked changes were not released. The document was not loaded.",
                     );
                     return;
                 }
