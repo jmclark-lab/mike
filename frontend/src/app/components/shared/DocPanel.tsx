@@ -3,6 +3,10 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Download, Loader2 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
+import {
+    alertOutboundFailure,
+    downloadDocxDocument,
+} from "@/app/lib/mikeApi";
 import { applyOptimisticResolution } from "../assistant/EditCard";
 import { DocView } from "./DocView";
 import { DocxView } from "./DocxView";
@@ -511,31 +515,22 @@ function DownloadButton({
         if (busy || isReloading) return;
         setBusy(true);
         try {
-            const {
-                data: { session },
-            } = await supabase.auth.getSession();
-            const token = session?.access_token;
-            const apiBase =
-                process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:3001";
-            const qs = versionId
-                ? `?version_id=${encodeURIComponent(versionId)}`
-                : "";
-            const resp = await fetch(
-                `${apiBase}/single-documents/${documentId}/docx${qs}`,
-                {
-                    headers: token ? { Authorization: `Bearer ${token}` } : {},
-                },
+            const file = await downloadDocxDocument(
+                documentId,
+                filename,
+                versionId,
             );
-            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-            const blob = await resp.blob();
-            const blobUrl = URL.createObjectURL(blob);
+            const blobUrl = URL.createObjectURL(file.blob);
             const a = document.createElement("a");
             a.href = blobUrl;
-            a.download = filename;
+            a.download = file.filename || filename;
             document.body.appendChild(a);
             a.click();
             a.remove();
             setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
+        } catch (e) {
+            console.error("docx download failed", e);
+            alertOutboundFailure(e);
         } finally {
             setBusy(false);
         }

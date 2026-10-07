@@ -44,12 +44,29 @@ const devLog = (...args: Parameters<typeof console.log>) => {
 export class MikeApiError extends Error {
     status: number;
     code: string | null;
+    details: Record<string, unknown> | null;
 
-    constructor(args: { message: string; status: number; code?: string | null }) {
+    constructor(args: {
+        message: string;
+        status: number;
+        code?: string | null;
+        details?: Record<string, unknown> | null;
+    }) {
         super(args.message);
         this.name = "MikeApiError";
         this.status = args.status;
         this.code = args.code ?? null;
+        this.details = args.details ?? null;
+    }
+}
+
+export class OutboundReleaseCancelled extends Error {
+    readonly causeError: MikeApiError;
+
+    constructor(causeError: MikeApiError) {
+        super("Release cancelled.");
+        this.name = "OutboundReleaseCancelled";
+        this.causeError = causeError;
     }
 }
 
@@ -121,25 +138,27 @@ async function apiBlobRequest(path: string): Promise<{
     };
 }
 
-async function toApiError(response: Response, path: string) {
+export async function toApiError(response: Response, path: string) {
     const text = await response.text();
     try {
-        const parsed = JSON.parse(text) as {
-            detail?: unknown;
-            code?: unknown;
-        };
+        const parsed = JSON.parse(text) as unknown;
+        const body =
+            parsed && typeof parsed === "object" && !Array.isArray(parsed)
+                ? (parsed as Record<string, unknown>)
+                : null;
         devLog("[mike-api] non-ok response", {
             path,
             status: response.status,
-            code: parsed.code,
-            detail: parsed.detail,
+            code: body?.code,
+            detail: body?.detail,
         });
         return new MikeApiError({
             status: response.status,
-            code: typeof parsed.code === "string" ? parsed.code : null,
+            code: body && typeof body.code === "string" ? body.code : null,
+            details: body,
             message:
-                typeof parsed.detail === "string" && parsed.detail
-                    ? parsed.detail
+                body && typeof body.detail === "string" && body.detail
+                    ? body.detail
                     : `API error: ${response.status}`,
         });
     } catch {
@@ -153,6 +172,111 @@ async function toApiError(response: Response, path: string) {
             message: text || `API error: ${response.status}`,
         });
     }
+}
+
+export function isTrackedChangesConfirmationRequired(
+    error: unknown,
+): error is MikeApiError {
+    return (
+        error instanceof MikeApiError &&
+        error.status === 428 &&
+        error.code === "outbound_tracked_changes_needs_confirmation"
+    );
+}
+
+function reviewCount(value: unknown): number | null {
+    return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+export function trackedChangesConfirmPrompt(error: MikeApiError): string {
+    const counts = error.details?.counts;
+    const countRecord =
+        counts && typeof counts === "object"
+            ? (counts as Record<string, unknown>)
+            : null;
+    const total = reviewCount(countRecord?.total) ?? 0;
+    const insertions = reviewCount(countRecord?.insertions) ?? 0;
+    const deletions = reviewCount(countRecord?.deletions) ?? 0;
+    const documents = Array.isArray(error.details?.documents)
+        ? error.details.documents
+        : [];
+    const named = documents
+        .map((doc) => {
+            if (!doc || typeof doc !== "object") return null;
+            const row = doc as Record<string, unknown>;
+            const filename =
+                typeof row.filename === "string" ? row.filename : "document";
+            const docCounts =
+                row.counts && typeof row.counts === "object"
+                    ? (row.counts as Record<string, unknown>)
+                    : null;
+            const docTotal = reviewCount(docCounts?.total);
+            return docTotal == null ? filename : `${filename} (${docTotal})`;
+        })
+        .filter((name): name is string => !!name);
+    const subject =
+        named.length > 0
+            ? `This download has ${total} open tracked changes (${insertions} insertions, ${deletions} deletions) in ${named.join(", ")}`
+            : `This document has ${total} open tracked changes (${insertions} insertions, ${deletions} deletions)`;
+    return `${subject}. Release it with tracked changes?`;
+}
+
+export function outboundReviewErrorMessage(error: unknown): string {
+    if (error instanceof OutboundReleaseCancelled) return "Release cancelled.";
+    if (
+        error instanceof MikeApiError &&
+        error.code === "outbound_open_comments_blocked"
+    ) {
+        const count = reviewCount(error.details?.count);
+        const documents = Array.isArray(error.details?.documents)
+            ? error.details.documents
+                  .map((doc) => {
+                      if (!doc || typeof doc !== "object") return null;
+                      const filename = (doc as Record<string, unknown>).filename;
+                      return typeof filename === "string" ? filename : null;
+                  })
+                  .filter((name): name is string => !!name)
+            : [];
+        if (count != null) {
+            const noun = count === 1 ? "comment" : "comments";
+            const where =
+                documents.length > 0 ? ` in ${documents.join(", ")}` : "";
+            return `Export blocked: ${count} open ${noun}${where}. Resolve them before download. Nothing was downloaded or sent.`;
+        }
+    }
+    return error instanceof Error && error.message
+        ? error.message
+        : "Export blocked.";
+}
+
+export function alertOutboundFailure(error: unknown): void {
+    if (error instanceof OutboundReleaseCancelled) return;
+    window.alert(outboundReviewErrorMessage(error));
+}
+
+export async function confirmOutboundRelease<T>(
+    attempt: (confirmTrackedChanges: boolean) => Promise<T>,
+): Promise<T> {
+    try {
+        return await attempt(false);
+    } catch (error) {
+        if (!isTrackedChangesConfirmationRequired(error)) throw error;
+        const accepted =
+            typeof window !== "undefined" &&
+            typeof window.confirm === "function" &&
+            window.confirm(trackedChangesConfirmPrompt(error));
+        if (!accepted) throw new OutboundReleaseCancelled(error);
+        return await attempt(true);
+    }
+}
+
+function confirmQuery(path: string, confirm: boolean): string {
+    if (!confirm) return path;
+    return `${path}${path.includes("?") ? "&" : "?"}confirm_tracked_changes=1`;
+}
+
+function confirmHeaders(confirm: boolean): Record<string, string> {
+    return confirm ? { "X-Confirm-Tracked-Changes": "1" } : {};
 }
 
 // ---------------------------------------------------------------------------
@@ -699,28 +823,64 @@ export async function deleteDocument(documentId: string): Promise<void> {
 export async function getDocumentUrl(
     documentId: string,
     versionId?: string | null,
+    options?: { confirmTrackedChanges?: boolean },
 ): Promise<{ url: string; filename: string; version_id: string | null }> {
-    const qs = versionId ? `?version_id=${encodeURIComponent(versionId)}` : "";
-    return apiRequest(`/single-documents/${documentId}/url${qs}`);
+    const params = new URLSearchParams();
+    if (versionId) params.set("version_id", versionId);
+    if (options?.confirmTrackedChanges) params.set("confirm_tracked_changes", "1");
+    const qs = params.toString();
+    return apiRequest(
+        `/single-documents/${documentId}/url${qs ? `?${qs}` : ""}`,
+        { headers: confirmHeaders(!!options?.confirmTrackedChanges) },
+    );
 }
 
-export async function downloadDocumentsZip(
+/**
+ * No screen currently calls `/url`. This helper is the confirm flow for
+ * that route: 428 prompts, then retries with the confirm flag.
+ */
+export async function getDocumentUrlWithConfirm(
+    documentId: string,
+    versionId?: string | null,
+): Promise<{ url: string; filename: string; version_id: string | null }> {
+    return confirmOutboundRelease((confirm) =>
+        getDocumentUrl(documentId, versionId, {
+            confirmTrackedChanges: confirm,
+        }),
+    );
+}
+
+async function requestDocumentsZip(
     documentIds: string[],
+    confirm: boolean,
 ): Promise<Blob> {
     const authHeaders = await getAuthHeader();
-    const response = await fetch(`${API_BASE}/single-documents/download-zip`, {
+    const path = confirmQuery(
+        "/single-documents/download-zip",
+        confirm,
+    );
+    const response = await fetch(`${API_BASE}${path}`, {
         method: "POST",
         cache: "no-store",
         headers: {
             "Content-Type": "application/json",
             ...authHeaders,
+            ...confirmHeaders(confirm),
         },
         body: JSON.stringify({ document_ids: documentIds }),
     });
     if (!response.ok) {
-        throw await toApiError(response, "/single-documents/download-zip");
+        throw await toApiError(response, path);
     }
     return response.blob();
+}
+
+export async function downloadDocumentsZip(
+    documentIds: string[],
+): Promise<Blob> {
+    return confirmOutboundRelease((confirm) =>
+        requestDocumentsZip(documentIds, confirm),
+    );
 }
 
 function filenameFromContentDisposition(header: string | null): string | null {
@@ -737,19 +897,20 @@ function filenameFromContentDisposition(header: string | null): string | null {
     return plain?.[1] ?? null;
 }
 
-/** Stream a document through the export gate (scrub, then fail closed). */
-export async function downloadGatedDocument(
+async function requestGatedDocument(
     documentId: string,
-    versionId?: string | null,
+    versionId: string | null | undefined,
+    confirm: boolean,
 ): Promise<{ blob: Blob; filename: string }> {
     const authHeaders = await getAuthHeader();
-    const qs = versionId
-        ? `?version_id=${encodeURIComponent(versionId)}`
-        : "";
-    const path = `/single-documents/${documentId}/export${qs}`;
+    const params = new URLSearchParams();
+    if (versionId) params.set("version_id", versionId);
+    if (confirm) params.set("confirm_tracked_changes", "1");
+    const qs = params.toString();
+    const path = `/single-documents/${documentId}/export${qs ? `?${qs}` : ""}`;
     const response = await fetch(`${API_BASE}${path}`, {
         cache: "no-store",
-        headers: { ...authHeaders },
+        headers: { ...authHeaders, ...confirmHeaders(confirm) },
     });
     if (!response.ok) throw await toApiError(response, path);
     return {
@@ -758,6 +919,59 @@ export async function downloadGatedDocument(
             filenameFromContentDisposition(
                 response.headers.get("content-disposition"),
             ) ?? "document",
+    };
+}
+
+/** Stream a document through the export gate (scrub, then fail closed). */
+export async function downloadGatedDocument(
+    documentId: string,
+    versionId?: string | null,
+): Promise<{ blob: Blob; filename: string }> {
+    return confirmOutboundRelease((confirm) =>
+        requestGatedDocument(documentId, versionId, confirm),
+    );
+}
+
+export async function fetchDocxBytes(
+    documentId: string,
+    versionId?: string | null,
+    options?: { confirmTrackedChanges?: boolean },
+): Promise<ArrayBuffer> {
+    const authHeaders = await getAuthHeader();
+    const params = new URLSearchParams();
+    if (versionId) params.set("version_id", versionId);
+    if (options?.confirmTrackedChanges) {
+        params.set("confirm_tracked_changes", "1");
+    }
+    const qs = params.toString();
+    const path = `/single-documents/${documentId}/docx${qs ? `?${qs}` : ""}`;
+    const response = await fetch(`${API_BASE}${path}`, {
+        cache: "no-store",
+        headers: {
+            ...authHeaders,
+            ...confirmHeaders(!!options?.confirmTrackedChanges),
+        },
+    });
+    if (!response.ok) throw await toApiError(response, path);
+    return response.arrayBuffer();
+}
+
+/** `/docx` download used by the document panel. Confirms tracked changes. */
+export async function downloadDocxDocument(
+    documentId: string,
+    filename: string,
+    versionId?: string | null,
+): Promise<{ blob: Blob; filename: string }> {
+    const buffer = await confirmOutboundRelease((confirm) =>
+        fetchDocxBytes(documentId, versionId, {
+            confirmTrackedChanges: confirm,
+        }),
+    );
+    return {
+        blob: new Blob([buffer], {
+            type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        }),
+        filename,
     };
 }
 

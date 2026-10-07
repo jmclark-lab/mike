@@ -34,6 +34,12 @@ import {
 } from "../lib/documentVersions";
 import { ensureDocAccess } from "../lib/access";
 import { singleFileUpload } from "../lib/upload";
+import {
+  gateOutboundReview,
+  gateOutboundZipMembers,
+  sendOutboundReviewError,
+  trackedChangesConfirmed,
+} from "../lib/outboundReviewState";
 
 export const documentsRouter = Router();
 const ALLOWED_TYPES = new Set(["pdf", "docx", "doc"]);
@@ -283,6 +289,12 @@ documentsRouter.post("/download-zip", requireAuth, async (req, res) => {
   const zip = new JSZip();
 
   try {
+  const members: {
+    filename: string;
+    bytes: Buffer;
+    documentId: string;
+    versionId: string;
+  }[] = [];
   await Promise.all(
     docs.map(async (doc) => {
       const active = await loadActiveVersion(doc.id, db);
@@ -306,9 +318,21 @@ documentsRouter.post("/download-zip", requireAuth, async (req, res) => {
           : active.file_type === "doc"
             ? `${filename}.doc`
             : `${filename}.docx`;
-      zip.file(filename, await prepareOutboundFileBytes(bytes, gateName));
+      const payload = await prepareOutboundFileBytes(bytes, gateName);
+      members.push({
+        filename,
+        bytes: payload,
+        documentId: doc.id,
+        versionId: active.id,
+      });
     }),
   );
+  await gateOutboundZipMembers(members, {
+    confirmed: trackedChangesConfirmed(req),
+    userId,
+    route: "download-zip",
+  });
+  for (const member of members) zip.file(member.filename, member.bytes);
 
   const content = await zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" });
   res.setHeader("Content-Type", "application/zip");
@@ -316,6 +340,7 @@ documentsRouter.post("/download-zip", requireAuth, async (req, res) => {
   res.send(content);
   } catch (err) {
     if (attributionBlocked(res, err)) return;
+    if (sendOutboundReviewError(res, err)) return;
     throw err;
   }
 });
@@ -364,8 +389,18 @@ documentsRouter.get("/:documentId/url", requireAuth, async (req, res) => {
       downloadFilename,
       active.file_type,
     );
+    await gateOutboundReview(stored, downloadFilename, {
+      confirmed: trackedChangesConfirmed(req),
+      audit: {
+        userId,
+        documentId,
+        versionId: active.id,
+        route: "url",
+      },
+    });
   } catch (err) {
     if (attributionBlocked(res, err)) return;
+    if (sendOutboundReviewError(res, err)) return;
     throw err;
   }
   const url = await getSignedUrl(
@@ -438,6 +473,15 @@ documentsRouter.get("/:documentId/docx", requireAuth, async (req, res) => {
     // Same fail-closed check as /url. Do not stream a buffer that still
     // contains Mike / AI attribution after scrub.
     await bytesSafeForSignedUrl(payload, docxName, active.file_type);
+    await gateOutboundReview(payload, docxName, {
+      confirmed: trackedChangesConfirmed(req),
+      audit: {
+        userId,
+        documentId,
+        versionId: active.id,
+        route: "docx",
+      },
+    });
     res.setHeader(
       "Content-Type",
       "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -449,6 +493,7 @@ documentsRouter.get("/:documentId/docx", requireAuth, async (req, res) => {
     res.send(payload);
   } catch (err) {
     if (attributionBlocked(res, err)) return;
+    if (sendOutboundReviewError(res, err)) return;
     throw err;
   }
 });
@@ -510,6 +555,15 @@ documentsRouter.get("/:documentId/export", requireAuth, async (req, res) => {
       contentType = "application/msword";
     }
     const payload = await prepareOutboundFileBytes(bytes, gateName);
+    await gateOutboundReview(payload, gateName, {
+      confirmed: trackedChangesConfirmed(req),
+      audit: {
+        userId,
+        documentId,
+        versionId: active.id,
+        route: "export",
+      },
+    });
     res.setHeader("Content-Type", contentType);
     res.setHeader(
       "Content-Disposition",
@@ -518,6 +572,7 @@ documentsRouter.get("/:documentId/export", requireAuth, async (req, res) => {
     res.send(payload);
   } catch (err) {
     if (attributionBlocked(res, err)) return;
+    if (sendOutboundReviewError(res, err)) return;
     throw err;
   }
 });
