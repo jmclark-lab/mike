@@ -42,7 +42,7 @@ export const SETTINGS_MODELS: ModelOption[] = [
     ...MODELS,
     { id: "claude-haiku-4-5", label: "Claude Haiku 4.5", group: "Anthropic" },
     {
-        id: "gemini-3.1-flash-lite-preview",
+        id: "gemini-3.1-flash-lite",
         label: "Gemini 3.1 Flash Lite",
         group: "Google",
     },
