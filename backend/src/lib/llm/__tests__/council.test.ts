@@ -25,7 +25,7 @@ test("default council seats are four providers including Fable 5.1 and Grok 4.7"
   assert.equal(seats[1].provider, "openai");
   assert.equal(seats[1].model, "gpt-6-astra");
   assert.equal(seats[1].label, "GPT-6 Astra");
-  assert.equal(seats[2].model, "gemini-3.1-pro-preview");
+  assert.equal(seats[2].model, "gemini-4-argon");
   assert.equal(seats[3].provider, "xai");
   assert.equal(seats[3].model, "grok-4.7");
   assert.equal(seats[3].label, "Grok 4.7");
@@ -40,7 +40,7 @@ test("default council seats are four providers including Fable 5.1 and Grok 4.7"
   assert.deepEqual(COUNCIL_MEMBERS, [
     "claude-fable-5-1",
     "gpt-6-astra",
-    "gemini-3.1-pro-preview",
+    "gemini-4-argon",
     "grok-4.7",
   ]);
 });
@@ -117,7 +117,7 @@ test("an incomplete quorum throws and never invokes the judge", async () => {
       assert.ok(error instanceof CouncilQuorumError);
       assert.equal(error.respondedCount, 3);
       assert.equal(error.requiredCount, 4);
-      assert.match(error.message, /Gemini 3\.1 Pro Preview/);
+      assert.match(error.message, /Gemini 4 Argon/);
       return true;
     },
   );
@@ -193,7 +193,7 @@ test("council seats are configurable and the OpenAI seat always uses xhigh reaso
   assert.equal(seats[1].reasoningEffort, "xhigh");
   assert.equal(seats[0].maxTokens, 32000);
   assert.equal(seats[1].maxTokens, 32000);
-  assert.equal(seats[2].maxTokens, 6000);
+  assert.equal(seats[2].maxTokens, 16000);
   assert.equal(seats[2].label, "Gemini 3.5 Pro");
   assert.equal(seats[3].provider, "xai");
   assert.equal(seats[3].label, "Grok 4.7");
