@@ -39,9 +39,9 @@ const DEFAULT_COUNCIL_SEATS: readonly CouncilSeat[] = [
   },
   {
     provider: "google",
-    model: "gemini-3.1-pro-preview",
-    label: "Gemini 3.1 Pro Preview",
-    maxTokens: 6000,
+    model: "gemini-4-argon",
+    label: "Gemini 4 Argon",
+    maxTokens: 16000,
   },
   {
     provider: "xai",
