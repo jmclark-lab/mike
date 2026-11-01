@@ -33,6 +33,7 @@ interface UserProfile {
     mfaOnLogin: boolean;
     legalResearchUs: boolean;
     sponsorCiMode: boolean;
+    kimiSelectable?: boolean;
     apiKeys: ApiKeyState;
 }
 
@@ -134,6 +135,7 @@ export function UserProfileProvider({ children }: { children: ReactNode }) {
                 mfaOnLogin: false,
                 legalResearchUs: true,
                 sponsorCiMode: publicSponsorCiMode(),
+                kimiSelectable: false,
                 apiKeys: emptyApiKeys(),
             });
         } finally {

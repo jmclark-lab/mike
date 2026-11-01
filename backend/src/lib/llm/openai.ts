@@ -8,6 +8,10 @@ import type {
 } from "./types";
 import type { ReasoningEffort } from "./types";
 import { createRawLlmStreamRecorder, logRawLlmStream } from "./rawStreamLog";
+import {
+  buildOpenAIResponsesBody,
+  openAIPersistedReasoningContext,
+} from "./requestParams";
 
 const OPENAI_BASE_URL = "https://api.openai.com/v1";
 const MAX_OUTPUT_TOKENS = 16384;
@@ -241,29 +245,20 @@ async function createResponse(params: {
       Authorization: `Bearer ${params.client.apiKey}`,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({
-      model: params.model,
-      instructions: params.instructions || undefined,
-      input: params.input,
-      tools: params.tools?.length ? params.tools : undefined,
-      stream: params.stream,
-      max_output_tokens: params.maxTokens ?? MAX_OUTPUT_TOKENS,
-      previous_response_id: params.previousResponseId,
-      reasoning:
-        params.reasoningSummary ||
-        params.reasoningEffort ||
-        params.reasoningContext
-          ? {
-              ...(params.reasoningSummary ? { summary: "auto" } : {}),
-              ...(params.reasoningEffort
-                ? { effort: params.reasoningEffort }
-                : {}),
-              ...(params.reasoningContext
-                ? { context: params.reasoningContext }
-                : {}),
-            }
-          : undefined,
-    }),
+    body: JSON.stringify(
+      buildOpenAIResponsesBody({
+        model: params.model,
+        instructions: params.instructions,
+        input: params.input,
+        tools: params.tools,
+        stream: params.stream,
+        maxTokens: params.maxTokens ?? MAX_OUTPUT_TOKENS,
+        previousResponseId: params.previousResponseId,
+        reasoningSummary: params.reasoningSummary,
+        reasoningEffort: params.reasoningEffort,
+        reasoningContext: params.reasoningContext,
+      }),
+    ),
     signal: params.signal,
   });
 
@@ -471,12 +466,7 @@ export async function completeOpenAIText(
       maxTokens: params.maxTokens ?? 512,
       previousResponseId,
       reasoningEffort: params.reasoningEffort,
-      reasoningContext:
-        params.model.startsWith("gpt-5.6") ||
-        params.model === "gpt-6-astra" ||
-        params.model === "gpt-6-sol"
-          ? "all_turns"
-          : undefined,
+      reasoningContext: openAIPersistedReasoningContext(params.model),
       client: resolvedClient,
       // Council opinions can take longer than Railway's roughly five-minute
       // outbound time-to-first-byte ceiling. Streaming gets response headers and

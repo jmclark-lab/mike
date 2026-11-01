@@ -567,6 +567,7 @@ function TRChatInput({
     onModelChange,
     apiKeys,
     sponsorCiMode,
+    kimiEnabled,
     onHeightChange,
 }: {
     isLoading: boolean;
@@ -576,6 +577,7 @@ function TRChatInput({
     onModelChange: (id: string) => void;
     apiKeys?: ApiKeyState;
     sponsorCiMode?: boolean;
+    kimiEnabled?: boolean;
     onHeightChange: (height: number) => void;
 }) {
     const [value, setValue] = useState("");
@@ -661,6 +663,7 @@ function TRChatInput({
                         onChange={onModelChange}
                         apiKeys={apiKeys}
                         sponsorCiMode={sponsorCiMode}
+                        kimiEnabled={kimiEnabled}
                     />
                     <button
                         type="button"
@@ -1918,6 +1921,7 @@ export function TRChatPanel({
                 }
                 apiKeys={apiKeys}
                 sponsorCiMode={profile?.sponsorCiMode === true}
+                kimiEnabled={profile?.kimiSelectable === true}
                 onHeightChange={setInputHeight}
             />
 

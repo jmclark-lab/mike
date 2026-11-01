@@ -308,6 +308,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput(
                                 onChange={setModel}
                                 apiKeys={apiKeys}
                                 sponsorCiMode={profile?.sponsorCiMode === true}
+                                kimiEnabled={profile?.kimiSelectable === true}
                             />
                             <button
                                 type="button"

@@ -42,6 +42,7 @@ import {
 } from "../lib/userDataExport";
 import { rejectedOrganisationDetail } from "../lib/outboundAttribution";
 import { isSponsorCiMode } from "../lib/sponsorCiMode";
+import { isKimiK31ProEnabled } from "../lib/llm/models";
 
 export const userRouter = Router();
 
@@ -296,6 +297,7 @@ function serializeProfile(row: UserProfileRow, apiKeyStatus?: ApiKeyStatus) {
         mfaOnLogin: row.mfa_on_login === true,
         legalResearchUs: row.legal_research_us !== false,
         sponsorCiMode: isSponsorCiMode(),
+        kimiSelectable: isKimiK31ProEnabled(),
         ...(apiKeyStatus ? { apiKeyStatus } : {}),
     };
 }
