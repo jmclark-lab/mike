@@ -74,8 +74,13 @@ export default function ModelPreferencesPage() {
     };
 
     const sponsorCiMode = profile?.sponsorCiMode === true;
-    const titleOptions = visiblePickerModels(SETTINGS_MODELS, sponsorCiMode);
-    const tabularOptions = visiblePickerModels(MODELS, sponsorCiMode);
+    const kimiEnabled = profile?.kimiSelectable === true;
+    const titleOptions = visiblePickerModels(
+        SETTINGS_MODELS,
+        sponsorCiMode,
+        kimiEnabled,
+    );
+    const tabularOptions = visiblePickerModels(MODELS, sponsorCiMode, kimiEnabled);
 
     return (
         <div>

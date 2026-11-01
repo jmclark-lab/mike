@@ -1,7 +1,7 @@
 export interface ModelOption {
     id: string;
     label: string;
-    group: "Anthropic" | "Google" | "OpenAI" | "xAI";
+    group: "Anthropic" | "Google" | "OpenAI" | "xAI" | "Moonshot";
 }
 
 export const MODELS: ModelOption[] = [
@@ -24,6 +24,7 @@ export const MODELS: ModelOption[] = [
     { id: "gpt-5.5", label: "GPT-5.5", group: "OpenAI" },
     { id: "gpt-5.4", label: "GPT-5.4", group: "OpenAI" },
     { id: "grok-4.7", label: "Grok 4.7", group: "xAI" },
+    { id: "kimi-k3.1-pro", label: "Kimi K3.1 Pro", group: "Moonshot" },
 ];
 
 export const SETTINGS_MODELS: ModelOption[] = [
@@ -42,18 +43,30 @@ export const DEFAULT_MODEL_ID = "gemini-3-flash-preview";
 
 export const ALLOWED_MODEL_IDS = new Set(MODELS.map((m) => m.id));
 
-/** Sakana Fugu and DeepSeek. Kept out of the picker while Sponsor-CI mode is on. */
+export function isKimiPickerModelId(id: string): boolean {
+    return id.trim().toLowerCase().startsWith("kimi-");
+}
+
+/** Sakana Fugu, DeepSeek, and Kimi. Kept out of the picker while Sponsor-CI mode is on. */
 export function isFencedPickerModelId(id: string): boolean {
     const normalized = id.trim().toLowerCase();
-    return normalized.startsWith("fugu-") || normalized.startsWith("deepseek-");
+    return (
+        normalized.startsWith("fugu-") ||
+        normalized.startsWith("deepseek-") ||
+        normalized.startsWith("kimi-")
+    );
 }
 
 export function visiblePickerModels<T extends { id: string }>(
     models: readonly T[],
     sponsorCiMode: boolean,
+    kimiEnabled = false,
 ): T[] {
-    if (!sponsorCiMode) return [...models];
-    return models.filter((model) => !isFencedPickerModelId(model.id));
+    return models.filter((model) => {
+        if (isKimiPickerModelId(model.id) && !kimiEnabled) return false;
+        if (sponsorCiMode && isFencedPickerModelId(model.id)) return false;
+        return true;
+    });
 }
 
 export const GROUP_ORDER: ModelOption["group"][] = [
@@ -61,4 +74,5 @@ export const GROUP_ORDER: ModelOption["group"][] = [
     "Google",
     "OpenAI",
     "xAI",
+    "Moonshot",
 ];

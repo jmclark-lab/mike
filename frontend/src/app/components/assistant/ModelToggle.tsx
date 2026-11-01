@@ -12,7 +12,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { isModelAvailable } from "@/app/lib/modelAvailability";
 import type { ApiKeyState } from "@/app/lib/mikeApi";
-import { GROUP_ORDER, MODELS } from "./modelCatalog";
+import { GROUP_ORDER, MODELS, visiblePickerModels } from "./modelCatalog";
 
 export {
     ALLOWED_MODEL_IDS,
@@ -30,11 +30,19 @@ interface Props {
     onChange: (id: string) => void;
     apiKeys?: ApiKeyState;
     sponsorCiMode?: boolean;
+    /** Off unless the backend says Kimi K3.1 Pro is selectable. */
+    kimiEnabled?: boolean;
 }
 
-export function ModelToggle({ value, onChange, apiKeys, sponsorCiMode = false }: Props) {
+export function ModelToggle({
+    value,
+    onChange,
+    apiKeys,
+    sponsorCiMode = false,
+    kimiEnabled = false,
+}: Props) {
     const [isOpen, setIsOpen] = useState(false);
-    const models = visiblePickerModels(MODELS, sponsorCiMode);
+    const models = visiblePickerModels(MODELS, sponsorCiMode, kimiEnabled);
     const selected = models.find((m) => m.id === value);
     const selectedLabel = selected?.label ?? "Model";
     const selectedAvailable = apiKeys

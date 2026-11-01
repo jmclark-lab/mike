@@ -559,6 +559,8 @@ export interface UserProfile {
     legalResearchUs: boolean;
     /** True when the backend process has SPONSOR_CI_MODE on. */
     sponsorCiMode?: boolean;
+    /** True when Kimi K3.1 Pro is selectable. Off unless the backend flag is on. */
+    kimiSelectable?: boolean;
     apiKeyStatus: ApiKeyStatus;
 }
 

@@ -6,6 +6,7 @@ import {
   GEMINI_4_ARGON_TIMEOUT_MS,
   buildClaudeMessageParams,
   buildGeminiRequestConfig,
+  buildKimiChatBody,
   buildOpenAIResponsesBody,
   geminiClientTimeoutMs,
   openAIPersistedReasoningContext,
@@ -94,9 +95,7 @@ test("Gemini 4 Argon config has no sampling, cache, or sub-32k cap", () => {
     (config.maxOutputTokens as number) >= GEMINI_4_ARGON_MIN_OUTPUT_TOKENS,
   );
   assert.equal(config.maxOutputTokens, GEMINI_4_ARGON_MIN_OUTPUT_TOKENS);
-  const thinking = config.thinkingConfig as Record<string, unknown>;
-  assert.equal(thinking.thinkingBudget, undefined);
-  assert.equal(thinking.thinkingLevel, "low");
+  assert.equal(config.thinkingConfig, undefined);
   assert.equal(geminiClientTimeoutMs("gemini-4-argon"), GEMINI_4_ARGON_TIMEOUT_MS);
   assert.equal(geminiClientTimeoutMs("gemini-3.5-flash"), undefined);
 
@@ -164,6 +163,29 @@ test("gpt-6.1-sol drops sampling and logprobs and remaps none/minimal to low", (
     reasoningEffort: "minimal",
   });
   assert.equal((minimal.reasoning as { effort?: string }).effort, "low");
+});
+
+test("kimi-k3.1-pro chat body omits Moonshot's fixed sampling params", () => {
+  const body = buildKimiChatBody({
+    model: "kimi-k3.1-pro",
+    messages: [{ role: "user", content: "Hello" }],
+    maxTokens: 256,
+    stream: true,
+    temperature: 1,
+    top_p: 0.95,
+    n: 1,
+    presence_penalty: 0,
+    frequency_penalty: 0,
+  });
+  assertAbsent(body, [
+    "temperature",
+    "top_p",
+    "n",
+    "presence_penalty",
+    "frequency_penalty",
+  ]);
+  assert.equal(body.model, "kimi-k3.1-pro");
+  assert.equal(body.stream, true);
 });
 
 test("gpt-6-sol stays on the legacy body, including reasoning effort none", () => {

@@ -41,6 +41,9 @@ export const DEEPSEEK_MAIN_MODELS = [
     "deepseek-v4-flash",
     "deepseek-v4-pro",
 ] as const;
+// Moonshot OpenAI-compatible id. Selectable only while KIMI_K31_PRO_ENABLED
+// is on. Not a council seat. No API key is wired in this repo.
+export const MOONSHOT_MAIN_MODELS = ["kimi-k3.1-pro"] as const;
 
 // Default Sakana Fugu model.
 export const DEFAULT_SAKANA_MODEL = "fugu-ultra-20260615";
@@ -68,6 +71,7 @@ const ALL_MODELS = new Set<string>([
     ...OPENAI_MAIN_MODELS,
     ...GROK_MAIN_MODELS,
     ...DEEPSEEK_MAIN_MODELS,
+    ...MOONSHOT_MAIN_MODELS,
     ...CLAUDE_MID_MODELS,
     ...GEMINI_MID_MODELS,
     ...OPENAI_MID_MODELS,
@@ -88,7 +92,41 @@ export function providerForModel(model: string): Provider {
     if (model.startsWith("fugu-")) return "sakana";
     if (model.startsWith("grok-")) return "xai";
     if (model.startsWith("deepseek-")) return "deepseek";
+    if (model.startsWith("kimi-")) return "moonshot";
     throw new Error(`Unknown model id: ${model}`);
+}
+
+const KIMI_FLAG_TRUTHY = new Set(["1", "true", "yes", "on"]);
+
+/** Off unless KIMI_K31_PRO_ENABLED is an explicit truthy value. */
+export function isKimiK31ProEnabled(
+    env: NodeJS.ProcessEnv = process.env,
+): boolean {
+    const raw = env.KIMI_K31_PRO_ENABLED?.trim().toLowerCase() ?? "";
+    return KIMI_FLAG_TRUTHY.has(raw);
+}
+
+export function isKimiModelId(model: string): boolean {
+    return model.trim().toLowerCase().startsWith("kimi-");
+}
+
+/** Kimi ids are selectable only while their flag is on. Every other id is. */
+export function isSelectableModelId(
+    model: string,
+    env: NodeJS.ProcessEnv = process.env,
+): boolean {
+    if (isKimiModelId(model)) return isKimiK31ProEnabled(env);
+    return true;
+}
+
+export function assertKimiSelectable(
+    model: string,
+    env: NodeJS.ProcessEnv = process.env,
+): void {
+    if (isSelectableModelId(model, env)) return;
+    throw new Error(
+        `Kimi is disabled (${model.trim()}). KIMI_K31_PRO_ENABLED is off and no Moonshot API key is wired.`,
+    );
 }
 
 /** True for retired Sakana Fugu ids. Chat and council must not call these. */
@@ -101,7 +139,16 @@ export function resolveModel(
     fallback: string,
     env: NodeJS.ProcessEnv = process.env,
 ): string {
-    if (id && ALL_MODELS.has(id) && !isSponsorCiFencedModel(id, env)) return id;
-    if (isSponsorCiFencedModel(fallback, env)) return DEFAULT_MAIN_MODEL;
+    if (
+        id &&
+        ALL_MODELS.has(id) &&
+        !isSponsorCiFencedModel(id, env) &&
+        isSelectableModelId(id, env)
+    ) {
+        return id;
+    }
+    if (isSponsorCiFencedModel(fallback, env) || !isSelectableModelId(fallback, env)) {
+        return DEFAULT_MAIN_MODEL;
+    }
     return fallback;
 }

@@ -3,7 +3,13 @@ import { completeGeminiText, streamGemini } from "./gemini";
 import { completeOpenAIText, streamOpenAI } from "./openai";
 import { completeXaiText, streamXai } from "./xai";
 import { completeDeepSeekText, streamDeepSeek } from "./deepseek";
-import { isSakanaModelId, providerForModel } from "./models";
+import {
+    assertKimiSelectable,
+    isSakanaModelId,
+    isSelectableModelId,
+    providerForModel,
+} from "./models";
+import { completeMoonshotText, streamMoonshot } from "./moonshot";
 import {
     assertSponsorCiAllowsModel,
     isSponsorCiFencedModel,
@@ -44,6 +50,7 @@ export function resolveActiveModel(
     if (
         explicit &&
         !isSakanaModelId(explicit) &&
+        isSelectableModelId(explicit, env) &&
         sponsorCiAllowsChatModel(explicit, env)
     ) {
         return explicit;
@@ -78,7 +85,7 @@ export function resolveModelChain(
     const chain: string[] = [];
     const push = (m?: string | null) => {
         const v = m?.trim();
-        if (!v || isSakanaModelId(v) || chain.includes(v)) return;
+        if (!v || isSakanaModelId(v) || !isSelectableModelId(v, env) || chain.includes(v)) return;
         if (!sponsorCiAllowsChatModel(v, env)) return;
         chain.push(v);
     };
@@ -293,6 +300,7 @@ function rejectSakanaModel(model: string): void {
 function rejectUnavailableModel(model: string): void {
     rejectSakanaModel(model);
     assertSponsorCiAllowsModel(model);
+    assertKimiSelectable(model);
 }
 
 async function invokeStream(
@@ -306,6 +314,7 @@ async function invokeStream(
     if (provider === "openai") return streamOpenAI({ ...params, model });
     if (provider === "xai") return streamXai({ ...params, model });
     if (provider === "deepseek") return streamDeepSeek({ ...params, model });
+    if (provider === "moonshot") return streamMoonshot({ ...params, model });
     throw new Error(`No chat stream adapter for ${provider} model ${model}.`);
 }
 
@@ -326,6 +335,7 @@ async function invokeComplete(
     if (provider === "openai") return completeOpenAIText({ ...params, model });
     if (provider === "xai") return completeXaiText({ ...params, model });
     if (provider === "deepseek") return completeDeepSeekText({ ...params, model });
+    if (provider === "moonshot") return completeMoonshotText({ ...params, model });
     throw new Error(`No completion adapter for ${provider} model ${model}.`);
 }
 

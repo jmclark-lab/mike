@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { MODELS, SETTINGS_MODELS } from "./modelCatalog";
+import { MODELS, SETTINGS_MODELS, visiblePickerModels } from "./modelCatalog";
 
 function ids(group: string, models = MODELS): string[] {
   return models.filter((model) => model.group === group).map((model) => model.id);
@@ -27,7 +27,19 @@ test("ModelToggle list puts the verified frontier ids in picker order", () => {
     true,
   );
   assert.equal(
-    MODELS.some((model) => model.id.startsWith("kimi-")),
-    false,
+    MODELS.some((model) => model.id === "kimi-k3.1-pro"),
+    true,
   );
+  const shownByDefault = visiblePickerModels(MODELS, false).map((model) => model.id);
+  assert.equal(shownByDefault.includes("kimi-k3.1-pro"), false);
+  assert.equal(shownByDefault.includes("gemini-4-argon"), true);
+  const shownWhenEnabled = visiblePickerModels(MODELS, false, true).map(
+    (model) => model.id,
+  );
+  assert.equal(shownWhenEnabled.includes("kimi-k3.1-pro"), true);
+  const shownInSponsorCi = visiblePickerModels(MODELS, true, true).map(
+    (model) => model.id,
+  );
+  assert.equal(shownInSponsorCi.includes("kimi-k3.1-pro"), false);
+  assert.equal(shownInSponsorCi.includes("gemini-4-argon"), true);
 });

@@ -77,18 +77,19 @@ export function buildGeminiRequestConfig(params: {
 
   for (const key of GEMINI_FORBIDDEN_KEYS) delete config[key];
 
-  const thinking: GeminiThinkingConfig = {
-    ...((config.thinkingConfig as GeminiThinkingConfig | undefined) ?? {}),
-  };
-  delete thinking.thinkingBudget;
   if (params.enableThinking) {
+    const thinking: GeminiThinkingConfig = {
+      ...((config.thinkingConfig as GeminiThinkingConfig | undefined) ?? {}),
+    };
+    delete thinking.thinkingBudget;
     thinking.includeThoughts = true;
     thinking.thinkingLevel = thinking.thinkingLevel ?? "medium";
+    config.thinkingConfig = thinking;
   } else {
-    delete thinking.includeThoughts;
-    thinking.thinkingLevel = "low";
+    // thinking_budget is not sent. Omitting thinking_level leaves the API
+    // default (medium), including for the existing council seat.
+    delete config.thinkingConfig;
   }
-  config.thinkingConfig = thinking;
 
   const cap = params.streaming
     ? GEMINI_4_ARGON_STREAM_OUTPUT_TOKENS
@@ -229,6 +230,55 @@ export function buildOpenAIResponsesBody(params: {
   if (params.logprobs !== undefined) body.logprobs = params.logprobs;
   if (params.include) body.include = params.include;
   return sanitizeOpenAIResponsesBody(params.model, body);
+}
+
+const KIMI_OMITTED_KEYS = [
+  "temperature",
+  "top_p",
+  "n",
+  "presence_penalty",
+  "frequency_penalty",
+] as const;
+
+/**
+ * Moonshot chat-completions body. Kimi K3.1 Pro fixes sampling params and
+ * tells callers to omit them.
+ */
+export function buildKimiChatBody(params: {
+  model: string;
+  messages: unknown;
+  maxTokens?: number;
+  stream?: boolean;
+  tools?: unknown;
+  temperature?: number;
+  top_p?: number;
+  n?: number;
+  presence_penalty?: number;
+  frequency_penalty?: number;
+}): Record<string, unknown> {
+  const body: Record<string, unknown> = {
+    model: params.model,
+    messages: params.messages,
+    max_tokens: params.maxTokens,
+    stream: params.stream,
+    ...(params.tools ? { tools: params.tools } : {}),
+  };
+  if (params.temperature !== undefined) body.temperature = params.temperature;
+  if (params.top_p !== undefined) body.top_p = params.top_p;
+  if (params.n !== undefined) body.n = params.n;
+  if (params.presence_penalty !== undefined) {
+    body.presence_penalty = params.presence_penalty;
+  }
+  if (params.frequency_penalty !== undefined) {
+    body.frequency_penalty = params.frequency_penalty;
+  }
+  if (params.model.startsWith("kimi-")) {
+    for (const key of KIMI_OMITTED_KEYS) delete body[key];
+  }
+  for (const key of Object.keys(body)) {
+    if (body[key] === undefined) delete body[key];
+  }
+  return body;
 }
 
 export function sanitizeOpenAIResponsesBody(

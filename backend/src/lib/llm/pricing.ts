@@ -51,6 +51,13 @@ export const MODEL_TOKEN_PRICES: Record<string, readonly TokenPrice[]> = {
       note: "Prompts up to 100,000 tokens. Above that, input is $0.50 and output is $2.50 per 1M tokens.",
     },
   ],
+  "kimi-k3.1-pro": [
+    {
+      inputUsdPerMillion: 2,
+      outputUsdPerMillion: 10,
+      note: "Moonshot standard rate. Cache read is $0.20 / 1M. No key is wired for this model.",
+    },
+  ],
 };
 
 function utcDay(on: Date): string {

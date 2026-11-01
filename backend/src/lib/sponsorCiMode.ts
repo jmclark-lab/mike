@@ -19,8 +19,10 @@
  * production, unset stays off so local dev and unit tests are unchanged.
  *
  * While the mode is on:
- * - Sakana (`fugu-`) and DeepSeek cannot be selected, cannot sit on the
- *   council, and cannot be the judge, even when an API key is configured.
+ * - Sakana (`fugu-`), DeepSeek, and Kimi (`kimi-`) cannot be selected,
+ *   cannot sit on the council, and cannot be the judge, even when an API
+ *   key is configured. Kimi also stays off unless `KIMI_K31_PRO_ENABLED`
+ *   is set; that flag defaults off and does not wire a Moonshot key.
  * - Council seats and the judge stay on the locked frontier GA ids already
  *   on main. Chat hops that are not those frontier ids are dropped, and the
  *   default Fable → Opus 5.5 → Astra chain is kept.
@@ -101,10 +103,10 @@ export function sponsorCiBootWarning(
   return "SPONSOR_CI_MODE is explicitly off in production but SPONSOR_CI_CHANGE_CONTROL_NOTE is empty. Refusing OFF; Sponsor-CI fencing stays on. The process still boots.";
 }
 
-/** Sakana Fugu and DeepSeek ids. Matched even when Sponsor-CI mode is off. */
+/** Sakana Fugu, DeepSeek, and Kimi ids. Matched even when Sponsor-CI mode is off. */
 export function isFencedModelId(model: string): boolean {
   const id = model.trim().toLowerCase();
-  return id.startsWith("fugu-") || id.startsWith("deepseek-");
+  return id.startsWith("fugu-") || id.startsWith("deepseek-") || id.startsWith("kimi-");
 }
 
 export function isSponsorCiFencedModel(
@@ -142,6 +144,6 @@ export function assertSponsorCiAllowsModel(
 ): void {
   if (!isSponsorCiFencedModel(model, env)) return;
   throw new Error(
-    `Sponsor-CI mode refuses ${model.trim()}. Sakana and DeepSeek cannot be used for chat, council, or judge, even when an API key is configured.`,
+    `Sponsor-CI mode refuses ${model.trim()}. Sakana, DeepSeek, and Kimi cannot be used for chat, council, or judge, even when an API key is configured.`,
   );
 }
