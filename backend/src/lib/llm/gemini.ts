@@ -1,4 +1,8 @@
 import { GoogleGenAI } from "@google/genai";
+import {
+  buildGeminiRequestConfig,
+  geminiClientTimeoutMs,
+} from "./requestParams";
 import type {
   StreamChatParams,
   StreamChatResult,
@@ -39,8 +43,12 @@ function apiKey(override?: string | null): string {
   return key;
 }
 
-function client(override?: string | null): GoogleGenAI {
-  return new GoogleGenAI({ apiKey: apiKey(override) });
+function client(override?: string | null, model?: string): GoogleGenAI {
+  const timeout = model ? geminiClientTimeoutMs(model) : undefined;
+  return new GoogleGenAI({
+    apiKey: apiKey(override),
+    ...(timeout ? { httpOptions: { timeout } } : {}),
+  });
 }
 
 function toNativeContents(
@@ -170,7 +178,7 @@ export async function streamGemini(
     enableThinking,
   } = params;
   const maxIter = params.maxIterations ?? 10;
-  const ai = client(apiKeys?.gemini);
+  const ai = client(apiKeys?.gemini, model);
   const functionDeclarations = toGeminiTools(tools);
 
   const contents: GeminiContent[] = toNativeContents(params.messages);
@@ -188,19 +196,19 @@ export async function streamGemini(
         stream = await ai.models.generateContentStream({
           model,
           contents: contents as never,
-          config: {
+          config: buildGeminiRequestConfig({
+            model,
+            streaming: true,
             systemInstruction: systemPrompt,
             tools: functionDeclarations.length
               ? [{ functionDeclarations } as never]
               : undefined,
-            // When enabled, ask Gemini to surface thought summaries.
-            // When disabled, explicitly zero the thinking budget so the
-            // model skips thinking entirely (saves tokens and latency
-            // for bulk extraction jobs).
-            thinkingConfig: enableThinking
-              ? { includeThoughts: true }
-              : { thinkingBudget: 0 },
-          },
+            // Other Gemini models still use thinkingBudget 0 to skip
+            // thinking. Gemini 4 Argon swaps that for thinkingLevel and
+            // a max output of at least 32,768.
+            enableThinking,
+            applyThinkingConfig: true,
+          }) as never,
         });
       } catch (error) {
         throw new Error(geminiErrorMessage(error));
@@ -332,17 +340,23 @@ export async function completeGeminiText(params: {
   model: string;
   systemPrompt?: string;
   user: string;
+  maxTokens?: number;
   apiKeys?: { gemini?: string | null };
 }): Promise<string> {
-  const ai = client(params.apiKeys?.gemini);
+  const ai = client(params.apiKeys?.gemini, params.model);
   let resp: Awaited<ReturnType<typeof ai.models.generateContent>>;
   try {
+    const config = buildGeminiRequestConfig({
+      model: params.model,
+      streaming: false,
+      systemInstruction: params.systemPrompt,
+      maxTokens: params.maxTokens,
+      applyThinkingConfig: params.model === "gemini-4-argon",
+    });
     resp = await ai.models.generateContent({
       model: params.model,
       contents: [{ role: "user", parts: [{ text: params.user }] }],
-      config: params.systemPrompt
-        ? { systemInstruction: params.systemPrompt }
-        : undefined,
+      ...(Object.keys(config).length ? { config: config as never } : {}),
     });
   } catch (error) {
     throw new Error(geminiErrorMessage(error));

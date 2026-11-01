@@ -12,15 +12,18 @@ export const CLAUDE_MAIN_MODELS = [
     "claude-opus-5",
     "claude-opus-4-8",
     "claude-opus-4-7",
+    "claude-sonnet-5-5",
     "claude-sonnet-4-6",
 ] as const;
 export const GEMINI_MAIN_MODELS = [
+    "gemini-4-argon",
     "gemini-3.5-flash",
     "gemini-3.1-pro-preview",
     "gemini-3-flash-preview",
 ] as const;
 export const OPENAI_MAIN_MODELS = [
     "gpt-6-astra",
+    "gpt-6.1-sol",
     "gpt-6-sol",
     "gpt-5.6-sol",
     "gpt-5.5",
@@ -43,13 +46,15 @@ export const DEEPSEEK_MAIN_MODELS = [
 export const DEFAULT_SAKANA_MODEL = "fugu-ultra-20260615";
 
 // Mid-tier (used for tabular review) — user picks one in account settings.
-export const CLAUDE_MID_MODELS = ["claude-sonnet-4-6"] as const;
+export const CLAUDE_MID_MODELS = ["claude-sonnet-5-5"] as const;
 export const GEMINI_MID_MODELS = ["gemini-3.5-flash", "gemini-3-flash-preview"] as const;
 export const OPENAI_MID_MODELS = ["gpt-5.4"] as const;
 
 // Low-tier (used for title generation, lightweight extractions) — user picks
 // one in account settings.
-export const CLAUDE_LOW_MODELS = ["claude-haiku-4-5"] as const;
+export const CLAUDE_LOW_MODELS = ["claude-haiku-5-5"] as const;
+/** Previous low-tier id. Kept resolvable so a saved account preference still loads. */
+export const CLAUDE_LEGACY_LOW_MODELS = ["claude-haiku-4-5"] as const;
 export const GEMINI_LOW_MODELS = ["gemini-3.1-flash-lite"] as const;
 export const OPENAI_LOW_MODELS = ["gpt-5.4-lite"] as const;
 
@@ -67,6 +72,7 @@ const ALL_MODELS = new Set<string>([
     ...GEMINI_MID_MODELS,
     ...OPENAI_MID_MODELS,
     ...CLAUDE_LOW_MODELS,
+    ...CLAUDE_LEGACY_LOW_MODELS,
     ...GEMINI_LOW_MODELS,
     ...OPENAI_LOW_MODELS,
 ]);

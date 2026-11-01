@@ -8,6 +8,7 @@ import type {
 } from "./types";
 import { toClaudeTools } from "./tools";
 import { createRawLlmStreamRecorder, logRawLlmStream } from "./rawStreamLog";
+import { buildClaudeMessageParams } from "./requestParams";
 
 type ContentBlock =
   | { type: "text"; text: string }
@@ -157,25 +158,20 @@ export async function streamClaude(
   try {
     for (let iter = 0; iter < maxIter; iter++) {
       throwIfAborted(params.abortSignal);
-      const stream = anthropic.messages.stream({
-        model,
-        system: systemPrompt,
-        messages: messages as Anthropic.MessageParam[],
-        tools: claudeTools.length
-          ? (claudeTools as unknown as Tool[])
-          : undefined,
-        max_tokens: resolveClaudeChatMaxTokens(),
-        // Claude 4.x models require `thinking.type: "adaptive"` and
-        // drive effort via `output_config.effort` rather than a fixed
-        // token budget. We only opt in when the caller requested it.
-        ...(enableThinking
-          ? ({
-              thinking: { type: "adaptive" },
-              output_config: { effort: "high" },
-            } as unknown as Record<string, unknown>)
-          : {}),
-        // Extended thinking requires temperature to be default (omitted).
-      });
+      const stream = anthropic.messages.stream(
+        buildClaudeMessageParams({
+          model,
+          system: systemPrompt,
+          messages: messages as Anthropic.MessageParam[],
+          tools: claudeTools.length
+            ? (claudeTools as unknown as Tool[])
+            : undefined,
+          max_tokens: resolveClaudeChatMaxTokens(),
+          // Adaptive thinking plus output_config.effort. Sonnet 5.5 and
+          // Haiku 5.5 reject temperature, top_p, top_k, and budget_tokens.
+          enableThinking,
+        }) as unknown as Anthropic.MessageCreateParams,
+      );
 
       let sawThinking = false;
       let streamFailureMessage: string | null = null;
@@ -333,12 +329,14 @@ export async function completeClaudeText(params: {
   // the same text-block extraction / empty diagnostics as before.
   let resp: Anthropic.Message;
   try {
-    const stream = anthropic.messages.stream({
-      model: params.model,
-      max_tokens: maxTokens,
-      system: params.systemPrompt,
-      messages: [{ role: "user", content: params.user }],
-    });
+    const stream = anthropic.messages.stream(
+      buildClaudeMessageParams({
+        model: params.model,
+        max_tokens: maxTokens,
+        system: params.systemPrompt,
+        messages: [{ role: "user", content: params.user }],
+      }) as unknown as Anthropic.MessageCreateParams,
+    );
     resp = await stream.finalMessage();
   } catch (error) {
     throw new Error(claudeErrorMessage(error));
