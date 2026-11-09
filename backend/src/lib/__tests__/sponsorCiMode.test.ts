@@ -26,6 +26,7 @@ import {
   assertSponsorCiAllowsModel,
   isFencedModelId,
   isSponsorCiMode,
+  SPONSOR_CI_FRONTIER_MODELS,
   resolveSponsorCiMode,
   sponsorCiBootWarning,
 } from "../sponsorCiMode";
@@ -342,6 +343,7 @@ test("Sponsor-CI fences Sakana and DeepSeek ids even when a key is present", () 
   assert.equal(isFencedModelId("deepseek-v4-pro"), true);
   assert.equal(isFencedModelId("fugu-ultra-20260615"), true);
   assert.equal(isFencedModelId("claude-fable-5-1"), false);
+  assert.equal(isFencedModelId("claude-fable-5-2"), false);
   assert.throws(
     () => assertSponsorCiAllowsModel("deepseek-v4-pro", env),
     /Sponsor-CI mode refuses deepseek-v4-pro/,
@@ -368,7 +370,13 @@ test("Sponsor-CI fences Sakana and DeepSeek ids even when a key is present", () 
     resolveModel("claude-sonnet-4-6", DEFAULT_MAIN_MODEL, env),
     "claude-sonnet-4-6",
   );
-  assert.equal(DEFAULT_MAIN_MODEL, "claude-fable-5-1");
+  assert.equal(DEFAULT_MAIN_MODEL, "claude-fable-5-2");
+});
+
+test("Sponsor-CI frontier allowlist includes Fable 5.2 and keeps 5.1", () => {
+  assert.equal(SPONSOR_CI_FRONTIER_MODELS.includes("claude-fable-5-2"), true);
+  assert.equal(SPONSOR_CI_FRONTIER_MODELS.includes("claude-fable-5-1"), true);
+  assert.equal(SPONSOR_CI_FRONTIER_MODELS.includes("claude-fable-5"), true);
 });
 
 test("Sponsor-CI chat chain stays on Fable, Opus 5.5, and Astra", () => {
@@ -378,14 +386,14 @@ test("Sponsor-CI chat chain stays on Fable, Opus 5.5, and Astra", () => {
       LLM_MODEL: "deepseek-v4-pro",
       LLM_FALLBACK_MODEL: "fugu-ultra-20260615,claude-sonnet-4-6",
     }),
-    ["claude-fable-5-1", "claude-opus-5-5", "gpt-6-astra"],
+    ["claude-fable-5-2", "claude-opus-5-5", "gpt-6-astra"],
   );
   const withGrok = resolveModelChain({
     ...sponsorOn,
     LLM_MODEL: "grok-4.7",
   });
   assert.equal(withGrok[0], "grok-4.7");
-  assert.equal(withGrok.includes("claude-fable-5-1"), true);
+  assert.equal(withGrok.includes("claude-fable-5-2"), true);
   assert.equal(withGrok.includes("claude-opus-5-5"), true);
   assert.equal(withGrok.includes("gpt-6-astra"), true);
   assert.equal(

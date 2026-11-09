@@ -48,6 +48,7 @@ export type SponsorCiModeDecision = {
 export const SPONSOR_CI_FRONTIER_MODELS = [
   "claude-fable-5",
   "claude-fable-5-1",
+  "claude-fable-5-2",
   "claude-opus-5-5",
   "gpt-6-astra",
   "gemini-3.1-pro-preview",

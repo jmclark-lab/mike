@@ -34,23 +34,23 @@ function restoreRoutingEnv() {
 afterEach(restoreRoutingEnv);
 
 describe("LLM routing chain", { concurrency: false }, () => {
-  test("default chain is Fable 5.1 → Opus 5.5 → GPT-6 Astra with no Fugu hop", () => {
+  test("default chain is Fable 5.2 → Opus 5.5 → GPT-6 Astra with no Fugu hop", () => {
     clearRoutingEnv();
     assert.deepEqual(resolveModelChain(), [
-      "claude-fable-5-1",
+      "claude-fable-5-2",
       "claude-opus-5-5",
       "gpt-6-astra",
     ]);
-    assert.equal(resolveActiveModel(), "claude-fable-5-1");
+    assert.equal(resolveActiveModel(), "claude-fable-5-2");
   });
 
   test("SAKANA_MODEL does not become primary or enter the default chain", () => {
     clearRoutingEnv();
     process.env.SAKANA_MODEL = "fugu-ultra-20260615";
     const chain = resolveModelChain();
-    assert.equal(resolveActiveModel(), "claude-fable-5-1");
+    assert.equal(resolveActiveModel(), "claude-fable-5-2");
     assert.deepEqual(chain, [
-      "claude-fable-5-1",
+      "claude-fable-5-2",
       "claude-opus-5-5",
       "gpt-6-astra",
     ]);
@@ -64,9 +64,9 @@ describe("LLM routing chain", { concurrency: false }, () => {
     clearRoutingEnv();
     process.env.LLM_PROVIDER = "sakana";
     process.env.SAKANA_MODEL = "fugu-ultra-20260615";
-    assert.equal(resolveActiveModel(), "claude-fable-5-1");
+    assert.equal(resolveActiveModel(), "claude-fable-5-2");
     assert.deepEqual(resolveModelChain(), [
-      "claude-fable-5-1",
+      "claude-fable-5-2",
       "claude-opus-5-5",
       "gpt-6-astra",
     ]);
@@ -75,15 +75,15 @@ describe("LLM routing chain", { concurrency: false }, () => {
   test("LLM_PROVIDER=anthropic does not change the Fable default", () => {
     clearRoutingEnv();
     process.env.LLM_PROVIDER = "anthropic";
-    assert.equal(resolveActiveModel(), "claude-fable-5-1");
+    assert.equal(resolveActiveModel(), "claude-fable-5-2");
   });
 
   test("LLM_MODEL naming Fugu is ignored and cannot become primary", () => {
     clearRoutingEnv();
     process.env.LLM_MODEL = "fugu-ultra-20260615";
-    assert.equal(resolveActiveModel(), "claude-fable-5-1");
+    assert.equal(resolveActiveModel(), "claude-fable-5-2");
     assert.deepEqual(resolveModelChain(), [
-      "claude-fable-5-1",
+      "claude-fable-5-2",
       "claude-opus-5-5",
       "gpt-6-astra",
     ]);
@@ -115,7 +115,18 @@ describe("LLM routing chain", { concurrency: false }, () => {
   test("LLM_FALLBACK_MODEL dedupes the primary if it is repeated", () => {
     clearRoutingEnv();
     process.env.LLM_FALLBACK_MODEL =
-      "claude-fable-5-1,claude-opus-5-5,gpt-6-astra";
+      "claude-fable-5-2,claude-opus-5-5,gpt-6-astra";
+    assert.deepEqual(resolveModelChain(), [
+      "claude-fable-5-2",
+      "claude-opus-5-5",
+      "gpt-6-astra",
+    ]);
+  });
+
+  test("LLM_MODEL=claude-fable-5-1 still resolves for rollback", () => {
+    clearRoutingEnv();
+    process.env.LLM_MODEL = "claude-fable-5-1";
+    assert.equal(resolveActiveModel(), "claude-fable-5-1");
     assert.deepEqual(resolveModelChain(), [
       "claude-fable-5-1",
       "claude-opus-5-5",

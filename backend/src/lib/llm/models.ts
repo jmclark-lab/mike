@@ -6,6 +6,7 @@ import { isSponsorCiFencedModel } from "../sponsorCiMode";
 // ---------------------------------------------------------------------------
 // Main-chat tier (top-end) — user picks one of these per message.
 export const CLAUDE_MAIN_MODELS = [
+    "claude-fable-5-2",
     "claude-fable-5-1",
     "claude-fable-5",
     "claude-opus-5-5",
@@ -61,7 +62,7 @@ export const CLAUDE_LEGACY_LOW_MODELS = ["claude-haiku-4-5"] as const;
 export const GEMINI_LOW_MODELS = ["gemini-3.1-flash-lite"] as const;
 export const OPENAI_LOW_MODELS = ["gpt-5.4-lite"] as const;
 
-export const DEFAULT_MAIN_MODEL = "claude-fable-5-1";
+export const DEFAULT_MAIN_MODEL = "claude-fable-5-2";
 export const DEFAULT_TITLE_MODEL = "gemini-3.1-flash-lite";
 export const DEFAULT_TABULAR_MODEL = "gemini-3-flash-preview";
 

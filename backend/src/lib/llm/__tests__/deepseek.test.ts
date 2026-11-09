@@ -62,7 +62,7 @@ describe("DeepSeek selectable-only wiring", { concurrency: false }, () => {
       resolveModel("deepseek-v4-pro", DEFAULT_MAIN_MODEL),
       "deepseek-v4-pro",
     );
-    assert.equal(DEFAULT_MAIN_MODEL, "claude-fable-5-1");
+    assert.equal(DEFAULT_MAIN_MODEL, "claude-fable-5-2");
   });
 
   test("DeepSeek is not in the default chat fallback chain", () => {
@@ -76,7 +76,7 @@ describe("DeepSeek selectable-only wiring", { concurrency: false }, () => {
       false,
     );
     assert.deepEqual(chain, [
-      "claude-fable-5-1",
+      "claude-fable-5-2",
       "claude-opus-5-5",
       "gpt-6-astra",
     ]);

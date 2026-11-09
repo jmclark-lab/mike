@@ -14,14 +14,27 @@ import {
 import { COUNCIL_JUDGE, COUNCIL_MEMBERS } from "../council";
 import { tokenPriceForModel } from "../pricing";
 
-test("CLAUDE_MAIN_MODELS lists Fable 5.1 first and keeps Fable 5 selectable", () => {
-  assert.equal(CLAUDE_MAIN_MODELS[0], "claude-fable-5-1");
+test("CLAUDE_MAIN_MODELS lists Fable 5.2 first and keeps Fable 5.1 and Fable 5 selectable", () => {
+  assert.equal(CLAUDE_MAIN_MODELS[0], "claude-fable-5-2");
+  assert.equal(CLAUDE_MAIN_MODELS.includes("claude-fable-5-1"), true);
   assert.equal(CLAUDE_MAIN_MODELS.includes("claude-fable-5"), true);
+  assert.equal(
+    resolveModel("claude-fable-5-2", DEFAULT_MAIN_MODEL),
+    "claude-fable-5-2",
+  );
   assert.equal(
     resolveModel("claude-fable-5-1", DEFAULT_MAIN_MODEL),
     "claude-fable-5-1",
   );
-  assert.equal(DEFAULT_MAIN_MODEL, "claude-fable-5-1");
+  assert.equal(DEFAULT_MAIN_MODEL, "claude-fable-5-2");
+  assert.equal(
+    tokenPriceForModel("claude-fable-5-2")?.inputUsdPerMillion,
+    8,
+  );
+  assert.equal(
+    tokenPriceForModel("claude-fable-5-2")?.outputUsdPerMillion,
+    40,
+  );
 });
 
 test("CLAUDE_MAIN_MODELS lists Opus 5.5 above Opus 5 and Opus 4.8", () => {
@@ -36,7 +49,7 @@ test("CLAUDE_MAIN_MODELS lists Opus 5.5 above Opus 5 and Opus 4.8", () => {
     "claude-opus-5-5",
   );
   assert.equal(resolveModel("claude-opus-5", DEFAULT_MAIN_MODEL), "claude-opus-5");
-  assert.equal(DEFAULT_MAIN_MODEL, "claude-fable-5-1");
+  assert.equal(DEFAULT_MAIN_MODEL, "claude-fable-5-2");
 });
 
 test("title/low tier uses stable gemini-3.1-flash-lite; retired preview id falls back", () => {
@@ -86,10 +99,10 @@ test("frontier refresh adds verified selectable ids and moves Claude tiers", () 
     "claude-haiku-4-5",
   );
 
-  assert.equal(CLAUDE_MAIN_MODELS[0], "claude-fable-5-1");
-  assert.equal(DEFAULT_MAIN_MODEL, "claude-fable-5-1");
+  assert.equal(CLAUDE_MAIN_MODELS[0], "claude-fable-5-2");
+  assert.equal(DEFAULT_MAIN_MODEL, "claude-fable-5-2");
   assert.deepEqual(COUNCIL_MEMBERS, [
-    "claude-fable-5-1",
+    "claude-fable-5-2",
     "gpt-6-astra",
     "gemini-4-argon",
     "grok-4.7",
