@@ -29,12 +29,12 @@ import { isGroundingEnabled, buildGroundingContext } from "../hybridSearch";
 export * from "./types";
 export * from "./models";
 
-const DEFAULT_FABLE_MODEL = "claude-fable-5-1";
-// Stable Anthropic fallback after Fable 5.1.
+const DEFAULT_FABLE_MODEL = "claude-fable-5-2";
+// Stable Anthropic fallback after Fable 5.2.
 const INTERIM_STABLE_MODEL = "claude-opus-5-5";
 // Final tail fallback: OpenAI GPT-6 Astra, the strongest commercial OpenAI
 // model. Sol and Luna stay selectable and are not default hops. Only reached
-// if Fable 5.1 and Opus 5.5 both fail.
+// if Fable 5.2 and Opus 5.5 both fail.
 const FINAL_OPENAI_FALLBACK = "gpt-6-astra";
 
 /**
@@ -68,7 +68,7 @@ function sponsorCiAllowsChatModel(
 
 /**
  * Ordered model fallback chain. Default is a three-way chain with no Sakana hop:
- *   1. Fable 5.1    (primary)    — claude-fable-5-1
+ *   1. Fable 5.2    (primary)    — claude-fable-5-2
  *   2. Opus 5.5     (fallback)   — claude-opus-5-5
  *   3. GPT-6 Astra  (final net)  — gpt-6-astra
  *
@@ -76,7 +76,7 @@ function sponsorCiAllowsChatModel(
  * (comma-separated model ids, tried in the order given). Fugu / Sakana ids
  * are dropped from both, including explicit overrides. `SAKANA_MODEL` never
  * composes this chain. While Sponsor-CI mode is on, DeepSeek and other
- * non-frontier ids are dropped, and Fable 5.1, Opus 5.5, and Astra stay
+ * non-frontier ids are dropped, and Fable 5.2, Opus 5.5, and Astra stay
  * on the chain.
  */
 export function resolveModelChain(

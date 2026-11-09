@@ -17,6 +17,13 @@ export type TokenPrice = {
 };
 
 export const MODEL_TOKEN_PRICES: Record<string, readonly TokenPrice[]> = {
+  "claude-fable-5-2": [
+    {
+      inputUsdPerMillion: 8,
+      outputUsdPerMillion: 40,
+      note: "Cache reads 0.025x per Anthropic Fable family pricing.",
+    },
+  ],
   "gemini-4-argon": [
     {
       inputUsdPerMillion: 2,

@@ -51,7 +51,7 @@ describe("xAI Grok selectable-only wiring", { concurrency: false }, () => {
     assert.deepEqual([...GROK_MAIN_MODELS], ["grok-4.7"]);
     assert.equal(providerForModel("grok-4.7"), "xai");
     assert.equal(resolveModel("grok-4.7", DEFAULT_MAIN_MODEL), "grok-4.7");
-    assert.equal(DEFAULT_MAIN_MODEL, "claude-fable-5-1");
+    assert.equal(DEFAULT_MAIN_MODEL, "claude-fable-5-2");
   });
 
   test("Grok is not in the default chat fallback chain", () => {
@@ -65,7 +65,7 @@ describe("xAI Grok selectable-only wiring", { concurrency: false }, () => {
       false,
     );
     assert.deepEqual(chain, [
-      "claude-fable-5-1",
+      "claude-fable-5-2",
       "claude-opus-5-5",
       "gpt-6-astra",
     ]);
@@ -75,7 +75,7 @@ describe("xAI Grok selectable-only wiring", { concurrency: false }, () => {
     assert.equal(COUNCIL_MEMBERS.includes("grok-4.7"), true);
     assert.equal(COUNCIL_MEMBERS.includes("grok-4.6"), false);
     assert.equal(COUNCIL_MEMBERS.includes("gpt-6-astra"), true);
-    assert.equal(COUNCIL_MEMBERS.includes("claude-fable-5-1"), true);
+    assert.equal(COUNCIL_MEMBERS.includes("claude-fable-5-2"), true);
     assert.equal(COUNCIL_MEMBERS.length, 4);
     assert.equal(COUNCIL_MEMBERS.at(-1), "grok-4.7");
   });

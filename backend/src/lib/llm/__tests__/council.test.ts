@@ -17,11 +17,11 @@ const noDelay = {
   sleepFn: async () => undefined,
 };
 
-test("default council seats are four providers including Fable 5.1 and Grok 4.7", () => {
+test("default council seats are four providers including Fable 5.2 and Grok 4.7", () => {
   const seats = resolveCouncilSeats({});
   assert.equal(seats.length, 4);
-  assert.equal(seats[0].model, "claude-fable-5-1");
-  assert.equal(seats[0].label, "Fable 5.1");
+  assert.equal(seats[0].model, "claude-fable-5-2");
+  assert.equal(seats[0].label, "Fable 5.2");
   assert.equal(seats[1].provider, "openai");
   assert.equal(seats[1].model, "gpt-6-astra");
   assert.equal(seats[1].label, "GPT-6 Astra");
@@ -38,7 +38,7 @@ test("default council seats are four providers including Fable 5.1 and Grok 4.7"
   );
   assert.equal(COUNCIL_MEMBERS.length, 4);
   assert.deepEqual(COUNCIL_MEMBERS, [
-    "claude-fable-5-1",
+    "claude-fable-5-2",
     "gpt-6-astra",
     "gemini-4-argon",
     "grok-4.7",
@@ -205,7 +205,7 @@ test("the Anthropic council call receives the raised token budget", async () => 
   await conveneCouncilWithCompleter(
     { question: "Review this matter." },
     async ({ model, maxTokens }) => {
-      if (model === "claude-fable-5-1" || model === "gpt-6-astra") {
+      if (model === "claude-fable-5-2" || model === "gpt-6-astra") {
         observed.set(model, maxTokens);
       }
       return model === COUNCIL_JUDGE ? "Judge answer" : `Answer from ${model}`;
@@ -213,7 +213,7 @@ test("the Anthropic council call receives the raised token budget", async () => 
     noDelay,
   );
 
-  assert.equal(observed.get("claude-fable-5-1"), 32000);
+  assert.equal(observed.get("claude-fable-5-2"), 32000);
   assert.equal(observed.get("gpt-6-astra"), 16384);
   assert.equal(observed.has("fugu-ultra-20260615"), false);
 });
@@ -313,14 +313,14 @@ test("min_quorum=3 with one empty seat still judges the successful opinions", as
   assert.equal(invoked.filter((model) => model === empty).length, 2);
   assert.equal(invoked.includes(COUNCIL_JUDGE), true);
   assert.match(result.finalAnswer, /3\/4 opinions received/);
-  assert.match(result.finalAnswer, /failed: Fable 5\.1/);
+  assert.match(result.finalAnswer, /failed: Fable 5\.2/);
   assert.match(result.finalAnswer, /reconciled by Opus 5\.5/);
   assert.doesNotMatch(result.finalAnswer, /mandatory 4\/4/);
   assert.match(judgeUser, /FAILED SEATS/);
-  assert.match(judgeUser, /Fable 5\.1/);
+  assert.match(judgeUser, /Fable 5\.2/);
   assert.match(judgeUser, /Answer from gpt-6-astra/);
   assert.doesNotMatch(judgeUser, /fugu-/);
-  assert.doesNotMatch(judgeUser, /Answer from claude-fable-5-1/);
+  assert.doesNotMatch(judgeUser, /Answer from claude-fable-5-2/);
   assert.match(judgeSystem, /do not invent/i);
   assert.equal(
     result.members.find((member) => member.model === empty)?.ok,

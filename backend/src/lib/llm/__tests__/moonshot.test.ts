@@ -79,7 +79,7 @@ describe("Kimi K3.1 Pro selectable-only wiring", { concurrency: false }, () => {
       "kimi-k3.1-pro",
     );
     assert.deepEqual(resolveModelChain(env), [
-      "claude-fable-5-1",
+      "claude-fable-5-2",
       "claude-opus-5-5",
       "gpt-6-astra",
     ]);
