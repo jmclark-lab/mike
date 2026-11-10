@@ -4,6 +4,7 @@ import {
   GEMINI_4_ARGON_MIN_OUTPUT_TOKENS,
   GEMINI_4_ARGON_STREAM_OUTPUT_TOKENS,
   GEMINI_4_ARGON_TIMEOUT_MS,
+  GEMINI_4_CARBON_MAX_OUTPUT_TOKENS,
   buildClaudeMessageParams,
   buildGeminiRequestConfig,
   buildKimiChatBody,
@@ -114,6 +115,55 @@ test("Gemini 4 Argon config has no sampling, cache, or sub-32k cap", () => {
     (streamed.thinkingConfig as { thinkingBudget?: number }).thinkingBudget,
     undefined,
   );
+});
+
+test("Gemini 4 Carbon keeps Argon thinking config and clamps maxOutputTokens to 32768", () => {
+  const council = buildGeminiRequestConfig({
+    model: "gemini-4-carbon",
+    streaming: false,
+    systemInstruction: "sys",
+    maxTokens: 16000,
+    enableThinking: false,
+    applyThinkingConfig: true,
+    extra: {
+      temperature: 0.4,
+      topP: 0.9,
+      cachedContent: "cachedContents/abc",
+    },
+  });
+  assertAbsent(council, FORBIDDEN_KEYS);
+  assert.equal(council.maxOutputTokens, 16000);
+  assert.equal(council.thinkingConfig, undefined);
+  assert.equal(
+    geminiClientTimeoutMs("gemini-4-carbon"),
+    GEMINI_4_ARGON_TIMEOUT_MS,
+  );
+
+  const overCap = buildGeminiRequestConfig({
+    model: "gemini-4-carbon",
+    streaming: true,
+    maxTokens: GEMINI_4_ARGON_STREAM_OUTPUT_TOKENS,
+    enableThinking: true,
+    applyThinkingConfig: true,
+  });
+  assert.equal(overCap.maxOutputTokens, GEMINI_4_CARBON_MAX_OUTPUT_TOKENS);
+  assert.equal(
+    (overCap.thinkingConfig as { thinkingLevel?: string }).thinkingLevel,
+    "medium",
+  );
+  assert.equal(
+    (overCap.thinkingConfig as { thinkingBudget?: number }).thinkingBudget,
+    undefined,
+  );
+
+  const omitted = buildGeminiRequestConfig({
+    model: "gemini-4-carbon",
+    streaming: true,
+    enableThinking: false,
+    applyThinkingConfig: true,
+  });
+  assert.equal(omitted.maxOutputTokens, GEMINI_4_CARBON_MAX_OUTPUT_TOKENS);
+  assert.equal(omitted.thinkingConfig, undefined);
 });
 
 test("other Gemini models keep the thinking budget the chat path already sent", () => {

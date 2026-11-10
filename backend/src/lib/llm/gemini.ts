@@ -1,5 +1,7 @@
 import { GoogleGenAI } from "@google/genai";
 import {
+  GEMINI_4_ARGON,
+  GEMINI_4_CARBON,
   buildGeminiRequestConfig,
   geminiClientTimeoutMs,
 } from "./requestParams";
@@ -204,8 +206,9 @@ export async function streamGemini(
               ? [{ functionDeclarations } as never]
               : undefined,
             // Other Gemini models still use thinkingBudget 0 to skip
-            // thinking. Gemini 4 Argon swaps that for thinkingLevel and
-            // a max output of at least 32,768.
+            // thinking. Gemini 4 Argon and Carbon swap that for thinkingLevel.
+            // Argon uses a max output of at least 32,768. Carbon clamps it
+            // to 32,768.
             enableThinking,
             applyThinkingConfig: true,
           }) as never,
@@ -351,7 +354,8 @@ export async function completeGeminiText(params: {
       streaming: false,
       systemInstruction: params.systemPrompt,
       maxTokens: params.maxTokens,
-      applyThinkingConfig: params.model === "gemini-4-argon",
+      applyThinkingConfig:
+        params.model === GEMINI_4_ARGON || params.model === GEMINI_4_CARBON,
     });
     resp = await ai.models.generateContent({
       model: params.model,
