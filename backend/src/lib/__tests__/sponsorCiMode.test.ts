@@ -419,7 +419,7 @@ test("Sponsor-CI locks council seats and the judge to the frontier GA ids", () =
     seats.map((seat) => seat.model),
     [...COUNCIL_MEMBERS],
   );
-  assert.equal(seats[2].label, "Gemini 4 Argon");
+  assert.equal(seats[2].label, "Gemini 4 Carbon");
   assert.equal(resolveCouncilJudge(env), COUNCIL_JUDGE);
   assert.equal(COUNCIL_JUDGE, "claude-opus-5-5");
   assert.equal(

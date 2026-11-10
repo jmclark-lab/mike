@@ -104,7 +104,7 @@ test("frontier refresh adds verified selectable ids and moves Claude tiers", () 
   assert.deepEqual(COUNCIL_MEMBERS, [
     "claude-fable-5-2",
     "gpt-6-astra",
-    "gemini-4-argon",
+    "gemini-4-carbon",
     "grok-4.7",
   ]);
   assert.equal(COUNCIL_JUDGE, "claude-opus-5-5");

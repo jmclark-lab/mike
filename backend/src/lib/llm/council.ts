@@ -12,6 +12,7 @@ import { completeTextStrict } from "./index";
 import type { ReasoningEffort, UserApiKeys } from "./types";
 import { OUTBOUND_ATTRIBUTION_RULE } from "../outboundAttribution";
 import { isSponsorCiMode } from "../sponsorCiMode";
+import { GEMINI_4_CARBON_MAX_OUTPUT_TOKENS } from "./requestParams";
 
 export interface CouncilSeat {
   provider: "anthropic" | "openai" | "google" | "xai";
@@ -39,8 +40,8 @@ const DEFAULT_COUNCIL_SEATS: readonly CouncilSeat[] = [
   },
   {
     provider: "google",
-    model: "gemini-4-argon",
-    label: "Gemini 4 Argon",
+    model: "gemini-4-carbon",
+    label: "Gemini 4 Carbon",
     maxTokens: 16000,
   },
   {
@@ -281,7 +282,7 @@ export function resolveCouncilSeats(
         "COUNCIL_GEMINI_MAX_TOKENS",
         DEFAULT_COUNCIL_SEATS[2].maxTokens,
         1000,
-        64000,
+        GEMINI_4_CARBON_MAX_OUTPUT_TOKENS,
       ),
     },
     {

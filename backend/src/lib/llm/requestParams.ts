@@ -7,12 +7,22 @@
  */
 
 export const GEMINI_4_ARGON = "gemini-4-argon";
+export const GEMINI_4_CARBON = "gemini-4-carbon";
 /** Non-streaming REST cap, and the minimum cap Google tells callers to set. */
 export const GEMINI_4_ARGON_MIN_OUTPUT_TOKENS = 32_768;
 /** One streaming response cap. Still above the 32K floor. */
 export const GEMINI_4_ARGON_STREAM_OUTPUT_TOKENS = 65_536;
+/**
+ * Gemini API `outputTokenLimit` for `gemini-4-carbon`. Thinking tokens count
+ * against it. Argon's streaming cap (65536) is above this limit.
+ */
+export const GEMINI_4_CARBON_MAX_OUTPUT_TOKENS = 32_768;
 /** generateContent migration note: at least 20 minutes per call. */
 export const GEMINI_4_ARGON_TIMEOUT_MS = 20 * 60 * 1000;
+
+function usesGemini4RequestShape(model: string): boolean {
+  return model === GEMINI_4_ARGON || model === GEMINI_4_CARBON;
+}
 
 const CLAUDE_SAMPLING_REJECT_MODELS = new Set([
   "claude-sonnet-5-5",
@@ -32,7 +42,7 @@ const GEMINI_FORBIDDEN_KEYS = [
 ] as const;
 
 export function geminiClientTimeoutMs(model: string): number | undefined {
-  return model === GEMINI_4_ARGON ? GEMINI_4_ARGON_TIMEOUT_MS : undefined;
+  return usesGemini4RequestShape(model) ? GEMINI_4_ARGON_TIMEOUT_MS : undefined;
 }
 
 type GeminiThinkingConfig = {
@@ -42,9 +52,10 @@ type GeminiThinkingConfig = {
 };
 
 /**
- * Gemini generateContent config. Gemini 4 Argon drops sampling params and
- * explicit cache handles, replaces thinking_budget with thinking_level, and
- * never sends a max output below 32,768.
+ * Gemini generateContent config. Gemini 4 Argon and Carbon drop sampling
+ * params and explicit cache handles, and replace thinking_budget with
+ * thinking_level (Carbon keeps that same thinking config). Argon never sends
+ * a max output below 32,768. Carbon clamps maxOutputTokens to 32,768.
  */
 export function buildGeminiRequestConfig(params: {
   model: string;
@@ -54,7 +65,8 @@ export function buildGeminiRequestConfig(params: {
   enableThinking?: boolean;
   /**
    * Chat streaming already sends a thinking config. One-shot completion
-   * does not, except for Gemini 4 Argon, which must not send thinking_budget.
+   * does not, except for Gemini 4 Argon and Carbon, which must not send
+   * thinking_budget.
    */
   applyThinkingConfig?: boolean;
   maxTokens?: number;
@@ -73,7 +85,7 @@ export function buildGeminiRequestConfig(params: {
     ...(params.extra ?? {}),
   };
 
-  if (params.model !== GEMINI_4_ARGON) return config;
+  if (!usesGemini4RequestShape(params.model)) return config;
 
   for (const key of GEMINI_FORBIDDEN_KEYS) delete config[key];
 
@@ -87,8 +99,21 @@ export function buildGeminiRequestConfig(params: {
     config.thinkingConfig = thinking;
   } else {
     // thinking_budget is not sent. Omitting thinking_level leaves the API
-    // default (medium), including for the existing council seat.
+    // default (medium). Carbon keeps this Argon thinking config; it spends
+    // more of the output budget on thinking, so the level is not raised.
     delete config.thinkingConfig;
+  }
+
+  if (params.model === GEMINI_4_CARBON) {
+    const requested =
+      typeof params.maxTokens === "number" && Number.isFinite(params.maxTokens)
+        ? params.maxTokens
+        : GEMINI_4_CARBON_MAX_OUTPUT_TOKENS;
+    config.maxOutputTokens = Math.min(
+      requested,
+      GEMINI_4_CARBON_MAX_OUTPUT_TOKENS,
+    );
+    return config;
   }
 
   const cap = params.streaming
