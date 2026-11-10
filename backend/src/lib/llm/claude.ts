@@ -20,22 +20,137 @@ type NativeMessage = {
   content: string | ContentBlock[];
 };
 
-/** Chat-orchestrator output budget. Adaptive thinking counts against this;
- *  16k was enough for a preamble and then `stop_reason=max_tokens` with no
- *  `convene_council` tool_use. Aligns with the Fable council seat (PR #24). */
+/**
+ * Short-ask output ceiling. Adaptive thinking and visible text share it.
+ * 16k was enough for a preamble and then `stop_reason=max_tokens` with no
+ * tool call. Short asks stay on this ceiling.
+ */
 export const DEFAULT_CLAUDE_CHAT_MAX_TOKENS = 32000;
 
+/** Fable 5.2 / Opus 5.5 synchronous Messages API max output. */
+export const FABLE_MAX_OUTPUT_TOKENS = 128000;
+
+/**
+ * Latest user message at or above this length is a pasted contract, not a
+ * short ask. Clinical-trial agreements clear it; a normal question does not.
+ */
+export const LONG_DOCUMENT_CHARS = 20_000;
+
+/** Extra streamed turns after a long-document `max_tokens` stop. */
+export const MAX_LONG_DOCUMENT_CONTINUATIONS = 2;
+
+/**
+ * Visible-output instruction. Fable 5.2 ignores "think less" at high effort;
+ * this only stops the intake preamble from occupying the answer.
+ */
+export const LONG_DOCUMENT_TURN_INSTRUCTION =
+  "LONG DOCUMENT:\n" +
+  "The user message contains a long document. Do not write an intake plan, " +
+  "status preamble, or a list of what you are about to review. " +
+  "If a tool is required, call it immediately. Otherwise write the final analysis. " +
+  "A preamble is not an answer.";
+
+export const CLAUDE_LONG_DOCUMENT_CONTINUATION =
+  "Continue from the exact cutoff. Do not repeat earlier text and do not add another intake preamble. " +
+  "Complete the final answer. If a tool is required, call it now.";
+
+export type ClaudeMessageStream = {
+  on(event: "text", handler: (delta: string) => void): void;
+  on(event: "thinking", handler: (delta: string) => void): void;
+  on(event: "streamEvent", handler: (event: unknown) => void): void;
+  on(event: "error", handler: (error: unknown) => void): void;
+  finalMessage(): Promise<{
+    stop_reason?: string | null;
+    content?: ContentBlock[];
+  }>;
+  abort(): void;
+};
+
+export type ClaudeStreamFn = (
+  body: Record<string, unknown>,
+) => ClaudeMessageStream;
+
+function contentChars(content: unknown): number {
+  if (typeof content === "string") return content.length;
+  if (!Array.isArray(content)) return 0;
+  let chars = 0;
+  for (const block of content) {
+    if (!block || typeof block !== "object") continue;
+    const record = block as Record<string, unknown>;
+    if (typeof record.text === "string") chars += record.text.length;
+    if (typeof record.thinking === "string") chars += record.thinking.length;
+    if ("content" in record) chars += contentChars(record.content);
+  }
+  return chars;
+}
+
+/** Characters of user text, tool results, and assistant blocks currently in the turn. */
+export function claudeConversationChars(
+  messages: Array<{ content?: unknown }>,
+): number {
+  let chars = 0;
+  for (const message of messages) chars += contentChars(message.content);
+  return chars;
+}
+
+export function isLongClaudeDocument(
+  messages: Array<{ role?: string; content?: unknown }>,
+): boolean {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i];
+    if (message?.role !== "user") continue;
+    if (typeof message.content !== "string") continue;
+    return message.content.length >= LONG_DOCUMENT_CHARS;
+  }
+  return false;
+}
+
+export function conversationNeedsLongOutput(
+  messages: Array<{ role?: string; content?: unknown }>,
+): boolean {
+  return (
+    isLongClaudeDocument(messages) ||
+    claudeConversationChars(messages) >= LONG_DOCUMENT_CHARS
+  );
+}
+
+/**
+ * Short asks honor `CLAUDE_CHAT_MAX_TOKENS` (default 32k, hard cap 128k).
+ * Long documents always use the model max. Thinking tokens count against
+ * `max_tokens`, and a 32k cap is exhausted by high-effort thinking plus the
+ * intake text before any final answer. An explicit env value must not put
+ * that cap back on a long review.
+ */
 export function resolveClaudeChatMaxTokens(
   env: NodeJS.ProcessEnv = process.env,
+  options?: { longDocument?: boolean },
 ): number {
+  if (options?.longDocument) return FABLE_MAX_OUTPUT_TOKENS;
   const parsed = Number.parseInt(env.CLAUDE_CHAT_MAX_TOKENS ?? "", 10);
   if (!Number.isFinite(parsed)) return DEFAULT_CLAUDE_CHAT_MAX_TOKENS;
-  return Math.min(64000, Math.max(1000, Math.trunc(parsed)));
+  return Math.min(FABLE_MAX_OUTPUT_TOKENS, Math.max(1000, Math.trunc(parsed)));
+}
+
+export function shouldContinueLongDocumentTurn(args: {
+  longDocument: boolean;
+  stopReason: string | null | undefined;
+  toolCallCount: number;
+  continuationsUsed: number;
+  assistantBlockCount: number;
+}): boolean {
+  return (
+    args.longDocument &&
+    args.stopReason === "max_tokens" &&
+    args.toolCallCount === 0 &&
+    args.assistantBlockCount > 0 &&
+    args.continuationsUsed < MAX_LONG_DOCUMENT_CONTINUATIONS
+  );
 }
 
 /**
  * A chat tool-loop turn that hits max_tokens with no tool_use used to `break`
  * and return the intake preamble as a successful answer. Fail that turn.
+ * Long-document turns continue first (see shouldContinueLongDocumentTurn).
  * If tool_use blocks were parsed, still run them (do not drop convene_council).
  */
 export function claudeChatTurnFailure(
@@ -134,6 +249,7 @@ function throwIfAborted(signal?: AbortSignal) {
 
 export async function streamClaude(
   params: StreamChatParams,
+  deps?: { stream?: ClaudeStreamFn; env?: NodeJS.ProcessEnv },
 ): Promise<StreamChatResult> {
   const {
     model,
@@ -145,121 +261,190 @@ export async function streamClaude(
     enableThinking,
   } = params;
   const maxIter = params.maxIterations ?? 10;
-  const anthropic = client(apiKeys?.claude);
   const claudeTools = toClaudeTools(tools);
+  // Non-streaming messages.create() is rejected once a request can exceed
+  // ~10 minutes. A 128k Fable turn is past that, so every chat turn,
+  // including continuations, goes through messages.stream.
+  const streamMessage: ClaudeStreamFn = deps?.stream
+    ? deps.stream
+    : (() => {
+        const anthropic = client(apiKeys?.claude);
+        return (body: Record<string, unknown>) =>
+          anthropic.messages.stream(
+            body as unknown as Anthropic.MessageCreateParams,
+          ) as unknown as ClaudeMessageStream;
+      })();
 
   const messages: NativeMessage[] = toNativeMessages(params.messages);
+  const env = deps?.env ?? process.env;
+  // Decided once. The system string is part of Fable's thinking prefix and
+  // must not change after the first assistant turn.
+  const longDocumentPrompt = isLongClaudeDocument(params.messages);
+  const systemForTurn = longDocumentPrompt
+    ? `${systemPrompt}\n\n${LONG_DOCUMENT_TURN_INSTRUCTION}`
+    : systemPrompt;
+  const maxTokensFor = () =>
+    resolveClaudeChatMaxTokens(env, {
+      longDocument: conversationNeedsLongOutput(messages),
+    });
   let fullText = "";
   const rawStreamRecorder = createRawLlmStreamRecorder({
     provider: "claude",
     model,
   });
 
+  const consumeStream = async (
+    iter: number,
+  ): Promise<{
+    stopReason: string | null;
+    assistantBlocks: ContentBlock[];
+    toolCalls: NormalizedToolCall[];
+    maxTokens: number;
+  }> => {
+    throwIfAborted(params.abortSignal);
+    const maxTokens = maxTokensFor();
+    const stream = streamMessage(
+      buildClaudeMessageParams({
+        model,
+        system: systemForTurn,
+        messages: messages as Anthropic.MessageParam[],
+        tools: claudeTools.length
+          ? (claudeTools as unknown as Tool[])
+          : undefined,
+        max_tokens: maxTokens,
+        // Adaptive thinking plus output_config.effort. Sonnet 5.5 and
+        // Haiku 5.5 reject temperature, top_p, top_k, and budget_tokens.
+        enableThinking,
+      }),
+    );
+
+    let sawThinking = false;
+    let streamFailureMessage: string | null = null;
+    const abortStream = () => stream.abort();
+    params.abortSignal?.addEventListener("abort", abortStream, {
+      once: true,
+    });
+
+    stream.on("streamEvent", (event) => {
+      logRawLlmStream({
+        provider: "claude",
+        model,
+        iteration: iter,
+        label: "streamEvent",
+        payload: event,
+      });
+      rawStreamRecorder?.record({
+        iteration: iter,
+        label: "streamEvent",
+        payload: event,
+      });
+      const failureMessage = claudeStreamFailureMessage(event);
+      if (failureMessage) {
+        streamFailureMessage = failureMessage;
+        stream.abort();
+      }
+    });
+    stream.on("error", (error) => {
+      logRawLlmStream({
+        provider: "claude",
+        model,
+        iteration: iter,
+        label: "error",
+        payload: error,
+      });
+      rawStreamRecorder?.record({
+        iteration: iter,
+        label: "error",
+        payload: error,
+      });
+    });
+
+    stream.on("text", (delta) => {
+      callbacks.onContentDelta?.(delta);
+    });
+    if (enableThinking) {
+      stream.on("thinking", (delta) => {
+        sawThinking = true;
+        callbacks.onReasoningDelta?.(delta);
+      });
+    }
+
+    let final: Awaited<ReturnType<typeof stream.finalMessage>>;
+    try {
+      final = await stream.finalMessage();
+    } catch (error) {
+      if (params.abortSignal?.aborted) throw abortError();
+      if (streamFailureMessage) throw new Error(streamFailureMessage);
+      throw new Error(claudeErrorMessage(error));
+    } finally {
+      params.abortSignal?.removeEventListener("abort", abortStream);
+    }
+    if (sawThinking) callbacks.onReasoningBlockEnd?.();
+    throwIfAborted(params.abortSignal);
+    const stopReason = final.stop_reason ?? null;
+    const assistantBlocks = Array.isArray(final.content) ? final.content : [];
+
+    // Extract text content and tool_use calls from the final assistant
+    // message so we can accumulate text and drive the tool-call loop.
+    const toolCalls: NormalizedToolCall[] = [];
+    for (const block of assistantBlocks) {
+      if (block.type === "text") {
+        const txt = (block as { text: string }).text;
+        if (typeof txt === "string") fullText += txt;
+      } else if (block.type === "tool_use") {
+        const tu = block as {
+          id: string;
+          name: string;
+          input: unknown;
+        };
+        const call: NormalizedToolCall = {
+          id: tu.id,
+          name: tu.name,
+          input: (tu.input as Record<string, unknown>) ?? {},
+        };
+        callbacks.onToolCallStart?.(call);
+        toolCalls.push(call);
+      }
+    }
+
+    return { stopReason, assistantBlocks, toolCalls, maxTokens };
+  };
+
   try {
     for (let iter = 0; iter < maxIter; iter++) {
-      throwIfAborted(params.abortSignal);
-      const stream = anthropic.messages.stream(
-        buildClaudeMessageParams({
-          model,
-          system: systemPrompt,
-          messages: messages as Anthropic.MessageParam[],
-          tools: claudeTools.length
-            ? (claudeTools as unknown as Tool[])
-            : undefined,
-          max_tokens: resolveClaudeChatMaxTokens(),
-          // Adaptive thinking plus output_config.effort. Sonnet 5.5 and
-          // Haiku 5.5 reject temperature, top_p, top_k, and budget_tokens.
-          enableThinking,
-        }) as unknown as Anthropic.MessageCreateParams,
-      );
+      let continuations = 0;
+      let turn = await consumeStream(iter);
 
-      let sawThinking = false;
-      let streamFailureMessage: string | null = null;
-      const abortStream = () => stream.abort();
-      params.abortSignal?.addEventListener("abort", abortStream, {
-        once: true,
-      });
-
-      stream.on("streamEvent", (event) => {
-        logRawLlmStream({
-          provider: "claude",
-          model,
-          iteration: iter,
-          label: "streamEvent",
-          payload: event,
+      while (
+        shouldContinueLongDocumentTurn({
+          longDocument: conversationNeedsLongOutput(messages),
+          stopReason: turn.stopReason,
+          toolCallCount: turn.toolCalls.length,
+          continuationsUsed: continuations,
+          assistantBlockCount: turn.assistantBlocks.length,
+        })
+      ) {
+        continuations += 1;
+        // Replay the assistant turn unchanged, thinking blocks included.
+        // Fable 5.2 rejects a rewritten prefix.
+        messages.push({ role: "assistant", content: turn.assistantBlocks });
+        messages.push({
+          role: "user",
+          content: CLAUDE_LONG_DOCUMENT_CONTINUATION,
         });
-        rawStreamRecorder?.record({
-          iteration: iter,
-          label: "streamEvent",
-          payload: event,
-        });
-        const failureMessage = claudeStreamFailureMessage(event);
-        if (failureMessage) {
-          streamFailureMessage = failureMessage;
-          stream.abort();
-        }
-      });
-      stream.on("error", (error) => {
-        logRawLlmStream({
-          provider: "claude",
-          model,
-          iteration: iter,
-          label: "error",
-          payload: error,
-        });
-        rawStreamRecorder?.record({
-          iteration: iter,
-          label: "error",
-          payload: error,
-        });
-      });
-
-      stream.on("text", (delta) => {
-        callbacks.onContentDelta?.(delta);
-      });
-      if (enableThinking) {
-        stream.on("thinking", (delta) => {
-          sawThinking = true;
-          callbacks.onReasoningDelta?.(delta);
-        });
-      }
-
-      let final: Awaited<ReturnType<typeof stream.finalMessage>>;
-      try {
-        final = await stream.finalMessage();
-      } catch (error) {
-        if (params.abortSignal?.aborted) throw abortError();
-        if (streamFailureMessage) throw new Error(streamFailureMessage);
-        throw new Error(claudeErrorMessage(error));
-      } finally {
-        params.abortSignal?.removeEventListener("abort", abortStream);
-      }
-      if (sawThinking) callbacks.onReasoningBlockEnd?.();
-      throwIfAborted(params.abortSignal);
-      const stopReason = final.stop_reason;
-      const assistantBlocks = final.content as ContentBlock[];
-
-      // Extract text content and tool_use calls from the final assistant
-      // message so we can accumulate text and drive the tool-call loop.
-      const toolCalls: NormalizedToolCall[] = [];
-      for (const block of assistantBlocks) {
-        if (block.type === "text") {
-          const txt = (block as { text: string }).text;
-          if (typeof txt === "string") fullText += txt;
-        } else if (block.type === "tool_use") {
-          const tu = block as {
-            id: string;
-            name: string;
-            input: unknown;
-          };
-          const call: NormalizedToolCall = {
-            id: tu.id,
-            name: tu.name,
-            input: (tu.input as Record<string, unknown>) ?? {},
-          };
-          callbacks.onToolCallStart?.(call);
-          toolCalls.push(call);
-        }
+        console.log(
+          "[council.completion] " +
+            JSON.stringify({
+              event: "claude_stream_continue",
+              site: "streamClaude.maxTokensContinue",
+              model,
+              iteration: iter,
+              continuation: continuations,
+              max_tokens: turn.maxTokens,
+              text_chars: fullText.length,
+            }),
+        );
+        turn = await consumeStream(iter);
       }
 
       console.log(
@@ -269,32 +454,34 @@ export async function streamClaude(
             site: "streamClaude.turnEnd",
             model,
             iteration: iter,
-            stop_reason: stopReason ?? null,
-            tool_names: toolCalls.map((call) => call.name),
+            stop_reason: turn.stopReason,
+            continuation: continuations,
+            max_tokens: turn.maxTokens,
+            tool_names: turn.toolCalls.map((call) => call.name),
             text_chars: fullText.length,
           }),
       );
 
       const turnFailure = claudeChatTurnFailure(
-        stopReason,
-        toolCalls.length,
-        resolveClaudeChatMaxTokens(),
+        turn.stopReason,
+        turn.toolCalls.length,
+        turn.maxTokens,
       );
       if (turnFailure) throw new Error(turnFailure);
 
       // Run any parsed tool_use blocks even when stop_reason is not exactly
       // tool_use (e.g. max_tokens after a partial convene_council JSON).
-      if (!toolCalls.length || !runTools) {
+      if (!turn.toolCalls.length || !runTools) {
         break;
       }
 
-      const results = await runTools(toolCalls);
+      const results = await runTools(turn.toolCalls);
       throwIfAborted(params.abortSignal);
 
       // Record the assistant turn (preserving the original content blocks,
       // which Claude requires on the follow-up) and the user turn that
       // carries the tool_result blocks.
-      messages.push({ role: "assistant", content: assistantBlocks });
+      messages.push({ role: "assistant", content: turn.assistantBlocks });
       messages.push({
         role: "user",
         content: results.map((r) => ({
