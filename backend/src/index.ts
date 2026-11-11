@@ -15,7 +15,8 @@ import { caseLawRouter } from "./routes/caseLaw";
 import { kbRouter } from "./routes/kb";
 import { createServerSupabase } from "./lib/supabase";
 import { getRoutingHealth } from "./lib/llm";
-import { ConnectorJobManager, readMikeSseText } from "./lib/connectorJobs";
+import { ConnectorJobManager, readMikeSseResult } from "./lib/connectorJobs";
+import { parseConnectorModelChoice } from "./lib/connectorModelChoice";
 import { requireConnectorKey } from "./middleware/auth";
 import { isSponsorCiMode, sponsorCiBootWarning } from "./lib/sponsorCiMode";
 
@@ -160,22 +161,27 @@ app.use((req, res, next) =>
   express.json({ limit: jsonLimitForPath(req.path) })(req, res, next),
 );
 
-const connectorJobManager = new ConnectorJobManager(async (prompt) => {
+const connectorJobManager = new ConnectorJobManager(async (prompt, options) => {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), hours(2));
   try {
+    const body: Record<string, unknown> = {
+      messages: [{ role: "user", content: prompt }],
+    };
+    if (options?.model) {
+      body.model = options.model;
+      body.strict_model = true;
+    }
     const response = await fetch(`http://127.0.0.1:${PORT}/chat`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
         "x-connector-key": process.env.CONNECTOR_API_KEY?.trim() ?? "",
       },
-      body: JSON.stringify({
-        messages: [{ role: "user", content: prompt }],
-      }),
+      body: JSON.stringify(body),
       signal: controller.signal,
     });
-    return await readMikeSseText(response, prompt);
+    return await readMikeSseResult(response, prompt);
   } finally {
     clearTimeout(timeout);
   }
@@ -190,7 +196,19 @@ app.post("/connector/jobs/:jobId", requireConnectorKey, (req, res) => {
   if (!prompt || prompt.length > 500000) {
     return void res.status(400).json({ detail: "Invalid connector prompt" });
   }
-  const snapshot = connectorJobManager.startOrGet(jobId, prompt);
+  const requestedModel = Object.prototype.hasOwnProperty.call(req.body ?? {}, "model")
+    ? (req.body as { model?: unknown }).model
+    : undefined;
+  const choice = parseConnectorModelChoice(requestedModel);
+  if (!choice.ok) {
+    return void res.status(400).json({
+      detail: choice.detail,
+      allowed: choice.allowed,
+    });
+  }
+  const snapshot = connectorJobManager.startOrGet(jobId, prompt, {
+    model: choice.model,
+  });
   res.status(snapshot.status === "working" ? 202 : 200).json(snapshot);
 });
 

@@ -17,6 +17,11 @@ import {
 } from "../lib/chatTools";
 import { completeText, persistableProviderMetadata } from "../lib/llm";
 import {
+    connectorModelAllowedText,
+    connectorModelAllowedValues,
+    parseConnectorModelChoice,
+} from "../lib/connectorModelChoice";
+import {
     getUserModelSettings,
 } from "../lib/userSettings";
 import { checkProjectAccess } from "../lib/access";
@@ -447,11 +452,30 @@ chatRouter.post("/", connectorOrAuth, async (req, res) => {
     if (!parsedModel.ok) {
         return void res.status(400).json({ detail: parsedModel.detail });
     }
+    // strict_model is the connector ask path. The UI does not send it, so a
+    // picker value still does not change the env fallback chain.
+    let strictModelId: string | undefined;
+    if (body.strict_model === true) {
+        const choice = parseConnectorModelChoice(body.model);
+        if (!choice.ok) {
+            return void res.status(400).json({
+                detail: choice.detail,
+                allowed: choice.allowed,
+            });
+        }
+        if (!choice.model) {
+            return void res.status(400).json({
+                detail: `model is required when strict_model is set. Allowed values: ${connectorModelAllowedText()}.`,
+                allowed: connectorModelAllowedValues(),
+            });
+        }
+        strictModelId = choice.model;
+    }
 
     const messages = parsedMessages.messages;
     const chat_id = parsedChatId.chatId;
     const project_id = parsedProjectId.projectId;
-    const model = parsedModel.model;
+    const model = strictModelId ?? parsedModel.model;
 
     devLog("[chat/stream] incoming request", {
         userId,
@@ -600,6 +624,7 @@ chatRouter.post("/", connectorOrAuth, async (req, res) => {
             workflowStore,
             includeResearchTools: legalResearchUs,
             model,
+            strictModel: Boolean(strictModelId),
             apiKeys,
             signal: streamAbort.signal,
             projectId: resolvedProjectId,

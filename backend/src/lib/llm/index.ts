@@ -339,6 +339,133 @@ async function invokeComplete(
     throw new Error(`No completion adapter for ${provider} model ${model}.`);
 }
 
+/**
+ * Models a streaming chat will try.
+ * `strictModel` pins `model` alone. Otherwise the env chain is unchanged,
+ * including Sponsor-CI filtering, and the UI-selected model is still ignored.
+ */
+export function chatModelsForRequest(params: {
+    strictModel?: boolean;
+    model?: string;
+    env?: NodeJS.ProcessEnv;
+} = {}): { models: string[]; strict: boolean } {
+    if (params.strictModel) {
+        const model = params.model?.trim() ?? "";
+        if (!model) {
+            throw new Error("A model is required when strict model selection is set.");
+        }
+        return { models: [model], strict: true };
+    }
+    return {
+        models: orderByHealth(resolveModelChain(params.env)),
+        strict: false,
+    };
+}
+
+/** Test-only. Clears in-process cooldown so routing tests stay isolated. */
+export function resetRoutingHealthForTests(): void {
+    modelCooldownUntil.clear();
+    modelFailureStreak.clear();
+}
+
+function strictModelFailure(model: string, err: unknown): Error {
+    const message = err instanceof Error ? err.message : String(err);
+    const prefix = `Model ${model} failed with no fallback: `;
+    if (message.startsWith(prefix)) {
+        return err instanceof Error ? err : new Error(message);
+    }
+    return new Error(prefix + message);
+}
+
+/**
+ * Try `models` in order. `strict` never advances to another id and does not
+ * update chain cooldown, so an explicit ask cannot change the default chain.
+ */
+export async function runChatModelAttempts(args: {
+    models: string[];
+    strict: boolean;
+    invoke: (model: string) => Promise<StreamChatResult>;
+    surface?: string;
+}): Promise<StreamChatResult> {
+    const chain = args.models;
+    const strict = args.strict;
+    const surface = args.surface ?? "stream";
+    const startedAt = Date.now();
+    const skipped: SkippedModel[] = [];
+    let lastError: unknown;
+    for (let i = 0; i < chain.length; i++) {
+        const model = chain[i];
+        const isLast = strict || i === chain.length - 1;
+        try {
+            const result = await args.invoke(model);
+            if (isEmptyResult(result.fullText)) {
+                if (!isLast) {
+                    if (!strict) markModelUnhealthy(model);
+                    lastError = new Error(`empty response from ${model}`);
+                    skipped.push(skippedHop(model, lastError));
+                    console.warn(`[llm] ${model} returned an empty response; falling back to ${chain[i + 1]}`);
+                    continue;
+                }
+                if (strict) {
+                    throw new Error(`empty response from ${model}`);
+                }
+                markModelUnhealthy(model);
+            } else if (!strict) {
+                markModelHealthy(model);
+            }
+            if (i > 0) console.log(`[llm] answered via fallback model ${model}`);
+            const attempted = chain.slice(0, i + 1);
+            result.providerMetadata = attachRoutingTrail(
+                result.providerMetadata,
+                model,
+                i,
+                attempted,
+                skipped,
+            );
+            logLlmCall({
+                surface,
+                ok: true,
+                answered: model,
+                fallback_depth: i,
+                attempted,
+                skipped,
+                empty: isEmptyResult(result.fullText),
+                latency_ms: Date.now() - startedAt,
+            });
+            return result;
+        } catch (err) {
+            const failure = strict ? strictModelFailure(model, err) : err;
+            lastError = failure;
+            skipped.push(skippedHop(model, err));
+            if (!strict && !isLast && isRetryableError(err)) {
+                markModelUnhealthy(model);
+                console.warn(`[llm] ${model} failed (${err instanceof Error ? err.message : String(err)}); falling back to ${chain[i + 1]}`);
+                continue;
+            }
+            logLlmCall({
+                surface,
+                ok: false,
+                failed_model: model,
+                fallback_depth: i,
+                attempted: chain.slice(0, i + 1),
+                skipped,
+                error_class: classifyLlmError(err),
+                latency_ms: Date.now() - startedAt,
+            });
+            throw failure;
+        }
+    }
+    logLlmCall({
+        surface,
+        ok: false,
+        error_class: "chain_exhausted",
+        attempted: chain,
+        skipped,
+        latency_ms: Date.now() - startedAt,
+    });
+    throw lastError instanceof Error ? lastError : new Error("all models in the fallback chain failed");
+}
+
 export async function streamChatWithTools(params: StreamChatParams): Promise<StreamChatResult> {
     let { systemPrompt } = params;
     if (isGroundingEnabled()) {
@@ -356,81 +483,23 @@ export async function streamChatWithTools(params: StreamChatParams): Promise<Str
         }
     }
 
-    // Streaming chat always uses the configured env chain. `params.model`
-    // (the UI-selected model) is intentionally not applied here — flagged,
-    // not changed: see streamChatWithTools call sites in chatTools.ts.
-    const chain = orderByHealth(resolveModelChain());
-    console.log(`[llm] model fallback chain: ${chain.join(" -> ")}`);
-
-    const startedAt = Date.now();
-    const skipped: SkippedModel[] = [];
-    let lastError: unknown;
-    for (let i = 0; i < chain.length; i++) {
-        const model = chain[i];
-        const isLast = i === chain.length - 1;
-        try {
-            const result = await invokeStream(model, { ...params, systemPrompt });
-            if (isEmptyResult(result.fullText)) {
-                markModelUnhealthy(model);
-                if (!isLast) {
-                    lastError = new Error(`empty response from ${model}`);
-                    skipped.push(skippedHop(model, lastError));
-                    console.warn(`[llm] ${model} returned an empty response; falling back to ${chain[i + 1]}`);
-                    continue;
-                }
-            } else {
-                markModelHealthy(model);
-            }
-            if (i > 0) console.log(`[llm] answered via fallback model ${model}`);
-            const attempted = chain.slice(0, i + 1);
-            result.providerMetadata = attachRoutingTrail(
-                result.providerMetadata,
-                model,
-                i,
-                attempted,
-                skipped,
-            );
-            logLlmCall({
-                surface: "stream",
-                ok: true,
-                answered: model,
-                fallback_depth: i,
-                attempted,
-                skipped,
-                empty: isEmptyResult(result.fullText),
-                latency_ms: Date.now() - startedAt,
-            });
-            return result;
-        } catch (err) {
-            lastError = err;
-            skipped.push(skippedHop(model, err));
-            if (!isLast && isRetryableError(err)) {
-                markModelUnhealthy(model);
-                console.warn(`[llm] ${model} failed (${err instanceof Error ? err.message : String(err)}); falling back to ${chain[i + 1]}`);
-                continue;
-            }
-            logLlmCall({
-                surface: "stream",
-                ok: false,
-                failed_model: model,
-                fallback_depth: i,
-                attempted: chain.slice(0, i + 1),
-                skipped,
-                error_class: classifyLlmError(err),
-                latency_ms: Date.now() - startedAt,
-            });
-            throw err;
-        }
-    }
-    logLlmCall({
-        surface: "stream",
-        ok: false,
-        error_class: "chain_exhausted",
-        attempted: chain,
-        skipped,
-        latency_ms: Date.now() - startedAt,
+    // The UI-selected model is still ignored. Only strictModel (the connector
+    // ask path) pins params.model and disables fallback.
+    const selection = chatModelsForRequest({
+        strictModel: params.strictModel,
+        model: params.model,
     });
-    throw lastError instanceof Error ? lastError : new Error("all models in the fallback chain failed");
+    if (selection.strict) {
+        console.log(`[llm] strict model (no fallback): ${selection.models.join(" -> ")}`);
+    } else {
+        console.log(`[llm] model fallback chain: ${selection.models.join(" -> ")}`);
+    }
+    return runChatModelAttempts({
+        models: selection.models,
+        strict: selection.strict,
+        surface: "stream",
+        invoke: (model) => invokeStream(model, { ...params, systemPrompt }),
+    });
 }
 
 export async function completeText(params: {

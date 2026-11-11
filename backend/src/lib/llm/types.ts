@@ -93,6 +93,12 @@ export type StreamChatParams = {
      */
     enableThinking?: boolean;
     abortSignal?: AbortSignal;
+    /**
+     * When true, `model` is the only model invoked. The env fallback chain
+     * is not used, and a failure is returned instead of trying another id.
+     * The interactive UI leaves this unset, so it still follows the chain.
+     */
+    strictModel?: boolean;
 };
 
 export type StreamChatResult = {

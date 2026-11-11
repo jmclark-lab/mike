@@ -2,9 +2,17 @@ import { GoogleGenAI } from "@google/genai";
 import {
   GEMINI_4_ARGON,
   GEMINI_4_CARBON,
+  GEMINI_4_ARGON_STREAM_OUTPUT_TOKENS,
+  GEMINI_4_CARBON_MAX_OUTPUT_TOKENS,
   buildGeminiRequestConfig,
   geminiClientTimeoutMs,
 } from "./requestParams";
+import {
+  LONG_DOCUMENT_CHARS,
+  LONG_DOCUMENT_TURN_INSTRUCTION,
+  MAX_LONG_DOCUMENT_CONTINUATIONS,
+  conversationNeedsLongOutput,
+} from "./claude";
 import type {
   StreamChatParams,
   StreamChatResult,
@@ -167,8 +175,89 @@ function throwIfAborted(signal?: AbortSignal) {
   if (signal?.aborted) throw abortError();
 }
 
+export const GEMINI_LONG_DOCUMENT_CONTINUATION =
+  "Continue from the exact cutoff. Do not repeat earlier text and do not add another intake preamble. " +
+  "Complete the final answer. If a tool is required, call it now.";
+
+/** Carbon stays on its 32768 clamp. Other models keep their existing caps. */
+export function geminiChatMaxOutputTokens(
+  model: string,
+  longDocument: boolean,
+): number | undefined {
+  if (model === GEMINI_4_CARBON) return GEMINI_4_CARBON_MAX_OUTPUT_TOKENS;
+  if (longDocument && model === GEMINI_4_ARGON) {
+    return GEMINI_4_ARGON_STREAM_OUTPUT_TOKENS;
+  }
+  return undefined;
+}
+
+function geminiContentsChars(contents: GeminiContent[]): number {
+  let chars = 0;
+  for (const item of contents) {
+    for (const part of item.parts) {
+      if (typeof part.text === "string") chars += part.text.length;
+    }
+  }
+  return chars;
+}
+
+export function geminiTurnIsLongDocument(
+  messages: Array<{ role?: string; content?: unknown }>,
+  contents?: GeminiContent[],
+): boolean {
+  return (
+    conversationNeedsLongOutput(messages) ||
+    geminiContentsChars(contents ?? []) >= LONG_DOCUMENT_CHARS
+  );
+}
+
+export function shouldContinueGeminiLongDocument(args: {
+  longDocument: boolean;
+  finishReason: string | null | undefined;
+  toolCallCount: number;
+  continuationsUsed: number;
+  partCount: number;
+}): boolean {
+  return (
+    args.longDocument &&
+    args.finishReason === "MAX_TOKENS" &&
+    args.toolCallCount === 0 &&
+    args.partCount > 0 &&
+    args.continuationsUsed < MAX_LONG_DOCUMENT_CONTINUATIONS
+  );
+}
+
+export function geminiChatTurnFailure(
+  finishReason: string | null | undefined,
+  toolCallCount: number,
+  maxTokens: number | undefined,
+): string | null {
+  if (finishReason === "MAX_TOKENS" && toolCallCount === 0) {
+    return (
+      `Gemini chat turn stopped with finishReason=MAX_TOKENS and no tool call ` +
+      `(maxOutputTokens=${maxTokens ?? "default"}). The partial text is not a final answer.`
+    );
+  }
+  return null;
+}
+
+function geminiChunkFinishReason(chunk: unknown): string | null {
+  if (!chunk || typeof chunk !== "object") return null;
+  const candidates = (chunk as { candidates?: { finishReason?: unknown }[] })
+    .candidates;
+  const reason = candidates?.[0]?.finishReason;
+  return typeof reason === "string" ? reason : null;
+}
+
+export type GeminiStreamGenerate = (request: {
+  model: string;
+  contents: GeminiContent[];
+  config?: Record<string, unknown>;
+}) => Promise<AsyncIterable<unknown>>;
+
 export async function streamGemini(
   params: StreamChatParams,
+  deps?: { generate?: GeminiStreamGenerate },
 ): Promise<StreamChatResult> {
   const {
     model,
@@ -180,8 +269,21 @@ export async function streamGemini(
     enableThinking,
   } = params;
   const maxIter = params.maxIterations ?? 10;
-  const ai = client(apiKeys?.gemini, model);
   const functionDeclarations = toGeminiTools(tools);
+  const longDocumentPrompt = conversationNeedsLongOutput(params.messages);
+  const systemForTurn = longDocumentPrompt
+    ? `${systemPrompt ?? ""}\n\n${LONG_DOCUMENT_TURN_INSTRUCTION}`.trim()
+    : systemPrompt;
+  const generate: GeminiStreamGenerate = deps?.generate
+    ? deps.generate
+    : async (request) => {
+        const ai = client(apiKeys?.gemini, model);
+        return ai.models.generateContentStream({
+          model: request.model,
+          contents: request.contents as never,
+          config: request.config as never,
+        });
+      };
 
   const contents: GeminiContent[] = toNativeContents(params.messages);
   let fullText = "";
@@ -190,28 +292,38 @@ export async function streamGemini(
     model,
   });
 
-  try {
-    for (let iter = 0; iter < maxIter; iter++) {
+  const consume = async (iter: number): Promise<{
+    textParts: string[];
+    callParts: GeminiPart[];
+    replayParts: GeminiPart[];
+    toolCalls: NormalizedToolCall[];
+    finishReason: string | null;
+  }> => {
       throwIfAborted(params.abortSignal);
+      const longDocument = geminiTurnIsLongDocument(params.messages, contents);
+      const maxOutputTokens = geminiChatMaxOutputTokens(model, longDocument);
       let stream: AsyncIterable<unknown>;
       try {
-        stream = await ai.models.generateContentStream({
+        stream = await generate({
           model,
-          contents: contents as never,
+          contents,
           config: buildGeminiRequestConfig({
             model,
             streaming: true,
-            systemInstruction: systemPrompt,
+            systemInstruction: systemForTurn,
             tools: functionDeclarations.length
               ? [{ functionDeclarations } as never]
               : undefined,
             // Other Gemini models still use thinkingBudget 0 to skip
             // thinking. Gemini 4 Argon and Carbon swap that for thinkingLevel.
             // Argon uses a max output of at least 32,768. Carbon clamps it
-            // to 32,768.
+            // to 32,768, including when a long document asks for more.
             enableThinking,
             applyThinkingConfig: true,
-          }) as never,
+            ...(maxOutputTokens !== undefined
+              ? { maxTokens: maxOutputTokens }
+              : {}),
+          }),
         });
       } catch (error) {
         throw new Error(geminiErrorMessage(error));
@@ -220,7 +332,9 @@ export async function streamGemini(
       // Per-iteration accumulators.
       const textParts: string[] = [];
       const callParts: GeminiPart[] = [];
+      const replayParts: GeminiPart[] = [];
       const toolCalls: NormalizedToolCall[] = [];
+      let finishReason: string | null = null;
       let sawThinking = false;
       const iterator = stream[Symbol.asyncIterator]();
       let rejectAbort: ((reason?: unknown) => void) | null = null;
@@ -254,6 +368,8 @@ export async function streamGemini(
           });
           const failureMessage = geminiStreamFailureMessage(chunk);
           if (failureMessage) throw new Error(failureMessage);
+          const chunkFinish = geminiChunkFinishReason(chunk);
+          if (chunkFinish) finishReason = chunkFinish;
 
           const parts =
             (chunk as { candidates?: { content?: { parts?: GeminiPart[] } }[] })
@@ -261,6 +377,7 @@ export async function streamGemini(
 
           for (const part of parts) {
             if (part.text) {
+              replayParts.push(part);
               if (part.thought) {
                 sawThinking = true;
                 callbacks.onReasoningDelta?.(part.text);
@@ -297,27 +414,78 @@ export async function streamGemini(
 
       if (sawThinking) callbacks.onReasoningBlockEnd?.();
       throwIfAborted(params.abortSignal);
-
       fullText += textParts.join("");
+      return { textParts, callParts, replayParts, toolCalls, finishReason };
+  };
 
-      if (!toolCalls.length || !runTools) {
+  try {
+    for (let iter = 0; iter < maxIter; iter++) {
+      let continuations = 0;
+      let turn = await consume(iter);
+      while (
+        shouldContinueGeminiLongDocument({
+          longDocument: geminiTurnIsLongDocument(params.messages, contents),
+          finishReason: turn.finishReason,
+          toolCallCount: turn.toolCalls.length,
+          continuationsUsed: continuations,
+          partCount: turn.replayParts.length,
+        })
+      ) {
+        continuations += 1;
+        contents.push({
+          role: "model",
+          parts: turn.replayParts.length
+            ? turn.replayParts
+            : [{ text: turn.textParts.join("") }],
+        });
+        contents.push({
+          role: "user",
+          parts: [{ text: GEMINI_LONG_DOCUMENT_CONTINUATION }],
+        });
+        console.log(
+          "[council.completion] " +
+            JSON.stringify({
+              event: "gemini_stream_continue",
+              site: "streamGemini.maxTokensContinue",
+              model,
+              iteration: iter,
+              continuation: continuations,
+              max_output_tokens: geminiChatMaxOutputTokens(
+                model,
+                geminiTurnIsLongDocument(params.messages, contents),
+              ) ?? null,
+              text_chars: fullText.length,
+            }),
+        );
+        turn = await consume(iter);
+      }
+
+      const longDocument = geminiTurnIsLongDocument(params.messages, contents);
+      const turnFailure = geminiChatTurnFailure(
+        turn.finishReason,
+        turn.toolCalls.length,
+        geminiChatMaxOutputTokens(model, longDocument),
+      );
+      if (turnFailure) throw new Error(turnFailure);
+
+      if (!turn.toolCalls.length || !runTools) {
         break;
       }
 
-      const results = await runTools(toolCalls);
+      const results = await runTools(turn.toolCalls);
       throwIfAborted(params.abortSignal);
 
       // Append the model's turn (text + functionCall parts, in that order)
       // and the matching functionResponse turn.
       const modelParts: GeminiPart[] = [];
-      if (textParts.length) modelParts.push({ text: textParts.join("") });
-      for (const cp of callParts) modelParts.push(cp);
+      if (turn.textParts.length) modelParts.push({ text: turn.textParts.join("") });
+      for (const cp of turn.callParts) modelParts.push(cp);
       contents.push({ role: "model", parts: modelParts });
 
       contents.push({
         role: "user",
         parts: results.map((r) => {
-          const match = toolCalls.find((c) => c.id === r.tool_use_id);
+          const match = turn.toolCalls.find((c) => c.id === r.tool_use_id);
           return {
             functionResponse: {
               ...(r.tool_use_id && !r.tool_use_id.startsWith(match?.name ?? "")
@@ -332,7 +500,10 @@ export async function streamGemini(
     }
 
     await rawStreamRecorder?.flush("completed");
-    return { fullText };
+    return {
+      fullText,
+      providerMetadata: { provider_name: "gemini", model_name: model },
+    };
   } catch (error) {
     await rawStreamRecorder?.flush("error", error);
     throw error;

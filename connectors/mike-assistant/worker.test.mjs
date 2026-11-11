@@ -49,6 +49,15 @@ function state(initial) {
   return { storage: new MemoryStorage(initial) };
 }
 
+function asDurableObject(job) {
+  return {
+    fetch(input, init) {
+      const request = input instanceof Request ? input : new Request(input, init);
+      return job.fetch(request);
+    },
+  };
+}
+
 async function rpc(env, method, params = {}) {
   const response = await workerModule.default.fetch(
     new Request("https://mike.test/mcp", {
@@ -74,8 +83,24 @@ test("tools expose bounded multipart output schemas and accurate annotations", a
   assert.equal(byName.ask_mike.annotations.destructiveHint, false);
   assert.equal(byName.ask_mike.inputSchema.properties.prompt.maxLength, 500000);
   assert.match(byName.ask_mike.inputSchema.properties.prompt.description, /UTF-8 byte chunks under 128 KiB/i);
-  assert.match(source, /version: "1\.8\.2"/);
-  assert.match(source, /MCP connector v1\.8\.2/);
+  assert.match(source, /version: "1\.8\.3"/);
+  assert.match(source, /MCP connector v1\.8\.3/);
+  assert.deepEqual(byName.ask_mike.inputSchema.properties.model.enum, [
+    "claude-fable-5-2",
+    "claude",
+    "claude-opus-5-5",
+    "gpt-6-astra",
+    "openai",
+    "gpt",
+    "gemini-4-carbon",
+    "gemini",
+    "grok-4.7",
+    "grok",
+  ]);
+  assert.match(byName.ask_mike.inputSchema.properties.model.description, /gemini-4-carbon/);
+  assert.match(byName.ask_mike.inputSchema.properties.model.description, /does not fall back/i);
+  assert.equal(byName.get_mike_answer.outputSchema.properties.model.type[0], "string");
+  assert.equal(byName.ask_mike.outputSchema.properties.model_policy.enum[0], "explicit");
   assert.match(source, /PROMPT_CHUNK_BYTES = 100 \* 1024/);
   assert.match(source, /MCP_MAX_BODY_BYTES = 2 \* 1024 \* 1024/);
   assert.match(source, /refusing to complete with intake preamble/);
@@ -494,4 +519,150 @@ test("OAuth authorization codes are single-use and access tokens expire independ
   const validation = await call("/validate", { access_token: tokens.access_token });
   assert.equal(validation.status, 200);
   assert.equal((await validation.json()).principal, "principal-a");
+});
+
+test("ask_mike rejects an unknown model and lists the allowed values", async () => {
+  const result = await rpc({ MCP_API_KEY: "test-key" }, "tools/call", {
+    name: "ask_mike",
+    arguments: { prompt: "Review the indemnity clause.", model: "claude-haiku" },
+  });
+  assert.equal(result.result.isError, true);
+  assert.match(result.result.content[0].text, /Unknown model "claude-haiku"/);
+  for (const allowed of ["claude-fable-5-2", "claude", "claude-opus-5-5", "gpt-6-astra", "openai", "gpt", "gemini-4-carbon", "gemini", "grok-4.7", "grok"]) {
+    assert.match(result.result.content[0].text, new RegExp(allowed));
+  }
+});
+
+test("ask_mike maps gemini to the council model and get_mike_answer reports who answered", async () => {
+  const jobState = state();
+  const env = {
+    MCP_API_KEY: "test-key",
+    MIKE_JOBS: {
+      idFromName: (id) => id,
+      get: () => asDurableObject(new workerModule.MikeJob(jobState, {})),
+    },
+  };
+  const started = await rpc(env, "tools/call", {
+    name: "ask_mike",
+    arguments: { prompt: "Review the indemnity clause.", model: "Gemini" },
+  });
+  assert.equal(started.result.isError, false);
+  assert.equal(started.result.structuredContent.model, "gemini-4-carbon");
+  assert.equal(started.result.structuredContent.provider, "google");
+  assert.equal(started.result.structuredContent.model_policy, "explicit");
+  assert.match(started.result.content[0].text, /google\/gemini-4-carbon/);
+  const stored = await jobState.storage.get("job");
+  assert.equal(stored.requestedModel, "gemini-4-carbon");
+  assert.equal(stored.requestedProvider, "google");
+
+  stored.status = "done";
+  stored.provider = "google";
+  stored.answerModel = "gemini-4-carbon";
+  stored.fallback = false;
+  stored.fallbackDepth = 0;
+  stored.totalParts = 1;
+  await jobState.storage.put("job", stored);
+  await jobState.storage.put("result:1", "Hold the indemnity.");
+  const answer = await rpc(env, "tools/call", {
+    name: "get_mike_answer",
+    arguments: { job_id: started.result.structuredContent.job_id },
+  });
+  assert.equal(answer.result.structuredContent.provider, "google");
+  assert.equal(answer.result.structuredContent.model, "gemini-4-carbon");
+  assert.equal(answer.result.structuredContent.fallback, false);
+  assert.equal(answer.result.structuredContent.fallback_depth, 0);
+  assert.match(answer.result.content[0].text, /provider: google, model: gemini-4-carbon, fallback: no/);
+});
+
+test("an explicit model timeout fails the job instead of staying in retry", async () => {
+  const originalFetch = globalThis.fetch;
+  let body = null;
+  globalThis.fetch = async (_input, init) => {
+    body = JSON.parse(init.body);
+    return new Response(JSON.stringify({
+      status: "error",
+      error: "Model gemini-4-carbon failed with no fallback: Gemini error: timed out",
+    }), { status: 200, headers: { "content-type": "application/json" } });
+  };
+  const jobState = state({
+    job: {
+      status: "working",
+      principal: "principal-a",
+      prompt: "Review",
+      requestedModel: "gemini-4-carbon",
+      requestedProvider: "google",
+      created: Date.now(),
+      startedAt: Date.now(),
+    },
+  });
+  const job = new workerModule.MikeJob(jobState, {
+    MIKE_BACKEND_URL: "https://backend.test",
+    CONNECTOR_API_KEY: "test-key",
+    RETRY_DELAY_MS: "1",
+  });
+  try {
+    await job.alarm();
+    assert.equal(body.model, "gemini-4-carbon");
+    const stored = await jobState.storage.get("job");
+    assert.equal(stored.status, "error");
+    assert.match(stored.error, /no fallback/);
+    assert.match(stored.error, /timed out/);
+    const status = await job.fetch(new Request("https://do/status", {
+      headers: { "x-mike-principal": "principal-a" },
+    }));
+    const payload = await status.json();
+    assert.equal(payload.status, "error");
+    assert.equal(payload.requestedModel, "gemini-4-carbon");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("the default chain omits model and reports the hop that answered", async () => {
+  const originalFetch = globalThis.fetch;
+  let body = null;
+  globalThis.fetch = async (_input, init) => {
+    body = JSON.parse(init.body);
+    return new Response(JSON.stringify({
+      status: "done",
+      text: "Reviewed.",
+      provider: "openai",
+      model: "gpt-6-astra",
+      fallback: true,
+      fallback_depth: 2,
+    }), { status: 200, headers: { "content-type": "application/json" } });
+  };
+  const jobState = state();
+  const job = new workerModule.MikeJob(jobState, {
+    MIKE_BACKEND_URL: "https://backend.test",
+    CONNECTOR_API_KEY: "test-key",
+  });
+  const env = {
+    MCP_API_KEY: "test-key",
+    MIKE_JOBS: {
+      idFromName: (id) => id,
+      get: () => asDurableObject(job),
+    },
+  };
+  try {
+    const started = await rpc(env, "tools/call", {
+      name: "ask_mike",
+      arguments: { prompt: "Review the clause." },
+    });
+    assert.equal(started.result.structuredContent.model, null);
+    assert.equal(started.result.structuredContent.model_policy, "default_chain");
+    await job.alarm();
+    assert.equal(Object.prototype.hasOwnProperty.call(body, "model"), false);
+    const answer = await rpc(env, "tools/call", {
+      name: "get_mike_answer",
+      arguments: { job_id: started.result.structuredContent.job_id },
+    });
+    assert.equal(answer.result.structuredContent.provider, "openai");
+    assert.equal(answer.result.structuredContent.model, "gpt-6-astra");
+    assert.equal(answer.result.structuredContent.fallback, true);
+    assert.equal(answer.result.structuredContent.fallback_depth, 2);
+    assert.match(answer.result.content[0].text, /fallback: yes, fallback_depth: 2/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
