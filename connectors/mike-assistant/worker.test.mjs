@@ -83,8 +83,8 @@ test("tools expose bounded multipart output schemas and accurate annotations", a
   assert.equal(byName.ask_mike.annotations.destructiveHint, false);
   assert.equal(byName.ask_mike.inputSchema.properties.prompt.maxLength, 500000);
   assert.match(byName.ask_mike.inputSchema.properties.prompt.description, /UTF-8 byte chunks under 128 KiB/i);
-  assert.match(source, /version: "1\.8\.3"/);
-  assert.match(source, /MCP connector v1\.8\.3/);
+  assert.match(source, /version: "1\.8\.4"/);
+  assert.match(source, /MCP connector v1\.8\.4/);
   assert.deepEqual(byName.ask_mike.inputSchema.properties.model.enum, [
     "claude-fable-5-2",
     "claude",
@@ -98,7 +98,8 @@ test("tools expose bounded multipart output schemas and accurate annotations", a
     "grok",
   ]);
   assert.match(byName.ask_mike.inputSchema.properties.model.description, /gemini-4-carbon/);
-  assert.match(byName.ask_mike.inputSchema.properties.model.description, /does not fall back/i);
+  assert.match(byName.ask_mike.inputSchema.properties.model.description, /no fallback/i);
+  assert.match(byName.ask_mike.inputSchema.properties.model.description, /no council/i);
   assert.equal(byName.get_mike_answer.outputSchema.properties.model.type[0], "string");
   assert.equal(byName.ask_mike.outputSchema.properties.model_policy.enum[0], "explicit");
   assert.match(source, /PROMPT_CHUNK_BYTES = 100 \* 1024/);
@@ -662,6 +663,88 @@ test("the default chain omits model and reports the hop that answered", async ()
     assert.equal(answer.result.structuredContent.fallback, true);
     assert.equal(answer.result.structuredContent.fallback_depth, 2);
     assert.match(answer.result.content[0].text, /fallback: yes, fallback_depth: 2/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("a pinned model stores the answer even when the prompt names the council", async () => {
+  const originalFetch = globalThis.fetch;
+  const bodies = [];
+  globalThis.fetch = async (_input, init) => {
+    bodies.push(JSON.parse(init.body));
+    return new Response(JSON.stringify({
+      status: "done",
+      text: "Indemnity is mutual.",
+      provider: "google",
+      model: "gemini-4-carbon",
+      fallback: false,
+      fallback_depth: 0,
+    }), { status: 200, headers: { "content-type": "application/json" } });
+  };
+  const jobState = state();
+  const job = new workerModule.MikeJob(jobState, {
+    MIKE_BACKEND_URL: "https://backend.test",
+    CONNECTOR_API_KEY: "test-key",
+  });
+  const env = {
+    MCP_API_KEY: "test-key",
+    MIKE_JOBS: {
+      idFromName: (id) => id,
+      get: () => asDurableObject(job),
+    },
+  };
+  try {
+    const started = await rpc(env, "tools/call", {
+      name: "ask_mike",
+      arguments: {
+        prompt: "Do not convene the council. Convene the five-seat council. min_quorum 3.",
+        model: "gemini",
+      },
+    });
+    assert.equal(started.result.structuredContent.model, "gemini-4-carbon");
+    await job.alarm();
+    assert.equal(bodies.length, 1);
+    assert.equal(bodies[0].model, "gemini-4-carbon");
+    const stored = await jobState.storage.get("job");
+    assert.equal(stored.status, "done");
+    assert.equal(await jobState.storage.get("result:1"), "Indemnity is mutual.");
+    const answer = await rpc(env, "tools/call", {
+      name: "get_mike_answer",
+      arguments: { job_id: started.result.structuredContent.job_id },
+    });
+    assert.equal(answer.result.structuredContent.model, "gemini-4-carbon");
+    assert.equal(answer.result.structuredContent.fallback, false);
+    assert.match(answer.result.content[0].text, /Indemnity is mutual/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("an unpinned negation of the council is not forced into a council answer", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    status: "done",
+    text: "Reviewed without a council.",
+  }), { status: 200, headers: { "content-type": "application/json" } });
+  const jobState = state({
+    job: {
+      status: "working",
+      principal: "principal-a",
+      prompt: "Do not convene the council. Review the indemnity.",
+      created: Date.now(),
+      startedAt: Date.now(),
+    },
+  });
+  const job = new workerModule.MikeJob(jobState, {
+    MIKE_BACKEND_URL: "https://backend.test",
+    CONNECTOR_API_KEY: "test-key",
+  });
+  try {
+    await job.alarm();
+    const stored = await jobState.storage.get("job");
+    assert.equal(stored.status, "done");
+    assert.equal(await jobState.storage.get("result:1"), "Reviewed without a council.");
   } finally {
     globalThis.fetch = originalFetch;
   }

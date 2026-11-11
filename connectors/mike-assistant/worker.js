@@ -153,7 +153,9 @@ function stripPromptFromJob(job, updates) {
 __name(stripPromptFromJob, "stripPromptFromJob");
 function promptRequestsCouncil(text) {
   if (!text) return false;
-  return /\bconvene_council\b/i.test(text) || /\bmin[_\s-]?quorum\b/i.test(text) || /\bconvene(?:\s+the)?\s+(?:five[- ]seat\s+|5[- ]seat\s+)?council\b/i.test(text) || /\b(?:five[- ]seat|5[- ]seat)\s+council\b/i.test(text) || /\blegal council\b/i.test(text);
+  // Direct prohibitions only. "don't forget to convene" stays a request.
+  const actionable = text.replace(/\b(?:do not|don't|dont|never)\s+(?:convene(?:_council)?|call\s+(?:the\s+)?(?:legal\s+)?council|use\s+(?:the\s+)?(?:legal\s+)?council|run\s+(?:the\s+)?(?:legal\s+)?council)\b/gi, " ");
+  return /\bconvene_council\b/i.test(actionable) || /\bmin[_\s-]?quorum\b/i.test(actionable) || /\bconvene(?:\s+the)?\s+(?:five[- ]seat\s+|5[- ]seat\s+)?council\b/i.test(actionable) || /\b(?:five[- ]seat|5[- ]seat)\s+council\b/i.test(actionable) || /\blegal council\b/i.test(actionable);
 }
 __name(promptRequestsCouncil, "promptRequestsCouncil");
 function isCouncilSynthesis(text) {
@@ -205,7 +207,7 @@ function connectorModelAllowedText() {
 }
 __name(connectorModelAllowedText, "connectorModelAllowedText");
 function connectorModelSchemaDescription() {
-  return "Optional. When set, Mike uses only this model and does not fall back to any other model. Allowed values: " + connectorModelAllowedText() + ". Aliases: gemini -> gemini-4-carbon (council Gemini 4 Carbon), claude -> claude-fable-5-2, openai and gpt -> gpt-6-astra, grok -> grok-4.7. Omit to keep the default chain claude-fable-5-2 -> claude-opus-5-5 -> gpt-6-astra. Unknown values are rejected with this list. get_mike_answer reports the provider and exact model id that produced the answer, and whether the default chain fell back.";
+  return "Optional. When set, Mike uses only this model for the whole request: no fallback, no council, no judge, and no other seat, whatever the prompt says. Allowed values: " + connectorModelAllowedText() + ". Aliases: gemini -> gemini-4-carbon (council Gemini 4 Carbon), claude -> claude-fable-5-2, openai and gpt -> gpt-6-astra, grok -> grok-4.7. Omit to keep the default chain claude-fable-5-2 -> claude-opus-5-5 -> gpt-6-astra, including council keyword routing. Unknown values are rejected with this list. get_mike_answer reports the provider and exact model id that produced the answer, and whether the default chain fell back.";
 }
 __name(connectorModelSchemaDescription, "connectorModelSchemaDescription");
 function resolveConnectorModelChoice(value) {
@@ -379,7 +381,7 @@ var worker_default = {
       return new Response(null, { status: 204, headers: CORS });
     }
     if (request.method === "GET" && (url.pathname === "/" || url.pathname === "/health")) {
-      return new Response("Mike Legal AI — MCP connector v1.8.3.", {
+      return new Response("Mike Legal AI — MCP connector v1.8.4.", {
         headers: { "content-type": "text/plain", ...CORS }
       });
     }
@@ -513,7 +515,7 @@ var worker_default = {
         return ok({
           protocolVersion: pv,
           capabilities: { tools: { listChanged: false } },
-          serverInfo: { name: "mike-legal", version: "1.8.3" },
+          serverInfo: { name: "mike-legal", version: "1.8.4" },
           instructions: "Start legal reviews with ask_mike, then poll get_mike_answer using retry_after_seconds. Fetch every numbered part before synthesizing. Treat Mike's analysis as legal work product requiring human counsel review."
         });
       }
@@ -951,7 +953,7 @@ var MikeJob = class {
         job_id: backendJobId,
         attempt
       });
-      if (promptRequestsCouncil(promptText) && !isCouncilSynthesis(text)) {
+      if (!activeJob.requestedModel && promptRequestsCouncil(promptText) && !isCouncilSynthesis(text)) {
         throw new Error("council synthesis missing; refusing to complete with intake preamble");
       }
       const chunks = [];

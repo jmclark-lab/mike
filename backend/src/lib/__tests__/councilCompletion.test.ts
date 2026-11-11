@@ -9,6 +9,8 @@ import {
   preferCouncilSynthesis,
   promptRequestsCouncil,
   resolveCouncilContext,
+  shouldAutoConveneCouncil,
+  shouldRequireCouncilSynthesis,
   utf8ByteLength,
 } from "../councilCompletion";
 
@@ -35,6 +37,56 @@ test("promptRequestsCouncil matches operational council language, not generic 'c
     promptRequestsCouncil(
       "The municipal council shall meet on Tuesdays. Review clause 4.",
     ),
+    false,
+  );
+  assert.equal(
+    promptRequestsCouncil("Do not convene the council. Review clause 4."),
+    false,
+  );
+  assert.equal(
+    promptRequestsCouncil("Don't forget to convene the council on this NDA."),
+    true,
+  );
+  assert.equal(
+    promptRequestsCouncil(
+      "Do not convene the council. Convene the five-seat council on clause 9.",
+    ),
+    true,
+  );
+});
+
+test("a pinned ask never auto-convenes, even when the prompt names the council", () => {
+  const prompt =
+    "Do not convene the council. Convene the five-seat council. min_quorum 3. legal council.";
+  assert.equal(
+    shouldAutoConveneCouncil({
+      pinned: true,
+      prompt,
+      councilRan: false,
+      answer: "",
+    }),
+    false,
+  );
+  assert.equal(
+    shouldRequireCouncilSynthesis({ pinned: true, prompt }),
+    false,
+  );
+  assert.equal(
+    shouldAutoConveneCouncil({
+      pinned: false,
+      prompt: "Convene the five-seat council.",
+      councilRan: false,
+      answer: "",
+    }),
+    true,
+  );
+  assert.equal(
+    shouldAutoConveneCouncil({
+      pinned: false,
+      prompt: "Do not convene the council. Review the indemnity.",
+      councilRan: false,
+      answer: "",
+    }),
     false,
   );
 });

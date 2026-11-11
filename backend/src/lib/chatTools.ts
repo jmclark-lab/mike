@@ -92,8 +92,9 @@ import {
   logCouncilCompletion,
   parseMinQuorumFromPrompt,
   preferCouncilSynthesis,
-  promptRequestsCouncil,
   resolveCouncilContext,
+  shouldAutoConveneCouncil,
+  shouldRequireCouncilSynthesis,
   utf8ByteLength,
 } from "./councilCompletion";
 
@@ -229,6 +230,18 @@ GENERAL GUIDANCE:
  * false they are omitted entirely so the model is not told about tools it
  * does not have. Gated per-user by the Legal Research > US feature toggle.
  */
+const PINNED_MODEL_RULE = `PINNED MODEL:
+This request is locked to one model. convene_council is not available. Do not convene a council, a judge, or any other model. Answer this request yourself.`;
+
+/** Drop the council instructions so a pinned model is not told to fan out. */
+export function systemPromptForPinnedModel(systemPrompt: string): string {
+  const stripped = systemPrompt.replace(
+    /LEGAL COUNCIL:\n(?:- [^\n]*\n?)*/g,
+    "",
+  );
+  return `${stripped.trim()}\n\n${PINNED_MODEL_RULE}`;
+}
+
 export function buildSystemPrompt(includeResearchTools = true): string {
   return includeResearchTools
     ? `${SYSTEM_PROMPT_BEFORE_RESEARCH}\n\n${COURTLISTENER_SYSTEM_PROMPT}\n${SYSTEM_PROMPT_AFTER_RESEARCH}`
@@ -2719,6 +2732,7 @@ export async function runToolCalls(
   courtlistenerState?: CourtlistenerTurnState,
   apiKeys?: import("./llm").UserApiKeys,
   userPrompt?: string,
+  options?: { pinnedModel?: boolean },
 ): Promise<{
   toolResults: unknown[];
   docsRead: { filename: string; document_id?: string }[];
@@ -3115,6 +3129,12 @@ export async function runToolCalls(
     }
 
     if (tc.function.name === "convene_council") {
+      if (options?.pinnedModel) {
+        const content =
+          "convene_council is unavailable. This request is pinned to a single model; answer without a council, judge, or any other model.";
+        toolResults.push({ role: "tool", tool_call_id: tc.id, content });
+        continue;
+      }
       const question =
         typeof args.question === "string" && args.question.trim()
           ? args.question
@@ -4780,15 +4800,25 @@ export async function runLLMStream(params: {
     ...ingestTools,
     ...COUNCIL_TOOLS,
   ];
-  const activeTools = extraTools?.length
+  const withExtra = extraTools?.length
     ? [...baseTools, ...mcpTools, ...extraTools]
     : [...baseTools, ...mcpTools];
+  const activeTools = strictModel
+    ? withExtra.filter(
+        (tool) =>
+          (tool as { function?: { name?: string } }).function?.name !==
+          "convene_council",
+      )
+    : withExtra;
 
   // Extract system prompt; pass remaining turns to the adapter as
   // plain user/assistant messages.
   const rawMsgs = apiMessages as { role: string; content: string | null }[];
-  const systemPrompt =
+  const rawSystemPrompt =
     rawMsgs[0]?.role === "system" ? (rawMsgs[0].content ?? "") : "";
+  const systemPrompt = strictModel
+    ? systemPromptForPinnedModel(rawSystemPrompt)
+    : rawSystemPrompt;
   const chatMessages: LlmMessage[] = rawMsgs
     .filter((m) => m.role !== "system")
     .map((m) => ({
@@ -5008,6 +5038,7 @@ export async function runLLMStream(params: {
         courtlistenerTurnState,
         apiKeys,
         lastUserPrompt,
+        { pinnedModel: strictModel === true },
       );
         if (councilRan && councilAnswer) {
           councilState.ran = true;
@@ -5110,9 +5141,12 @@ export async function runLLMStream(params: {
   flushText();
 
   if (
-    promptRequestsCouncil(lastUserPrompt) &&
-    !councilState.ran &&
-    !isCouncilSynthesis(fullText)
+    shouldAutoConveneCouncil({
+      pinned: strictModel === true,
+      prompt: lastUserPrompt,
+      councilRan: councilState.ran,
+      answer: fullText,
+    })
   ) {
     throwIfAborted(signal);
     logCouncilCompletion({
@@ -5144,7 +5178,12 @@ export async function runLLMStream(params: {
     );
   }
 
-  if (promptRequestsCouncil(lastUserPrompt)) {
+  if (
+    shouldRequireCouncilSynthesis({
+      pinned: strictModel === true,
+      prompt: lastUserPrompt,
+    })
+  ) {
     logCouncilCompletion({
       site: "runLLMStream.completionMarker",
       source: classifyAnswerSource(fullText),

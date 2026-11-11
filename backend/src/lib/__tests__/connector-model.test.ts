@@ -2,7 +2,13 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { afterEach, test } from "node:test";
+import { shouldAutoConveneCouncil } from "../councilCompletion";
 import { ConnectorJobManager, readMikeSseResult } from "../connectorJobs";
+import {
+  COUNCIL_TOOLS,
+  buildSystemPrompt,
+  systemPromptForPinnedModel,
+} from "../chatTools";
 import {
   connectorModelAllowedValues,
   parseConnectorModelChoice,
@@ -185,4 +191,56 @@ test("connector jobs persist the answering model for a later poll", async () => 
   assert.equal(done.model, "gemini-4-carbon");
   assert.equal(done.fallback, false);
   assert.equal(done.fallback_depth, 0);
+});
+
+test("a pinned model plus council keywords makes exactly one model call", async () => {
+  const pinned = "gemini-4-carbon";
+  const prompt =
+    "Do not convene the council. Convene the five-seat council. min_quorum 3. Run the legal council.";
+  const calls: string[] = [];
+  assert.equal(
+    shouldAutoConveneCouncil({
+      pinned: true,
+      prompt,
+      councilRan: false,
+      answer: "",
+    }),
+    false,
+  );
+  const pinnedTools = COUNCIL_TOOLS.filter(
+    (tool) => tool.function.name !== "convene_council",
+  );
+  assert.equal(pinnedTools.length, 0);
+  const promptText = systemPromptForPinnedModel(buildSystemPrompt(false));
+  assert.equal(promptText.includes("convene_council is not available"), true);
+  assert.equal(/LEGAL COUNCIL:/.test(promptText), false);
+
+  const selection = chatModelsForRequest({ strictModel: true, model: pinned });
+  const result = await runChatModelAttempts({
+    models: selection.models,
+    strict: selection.strict,
+    invoke: async (model) => {
+      calls.push(model);
+      return { fullText: "Indemnity is mutual." };
+    },
+  });
+  assert.deepEqual(calls, [pinned]);
+  assert.deepEqual(result.providerMetadata?.attempted_models, [pinned]);
+  assert.equal(result.providerMetadata?.fallback_depth, 0);
+
+  const manager = new ConnectorJobManager(async () => ({
+    text: "Indemnity is mutual.",
+    provider: "google",
+    model: pinned,
+    fallback: false,
+    fallback_depth: 0,
+  }));
+  manager.startOrGet("job-pinned-council", prompt, { model: pinned });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const done = manager.startOrGet("job-pinned-council", prompt);
+  assert.equal(done.status, "done");
+  if (done.status !== "done") return;
+  assert.equal(done.text, "Indemnity is mutual.");
+  assert.equal(done.model, pinned);
+  assert.equal(done.fallback, false);
 });
