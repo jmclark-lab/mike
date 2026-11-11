@@ -4726,6 +4726,11 @@ export async function runLLMStream(params: {
   tabularStore?: TabularCellStore;
   buildCitations?: (fullText: string) => unknown[];
   model?: string;
+  /**
+   * Connector ask path only. Pins `model` and disables the fallback chain.
+   * Unset for the interactive UI, which keeps the env chain.
+   */
+  strictModel?: boolean;
   apiKeys?: import("./llm").UserApiKeys;
   signal?: AbortSignal;
   /**
@@ -4753,6 +4758,7 @@ export async function runLLMStream(params: {
     tabularStore,
     buildCitations,
     model,
+    strictModel,
     apiKeys,
     signal,
     projectId,
@@ -4920,7 +4926,8 @@ export async function runLLMStream(params: {
   try {
     throwIfAborted(signal);
     streamResult = await streamChatWithTools({
-      model: selectedModel,
+      model: strictModel ? (model ?? "") : selectedModel,
+      strictModel: strictModel === true,
       systemPrompt,
       messages: chatMessages,
       tools: activeTools as OpenAIToolSchema[],
@@ -5175,6 +5182,19 @@ export async function runLLMStream(params: {
   });
   write(
     `data: ${JSON.stringify({ type: "citations", status: "final", citations })}\n\n`,
+  );
+  const answered = streamResult?.providerMetadata;
+  const fallbackDepth =
+    typeof answered?.fallback_depth === "number" ? answered.fallback_depth : 0;
+  write(
+    `data: ${JSON.stringify({
+      type: "provider_metadata",
+      provider_name: answered?.provider_name ?? "unknown",
+      model_name: answered?.model_name ?? "unknown",
+      fallback: fallbackDepth > 0,
+      fallback_depth: fallbackDepth,
+      attempted_models: answered?.attempted_models ?? [],
+    })}\n\n`,
   );
   write("data: [DONE]\n\n");
 

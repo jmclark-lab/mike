@@ -182,6 +182,60 @@ function logCouncilCompletion(payload) {
   console.log("[council.completion] " + JSON.stringify(Object.assign({ event: "council_completion" }, payload, { answer_snapshot: snapshot })));
 }
 __name(logCouncilCompletion, "logCouncilCompletion");
+// Models the ask path may pin. Keep this list aligned with
+// backend/src/lib/connectorModelChoice.ts. Gemini is the council seat.
+var CONNECTOR_MODEL_CHOICES = [
+  { id: "claude-fable-5-2", provider: "anthropic", aliases: ["claude"] },
+  { id: "claude-opus-5-5", provider: "anthropic", aliases: [] },
+  { id: "gpt-6-astra", provider: "openai", aliases: ["openai", "gpt"] },
+  { id: "gemini-4-carbon", provider: "google", aliases: ["gemini"] },
+  { id: "grok-4.7", provider: "xai", aliases: ["grok"] }
+];
+function connectorModelAllowedValues() {
+  const values = [];
+  for (const choice of CONNECTOR_MODEL_CHOICES) {
+    values.push(choice.id);
+    for (const alias of choice.aliases) values.push(alias);
+  }
+  return values;
+}
+__name(connectorModelAllowedValues, "connectorModelAllowedValues");
+function connectorModelAllowedText() {
+  return connectorModelAllowedValues().join(", ");
+}
+__name(connectorModelAllowedText, "connectorModelAllowedText");
+function connectorModelSchemaDescription() {
+  return "Optional. When set, Mike uses only this model and does not fall back to any other model. Allowed values: " + connectorModelAllowedText() + ". Aliases: gemini -> gemini-4-carbon (council Gemini 4 Carbon), claude -> claude-fable-5-2, openai and gpt -> gpt-6-astra, grok -> grok-4.7. Omit to keep the default chain claude-fable-5-2 -> claude-opus-5-5 -> gpt-6-astra. Unknown values are rejected with this list. get_mike_answer reports the provider and exact model id that produced the answer, and whether the default chain fell back.";
+}
+__name(connectorModelSchemaDescription, "connectorModelSchemaDescription");
+function resolveConnectorModelChoice(value) {
+  if (value == null) return { ok: true, model: null, provider: null };
+  if (typeof value !== "string") {
+    return { ok: false, error: "model must be a string. Allowed values: " + connectorModelAllowedText() + "." };
+  }
+  const key = value.trim().toLowerCase();
+  if (!key) {
+    return { ok: false, error: "model must be a non-empty string. Allowed values: " + connectorModelAllowedText() + "." };
+  }
+  for (const choice of CONNECTOR_MODEL_CHOICES) {
+    if (choice.id === key || choice.aliases.indexOf(key) !== -1) {
+      return { ok: true, model: choice.id, provider: choice.provider };
+    }
+  }
+  return { ok: false, error: "Unknown model \"" + value.trim() + "\". Allowed values: " + connectorModelAllowedText() + "." };
+}
+__name(resolveConnectorModelChoice, "resolveConnectorModelChoice");
+function formatAnswerModel(record) {
+  const provider = record && record.provider ? record.provider : "unknown";
+  const model = record && record.model ? record.model : "unknown";
+  const fallback = !!(record && record.fallback === true);
+  let note = "provider: " + provider + ", model: " + model + ", fallback: " + (fallback ? "yes" : "no");
+  if (fallback && record && Number.isFinite(record.fallbackDepth)) {
+    note += ", fallback_depth: " + record.fallbackDepth;
+  }
+  return note;
+}
+__name(formatAnswerModel, "formatAnswerModel");
 // Start-or-poll a Railway-owned async job. Each Worker request is short-lived;
 // the long council execution stays in Railway and is never duplicated merely
 // because Cloudflare ends a request after its platform lifetime limit.
@@ -193,10 +247,12 @@ async function callMike(env, prompt, opts) {
   const timer = setTimeout(() => controller.abort(), requestMs);
   try {
     const base = env.MIKE_BACKEND_URL.replace(/\/$/, "");
+    const requestBody = { prompt };
+    if (opts && opts.model) requestBody.model = opts.model;
     const r = await fetch(base + "/connector/jobs/" + encodeURIComponent(jobId), {
       method: "POST",
       headers: { "x-connector-key": env.CONNECTOR_API_KEY, "content-type": "application/json" },
-      body: JSON.stringify({ prompt }),
+      body: JSON.stringify(requestBody),
       signal: controller.signal
     });
     const payload = await r.json().catch(() => ({}));
@@ -323,7 +379,7 @@ var worker_default = {
       return new Response(null, { status: 204, headers: CORS });
     }
     if (request.method === "GET" && (url.pathname === "/" || url.pathname === "/health")) {
-      return new Response("Mike Legal AI — MCP connector v1.8.2.", {
+      return new Response("Mike Legal AI — MCP connector v1.8.3.", {
         headers: { "content-type": "text/plain", ...CORS }
       });
     }
@@ -457,7 +513,7 @@ var worker_default = {
         return ok({
           protocolVersion: pv,
           capabilities: { tools: { listChanged: false } },
-          serverInfo: { name: "mike-legal", version: "1.8.2" },
+          serverInfo: { name: "mike-legal", version: "1.8.3" },
           instructions: "Start legal reviews with ask_mike, then poll get_mike_answer using retry_after_seconds. Fetch every numbered part before synthesizing. Treat Mike's analysis as legal work product requiring human counsel review."
         });
       }
@@ -469,11 +525,12 @@ var worker_default = {
           tools: [
             {
               name: "ask_mike",
-              description: "Start a Mike Legal AI review — bioaccess\xAE contract and Latin-American regulatory legal analysis (NDAs, MSAs, work orders, distribution/IDE/CRO agreements). Paste the full legal question and any contract/clause text as 'prompt'. Returns a job_id immediately; then poll get_mike_answer until the analysis is ready. Complex reviews can take 5–30+ minutes; the job retries automatically so keep polling.",
+              description: "Start a Mike Legal AI review — bioaccess\xAE contract and Latin-American regulatory legal analysis (NDAs, MSAs, work orders, distribution/IDE/CRO agreements). Paste the full legal question and any contract/clause text as 'prompt'. Optional 'model' pins one model with no fallback (gemini-4-carbon / gemini, claude-fable-5-2 / claude, claude-opus-5-5, gpt-6-astra / openai / gpt, grok-4.7 / grok). Omit model to keep the default chain. Returns a job_id immediately; then poll get_mike_answer until the analysis is ready. Complex reviews can take 5–30+ minutes; the job retries automatically so keep polling. get_mike_answer reports the provider and exact model id that produced the answer.",
               inputSchema: {
                 type: "object",
                 properties: {
                   prompt: { type: "string", minLength: 1, maxLength: 500000, description: "The legal question plus any contract or clause text to review. Prompts are stored in R2 or chunked Durable Object values (UTF-8 byte chunks under 128 KiB each); large reviews should still prefer ingest for huge attachments." },
+                  model: { type: "string", enum: connectorModelAllowedValues(), description: connectorModelSchemaDescription() },
                   idempotency_key: { type: "string", minLength: 1, maxLength: 128, description: "Optional stable key. Reusing it for the same authenticated principal returns the existing job instead of starting a duplicate." }
                 },
                 required: ["prompt"]
@@ -483,15 +540,18 @@ var worker_default = {
                 properties: {
                   job_id: { type: "string" },
                   status: { type: "string", enum: ["working"] },
-                  retry_after_seconds: { type: "integer" }
+                  retry_after_seconds: { type: "integer" },
+                  model: { type: ["string", "null"], description: "Canonical model id when the caller pinned one. Null when the default chain is used; the answering id is on get_mike_answer." },
+                  provider: { type: ["string", "null"], description: "Provider for the pinned model (anthropic, google, openai, xai), or null for the default chain." },
+                  model_policy: { type: "string", enum: ["explicit", "default_chain"] }
                 },
-                required: ["job_id", "status", "retry_after_seconds"]
+                required: ["job_id", "status", "retry_after_seconds", "model", "provider", "model_policy"]
               },
               annotations: { title: "Start Mike legal review", readOnlyHint: false, destructiveHint: false, openWorldHint: false }
             },
             {
               name: "get_mike_answer",
-              description: "Retrieve the result of a Mike Legal job started with ask_mike. Returns STATUS: completed (with the analysis), STATUS: working (still processing — wait 60 seconds and call again with the same job_id), or STATUS: failed. Long answers are returned in numbered parts; the header says 'part X of N' and, when more remains, tells you to call again with the next part number. Always fetch every part. For long reviews the job retries automatically; keep polling for up to 2 hours.",
+              description: "Retrieve the result of a Mike Legal job started with ask_mike. Returns STATUS: completed (with the analysis, the provider, the exact model id that produced it, and whether the default chain fell back), STATUS: working (still processing — wait 60 seconds and call again with the same job_id), or STATUS: failed (with the error; an explicit model never falls back to another model). Long answers are returned in numbered parts; the header says 'part X of N' and, when more remains, tells you to call again with the next part number. Always fetch every part. For long reviews the job retries automatically; keep polling for up to 2 hours.",
               inputSchema: {
                 type: "object",
                 properties: {
@@ -511,7 +571,11 @@ var worker_default = {
                   retry_after_seconds: { type: "integer" },
                   error: { type: "string" },
                   answer: { type: "string", description: "The analysis text for the requested part (present when status is completed). Concatenate answer across parts 1..total_parts for the full response." },
-                  next_part: { type: ["integer", "null"], description: "The next part number to fetch, or null when this is the last/only part." }
+                  next_part: { type: ["integer", "null"], description: "The next part number to fetch, or null when this is the last/only part." },
+                  provider: { type: ["string", "null"], description: "Provider that produced the answer (anthropic, google, openai, or xai). Present when status is completed." },
+                  model: { type: ["string", "null"], description: "Exact model id that produced the answer. On the default chain this is whichever link answered. Present when status is completed." },
+                  fallback: { type: "boolean", description: "True when a later model in the default chain produced the answer. Always false for an explicit model." },
+                  fallback_depth: { type: ["integer", "null"], description: "0 when the first attempted model answered. Higher when the default chain fell back." }
                 },
                 required: ["status", "job_id"]
               },
@@ -562,12 +626,14 @@ var worker_default = {
           const prompt = (args.prompt || "").toString();
           if (!prompt) return ok({ content: [{ type: "text", text: "Missing required argument 'prompt'." }], isError: true });
           if (prompt.length > 500000) return ok({ content: [{ type: "text", text: "Prompt exceeds the 500,000 character limit. Ingest documents first and submit a focused legal question." }], isError: true });
+          const modelChoice = resolveConnectorModelChoice(Object.prototype.hasOwnProperty.call(args, "model") ? args.model : null);
+          if (!modelChoice.ok) return ok({ content: [{ type: "text", text: modelChoice.error }], isError: true });
           if (!env.MIKE_JOBS) return ok({ content: [{ type: "text", text: "Async backend not configured (MIKE_JOBS Durable Object missing)." }], isError: true });
           const idempotencyKey = (args.idempotency_key || "").toString().trim();
           if (idempotencyKey.length > 128) return ok({ content: [{ type: "text", text: "idempotency_key exceeds 128 characters." }], isError: true });
           const jobId = idempotencyKey ? "idem_" + await sha256base64url(auth.principal + ":" + idempotencyKey) : crypto.randomUUID();
           const stub = env.MIKE_JOBS.get(env.MIKE_JOBS.idFromName(jobId));
-          const started = await stub.fetch("https://do/start", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ prompt, principal: auth.principal, idempotencyKey: idempotencyKey || null, jobId }) });
+          const started = await stub.fetch("https://do/start", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ prompt, principal: auth.principal, idempotencyKey: idempotencyKey || null, jobId, model: modelChoice.model, provider: modelChoice.provider }) });
           if (!started.ok) {
             if (started.status === 413) {
               const errBody = await started.json().catch(() => ({}));
@@ -590,9 +656,16 @@ var worker_default = {
             }
             return ok({ content: [{ type: "text", text: "Unable to start Mike Legal job (" + started.status + ")." }], isError: true });
           }
-          const structuredContent = { job_id: jobId, status: "working", retry_after_seconds: 20 };
+          const startedBody = await started.json().catch(() => ({}));
+          const reportedModel = startedBody && startedBody.reused ? startedBody.requestedModel || null : modelChoice.model;
+          const reportedProvider = startedBody && startedBody.reused ? startedBody.requestedProvider || null : modelChoice.provider;
+          const modelPolicy = reportedModel ? "explicit" : "default_chain";
+          const modelLine = modelPolicy === "explicit"
+            ? "model=" + reportedProvider + "/" + reportedModel + " (explicit; no fallback)"
+            : "model=default chain (claude-fable-5-2 -> claude-opus-5-5 -> gpt-6-astra). get_mike_answer reports the provider and exact model id that answers, and whether fallback happened.";
+          const structuredContent = { job_id: jobId, status: "working", retry_after_seconds: 20, model: reportedModel, provider: reportedProvider, model_policy: modelPolicy };
           return ok({
-            content: [{ type: "text", text: "Mike Legal job started. job_id=" + jobId + "\nNow call get_mike_answer with this exact job_id, polling about every 20 seconds until the analysis is ready (usually 1–3 minutes)." }],
+            content: [{ type: "text", text: "Mike Legal job started. job_id=" + jobId + "\n" + modelLine + "\nNow call get_mike_answer with this exact job_id, polling about every 20 seconds until the analysis is ready (usually 1–3 minutes)." }],
             structuredContent,
             isError: false
           });
@@ -613,20 +686,42 @@ var worker_default = {
             const total = s.totalParts || 1;
             const part = s.part || 1;
             const slice = full;
-            const header = "STATUS: completed" + elapsedMin + (total > 1 ? " — part " + part + " of " + total : "");
+            const modelNote = " (" + formatAnswerModel(s) + ")";
+            const header = "STATUS: completed" + elapsedMin + modelNote + (total > 1 ? " — part " + part + " of " + total : "");
             const footer = total > 1 && part < total
               ? "\n\n[Response continues — call get_mike_answer again with job_id=\"" + jobId + "\" and part=" + (part + 1) + " to get the next part (" + (part + 1) + " of " + total + ").]"
               : "";
             return ok({
               content: [{ type: "text", text: header + "\n\n" + slice + footer }],
-              structuredContent: { status: "completed", job_id: jobId, part, total_parts: total, elapsed_seconds: s.elapsed, answer: slice, next_part: total > 1 && part < total ? part + 1 : null },
+              structuredContent: {
+                status: "completed",
+                job_id: jobId,
+                part,
+                total_parts: total,
+                elapsed_seconds: s.elapsed,
+                answer: slice,
+                next_part: total > 1 && part < total ? part + 1 : null,
+                provider: s.provider || "unknown",
+                model: s.model || "unknown",
+                fallback: s.fallback === true,
+                fallback_depth: Number.isFinite(s.fallbackDepth) ? s.fallbackDepth : s.fallback === true ? null : 0
+              },
               isError: false
             });
           }
           if (s.status === "error") {
+            const requested = s.requestedModel ? " requested_model=" + (s.requestedProvider || "unknown") + "/" + s.requestedModel + " (no fallback)" : "";
             return ok({
-              content: [{ type: "text", text: "STATUS: failed\n\n" + (s.error || "Unknown error") }],
-              structuredContent: { status: "failed", job_id: jobId, error: s.error || "Unknown error", elapsed_seconds: s.elapsed },
+              content: [{ type: "text", text: "STATUS: failed" + requested + "\n\n" + (s.error || "Unknown error") }],
+              structuredContent: {
+                status: "failed",
+                job_id: jobId,
+                error: s.error || "Unknown error",
+                elapsed_seconds: s.elapsed,
+                provider: s.requestedProvider || s.provider || null,
+                model: s.requestedModel || s.model || null,
+                fallback: false
+              },
               isError: true
             });
           }
@@ -702,7 +797,13 @@ var MikeJob = class {
       const now = Date.now();
       const existing = await this.state.storage.get("job");
       if (existing && body.idempotencyKey && existing.idempotencyKey === body.idempotencyKey && existing.principal === body.principal) {
-        return new Response(JSON.stringify({ ok: true, reused: true, status: existing.status }), { headers: { "content-type": "application/json" } });
+        return new Response(JSON.stringify({
+          ok: true,
+          reused: true,
+          status: existing.status,
+          requestedModel: existing.requestedModel || null,
+          requestedProvider: existing.requestedProvider || null
+        }), { headers: { "content-type": "application/json" } });
       }
       const promptText = (body.prompt || "").toString();
       const receivedBytes = utf8ByteLength(promptText);
@@ -717,6 +818,8 @@ var MikeJob = class {
           promptR2Key: persisted.promptR2Key,
           principal: (body.principal || "").toString(),
           idempotencyKey: body.idempotencyKey || null,
+          requestedModel: body.model || null,
+          requestedProvider: body.provider || null,
           backendJobId: jobId,
           created: now,
           startedAt: now
@@ -777,7 +880,13 @@ var MikeJob = class {
         attempt: job.attempt,
         completedAt: job.completedAt || null,
         lastError: job.lastError || null,
-        lastRetry: job.lastRetry || null
+        lastRetry: job.lastRetry || null,
+        requestedModel: job.requestedModel || null,
+        requestedProvider: job.requestedProvider || null,
+        provider: job.provider || null,
+        model: job.answerModel || null,
+        fallback: job.fallback === true,
+        fallbackDepth: Number.isFinite(job.fallbackDepth) ? job.fallbackDepth : null
       }), { headers: { "content-type": "application/json" } });
     }
     return new Response("not found", { status: 404 });
@@ -802,7 +911,7 @@ var MikeJob = class {
     });
     await this.state.storage.put("job", activeJob);
     try {
-      const result = await callMike(this.env, promptText, { jobId: backendJobId });
+      const result = await callMike(this.env, promptText, { jobId: backendJobId, model: activeJob.requestedModel || null });
       if (result && result.status === "working") {
         await this.state.storage.put("job", stripPromptFromJob(activeJob, {
           status: "working",
@@ -812,7 +921,21 @@ var MikeJob = class {
         return;
       }
       if (result && result.status === "error") {
-        throw new Error(result.error || "Mike backend job failed");
+        const message = result.error || "Mike backend job failed";
+        if (activeJob.requestedModel) {
+          await clearJobPrompt(this.state.storage, this.env, activeJob);
+          await this.state.storage.put("job", stripPromptFromJob(activeJob, {
+            status: "error",
+            error: message,
+            attempt,
+            promptChunks: 0,
+            promptR2Key: null,
+            expiresAt: Date.now() + 24 * 60 * 60 * 1e3
+          }));
+          await this.state.storage.setAlarm(Date.now() + 24 * 60 * 60 * 1e3);
+          return;
+        }
+        throw new Error(message);
       }
       const rawText = result && result.status === "done" ? result.text : "";
       if (!rawText || rawText.trim() === "") {
@@ -846,6 +969,10 @@ var MikeJob = class {
         totalParts: chunks.length,
         resultChars: text.length,
         answerSource: source,
+        provider: result && result.provider || null,
+        answerModel: result && result.model || null,
+        fallback: !!(result && result.fallback === true),
+        fallbackDepth: result && Number.isFinite(result.fallback_depth) ? result.fallback_depth : result && result.fallback === true ? null : 0,
         attempt,
         completedAt: (/* @__PURE__ */ new Date()).toISOString(),
         expiresAt
