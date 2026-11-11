@@ -4,7 +4,7 @@ import {
   isCouncilSynthesis,
   logCouncilCompletion,
   preferCouncilSynthesis,
-  promptRequestsCouncil,
+  shouldRequireCouncilSynthesis,
   utf8ByteLength,
 } from "./councilCompletion";
 import { connectorProviderForModel } from "./connectorModelChoice";
@@ -85,7 +85,13 @@ export class ConnectorJobManager {
           answer_snapshot: finalized,
           job_id: id,
         });
-        if (promptRequestsCouncil(prompt) && !isCouncilSynthesis(finalized)) {
+        if (
+          shouldRequireCouncilSynthesis({
+            pinned: Boolean(options?.model),
+            prompt,
+          }) &&
+          !isCouncilSynthesis(finalized)
+        ) {
           throw councilSynthesisMissingError();
         }
         this.jobs.set(id, {
@@ -183,6 +189,7 @@ export async function readMikeSseText(
 export async function readMikeSseResult(
   response: Response,
   prompt = "",
+  options?: { pinnedModel?: boolean },
 ): Promise<ConnectorRunResult> {
   if (!response.ok) {
     const body = await response.text().catch(() => "");
@@ -272,7 +279,13 @@ export async function readMikeSseResult(
     throw new Error(streamError);
   }
 
-  if (promptRequestsCouncil(prompt) && !isCouncilSynthesis(finalized)) {
+  if (
+    shouldRequireCouncilSynthesis({
+      pinned: options?.pinnedModel === true,
+      prompt,
+    }) &&
+    !isCouncilSynthesis(finalized)
+  ) {
     throw councilSynthesisMissingError();
   }
   if (!sawDone && !isCouncilSynthesis(finalized)) {

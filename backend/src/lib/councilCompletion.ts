@@ -22,12 +22,19 @@ const SYNTHESIS_HEADER =
 const QUORUM_FAILURE =
   /Council deliberation failed and no council opinion was produced/i;
 
+/**
+ * A direct prohibition ("do not convene", "never call the legal council").
+ * Indirect wording such as "don't forget to convene" is left in place so a
+ * real request is not dropped.
+ */
+const DIRECT_COUNCIL_NEGATION =
+  /\b(?:do not|don't|dont|never)\s+(?:convene(?:_council)?|call\s+(?:the\s+)?(?:legal\s+)?council|use\s+(?:the\s+)?(?:legal\s+)?council|run\s+(?:the\s+)?(?:legal\s+)?council)\b/gi;
+
 export function utf8ByteLength(text: string): number {
   return Buffer.byteLength(text ?? "", "utf8");
 }
 
-export function promptRequestsCouncil(text: string): boolean {
-  if (!text) return false;
+function textRequestsCouncil(text: string): boolean {
   return (
     /\bconvene_council\b/i.test(text) ||
     /\bmin[_\s-]?quorum\b/i.test(text) ||
@@ -37,6 +44,37 @@ export function promptRequestsCouncil(text: string): boolean {
     /\b(?:(?:five|four|5|4)[- ]seat)\s+council\b/i.test(text) ||
     /\blegal council\b/i.test(text)
   );
+}
+
+export function promptRequestsCouncil(text: string): boolean {
+  if (!text) return false;
+  return textRequestsCouncil(text.replace(DIRECT_COUNCIL_NEGATION, " "));
+}
+
+/**
+ * A pinned ask never convenes, even when the prompt names the council.
+ * The unpinned path still uses promptRequestsCouncil.
+ */
+export function shouldAutoConveneCouncil(args: {
+  pinned: boolean;
+  prompt: string;
+  councilRan: boolean;
+  answer: string;
+}): boolean {
+  if (args.pinned) return false;
+  return (
+    promptRequestsCouncil(args.prompt) &&
+    !args.councilRan &&
+    !isCouncilSynthesis(args.answer)
+  );
+}
+
+export function shouldRequireCouncilSynthesis(args: {
+  pinned: boolean;
+  prompt: string;
+}): boolean {
+  if (args.pinned) return false;
+  return promptRequestsCouncil(args.prompt);
 }
 
 export function isCouncilSynthesis(text: string): boolean {

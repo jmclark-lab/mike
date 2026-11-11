@@ -181,7 +181,9 @@ const connectorJobManager = new ConnectorJobManager(async (prompt, options) => {
       body: JSON.stringify(body),
       signal: controller.signal,
     });
-    return await readMikeSseResult(response, prompt);
+    return await readMikeSseResult(response, prompt, {
+      pinnedModel: Boolean(options?.model),
+    });
   } finally {
     clearTimeout(timeout);
   }
