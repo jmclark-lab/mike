@@ -83,8 +83,8 @@ test("tools expose bounded multipart output schemas and accurate annotations", a
   assert.equal(byName.ask_mike.annotations.destructiveHint, false);
   assert.equal(byName.ask_mike.inputSchema.properties.prompt.maxLength, 500000);
   assert.match(byName.ask_mike.inputSchema.properties.prompt.description, /UTF-8 byte chunks under 128 KiB/i);
-  assert.match(source, /version: "1\.8\.4"/);
-  assert.match(source, /MCP connector v1\.8\.4/);
+  assert.match(source, /version: "1\.8\.5"/);
+  assert.match(source, /MCP connector v1\.8\.5/);
   assert.deepEqual(byName.ask_mike.inputSchema.properties.model.enum, [
     "claude-fable-5-2",
     "claude",
@@ -554,8 +554,63 @@ test("ask_mike maps nemotron and nvidia aliases to Nemotron 3 Ultra", async () =
     assert.equal(started.result.structuredContent.model, "nvidia/nemotron-3-ultra-550b-a55b");
     assert.equal(started.result.structuredContent.provider, "nvidia");
     assert.equal(started.result.structuredContent.model_policy, "explicit");
-    assert.match(started.result.content[0].text, /nvidia\/nvidia\/nemotron-3-ultra-550b-a55b/);
-    assert.match(started.result.content[0].text, /no fallback/);
+    assert.match(started.result.content[0].text, /model=nvidia\/nemotron-3-ultra-550b-a55b \(explicit; no fallback\)/);
+    assert.doesNotMatch(started.result.content[0].text, /nvidia\/nvidia\//);
+  }
+});
+
+test("ask_mike acknowledgement keeps a single provider prefix for every pinned model", async () => {
+  const pins = [
+    { input: "claude-fable-5-2", provider: "anthropic", model: "claude-fable-5-2", label: "anthropic/claude-fable-5-2" },
+    { input: "claude", provider: "anthropic", model: "claude-fable-5-2", label: "anthropic/claude-fable-5-2" },
+    { input: "claude-opus-5-5", provider: "anthropic", model: "claude-opus-5-5", label: "anthropic/claude-opus-5-5" },
+    { input: "gpt-6-astra", provider: "openai", model: "gpt-6-astra", label: "openai/gpt-6-astra" },
+    { input: "openai", provider: "openai", model: "gpt-6-astra", label: "openai/gpt-6-astra" },
+    { input: "gpt", provider: "openai", model: "gpt-6-astra", label: "openai/gpt-6-astra" },
+    { input: "gemini-4-carbon", provider: "google", model: "gemini-4-carbon", label: "google/gemini-4-carbon" },
+    { input: "Gemini", provider: "google", model: "gemini-4-carbon", label: "google/gemini-4-carbon" },
+    { input: "grok-4.7", provider: "xai", model: "grok-4.7", label: "xai/grok-4.7" },
+    { input: "grok", provider: "xai", model: "grok-4.7", label: "xai/grok-4.7" },
+    { input: "nvidia/nemotron-3-ultra-550b-a55b", provider: "nvidia", model: "nvidia/nemotron-3-ultra-550b-a55b", label: "nvidia/nemotron-3-ultra-550b-a55b" },
+    { input: "nemotron", provider: "nvidia", model: "nvidia/nemotron-3-ultra-550b-a55b", label: "nvidia/nemotron-3-ultra-550b-a55b" },
+    { input: "NVIDIA", provider: "nvidia", model: "nvidia/nemotron-3-ultra-550b-a55b", label: "nvidia/nemotron-3-ultra-550b-a55b" },
+  ];
+  const jobState = state();
+  const env = {
+    MCP_API_KEY: "test-key",
+    MIKE_JOBS: {
+      idFromName: (id) => id,
+      get: () => asDurableObject(new workerModule.MikeJob(jobState, {})),
+    },
+  };
+  for (const pin of pins) {
+    const started = await rpc(env, "tools/call", {
+      name: "ask_mike",
+      arguments: { prompt: "Review the indemnity clause.", model: pin.input },
+    });
+    assert.equal(started.result.isError, false, pin.input);
+    assert.equal(started.result.structuredContent.provider, pin.provider, pin.input);
+    assert.equal(started.result.structuredContent.model, pin.model, pin.input);
+    assert.equal(started.result.structuredContent.model_policy, "explicit", pin.input);
+    const lines = started.result.content[0].text.split("\n");
+    assert.equal(lines[1], "model=" + pin.label + " (explicit; no fallback)", pin.input);
+    assert.equal(started.result.content[0].text.includes(pin.provider + "/" + pin.provider + "/"), false, pin.input);
+
+    const stored = await jobState.storage.get("job");
+    stored.status = "error";
+    stored.error = "pinned model failed";
+    await jobState.storage.put("job", stored);
+    const failed = await rpc(env, "tools/call", {
+      name: "get_mike_answer",
+      arguments: { job_id: started.result.structuredContent.job_id },
+    });
+    assert.equal(
+      failed.result.content[0].text.split("\n")[0],
+      "STATUS: failed requested_model=" + pin.label + " (no fallback)",
+      pin.input,
+    );
+    assert.equal(failed.result.structuredContent.provider, pin.provider, pin.input);
+    assert.equal(failed.result.structuredContent.model, pin.model, pin.input);
   }
 });
 
