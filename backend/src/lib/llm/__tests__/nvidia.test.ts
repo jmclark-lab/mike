@@ -19,10 +19,12 @@ import {
 import {
   DEFAULT_NVIDIA_BASE_URL,
   DEFAULT_NVIDIA_MODEL,
+  NVIDIA_MIN_OUTPUT_TOKENS,
   completeNvidiaText,
   nvidiaBaseUrl,
   nvidiaChatCompletionsUrl,
   nvidiaClient,
+  nvidiaOutputTokens,
   streamNvidia,
 } from "../nvidia";
 
@@ -273,6 +275,8 @@ describe("NVIDIA Nemotron selectable chat model", { concurrency: false }, () => 
       const body = JSON.parse(String(call.init?.body)) as Record<string, unknown>;
       assert.equal(body.model, DEFAULT_NVIDIA_MODEL);
       assert.equal(body.stream, true);
+      assert.equal(body.max_tokens, nvidiaOutputTokens());
+      assert.ok(Number(body.max_tokens) >= NVIDIA_MIN_OUTPUT_TOKENS);
       assert.deepEqual(body.chat_template_kwargs, { enable_thinking: true });
       assert.equal(
         nvidiaChatCompletionsUrl(nvidiaClient().baseUrl),
@@ -289,9 +293,11 @@ describe("NVIDIA Nemotron selectable chat model", { concurrency: false }, () => 
     process.env.NVIDIA_MODEL = "nvidia/nemotron-override";
     const reasoning: string[] = [];
     const content: string[] = [];
+    let reasoningBlockEnded = false;
     const fetchMock = installFetch(() =>
       sseResponse([
         { choices: [{ delta: { reasoning_content: "think" } }] },
+        { choices: [{ delta: { reasoning: "more thought" } }] },
         {
           id: "chatcmpl-stream",
           choices: [{ delta: { content: "shown" }, finish_reason: "stop" }],
@@ -305,11 +311,17 @@ describe("NVIDIA Nemotron selectable chat model", { concurrency: false }, () => 
         messages: [{ role: "user", content: "ping" }],
         callbacks: {
           onReasoningDelta: (text) => reasoning.push(text),
+          onReasoningBlockEnd: () => {
+            reasoningBlockEnded = true;
+          },
           onContentDelta: (text) => content.push(text),
         },
       });
       assert.equal(result.fullText, "shown");
-      assert.deepEqual(reasoning, ["think"]);
+      assert.equal(result.fullText.includes("think"), false);
+      assert.equal(result.fullText.includes("thought"), false);
+      assert.deepEqual(reasoning, []);
+      assert.equal(reasoningBlockEnded, false);
       assert.deepEqual(content, ["shown"]);
       assert.equal(result.providerMetadata?.provider_name, "nvidia");
       assert.equal(result.providerMetadata?.model_name, "nvidia/nemotron-override");
@@ -318,6 +330,7 @@ describe("NVIDIA Nemotron selectable chat model", { concurrency: false }, () => 
       assert.equal(call.url, "https://example.test/nvidia/v1/chat/completions");
       const body = JSON.parse(String(call.init?.body)) as Record<string, unknown>;
       assert.equal(body.model, "nvidia/nemotron-override");
+      assert.equal(body.max_tokens, 16384);
       assert.deepEqual(body.chat_template_kwargs, { enable_thinking: true });
     } finally {
       fetchMock.restore();
@@ -353,6 +366,131 @@ describe("NVIDIA Nemotron selectable chat model", { concurrency: false }, () => 
       assert.equal(result, "json answer");
     } finally {
       fetchMock.restore();
+    }
+  });
+
+  test("max_tokens defaults to at least 4000 and raises a smaller caller budget", async () => {
+    assert.equal(nvidiaOutputTokens(), 16384);
+    assert.ok(nvidiaOutputTokens() >= NVIDIA_MIN_OUTPUT_TOKENS);
+    assert.equal(nvidiaOutputTokens(512), NVIDIA_MIN_OUTPUT_TOKENS);
+    assert.equal(nvidiaOutputTokens(1), NVIDIA_MIN_OUTPUT_TOKENS);
+    assert.equal(nvidiaOutputTokens(8000), 8000);
+    assert.equal(NVIDIA_MIN_OUTPUT_TOKENS, 4000);
+
+    process.env.NVIDIA_API_KEY = "test-nvidia-key";
+    delete process.env.NVIDIA_BASE_URL;
+    delete process.env.NVIDIA_MODEL;
+    const fetchMock = installFetch(() =>
+      sseResponse([
+        { choices: [{ delta: { content: "ok" }, finish_reason: "stop" }] },
+      ]),
+    );
+    try {
+      await completeNvidiaText({
+        model: DEFAULT_NVIDIA_MODEL,
+        user: "ping",
+        maxTokens: 512,
+      });
+      const small = JSON.parse(String(fetchMock.calls[0]?.init?.body)) as {
+        max_tokens?: number;
+      };
+      assert.equal(small.max_tokens, 4000);
+
+      await completeNvidiaText({
+        model: DEFAULT_NVIDIA_MODEL,
+        user: "ping",
+      });
+      const omitted = JSON.parse(String(fetchMock.calls[1]?.init?.body)) as {
+        max_tokens?: number;
+      };
+      assert.equal(omitted.max_tokens, 16384);
+    } finally {
+      fetchMock.restore();
+    }
+  });
+
+  test("reasoning_content is ignored and a null content raises an empty response", async () => {
+    process.env.NVIDIA_API_KEY = "test-nvidia-key";
+    delete process.env.NVIDIA_BASE_URL;
+    delete process.env.NVIDIA_MODEL;
+    const reasoning: string[] = [];
+    const content: string[] = [];
+    const fetchMock = installFetch(() =>
+      sseResponse([
+        {
+          choices: [
+            {
+              delta: { reasoning_content: "budget spent on thinking", content: null },
+              finish_reason: "length",
+            },
+          ],
+        },
+      ]),
+    );
+    try {
+      await assert.rejects(
+        () =>
+          streamNvidia({
+            model: DEFAULT_NVIDIA_MODEL,
+            systemPrompt: "system",
+            messages: [{ role: "user", content: "ping" }],
+            callbacks: {
+              onReasoningDelta: (text) => reasoning.push(text),
+              onContentDelta: (text) => content.push(text),
+            },
+          }),
+        (err: unknown) => {
+          assert.ok(err instanceof Error);
+          assert.match(err.message, /NVIDIA returned an empty response/);
+          assert.equal(err.message.includes("budget spent"), false);
+          assert.equal(err.message.includes("thinking"), false);
+          return true;
+        },
+      );
+      assert.deepEqual(reasoning, []);
+      assert.deepEqual(content, []);
+    } finally {
+      fetchMock.restore();
+    }
+
+    const jsonMock = installFetch(
+      () =>
+        new Response(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  content: null,
+                  reasoning_content: "json reasoning only",
+                },
+                finish_reason: "length",
+              },
+            ],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+    );
+    try {
+      await assert.rejects(
+        () =>
+          completeNvidiaText({
+            model: DEFAULT_NVIDIA_MODEL,
+            user: "ping",
+            maxTokens: 256,
+          }),
+        (err: unknown) => {
+          assert.ok(err instanceof Error);
+          assert.match(err.message, /NVIDIA returned an empty response/);
+          assert.equal(err.message.includes("json reasoning"), false);
+          return true;
+        },
+      );
+      const body = JSON.parse(String(jsonMock.calls[0]?.init?.body)) as {
+        max_tokens?: number;
+      };
+      assert.equal(body.max_tokens, 4000);
+    } finally {
+      jsonMock.restore();
     }
   });
 

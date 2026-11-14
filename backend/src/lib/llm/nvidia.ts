@@ -7,9 +7,13 @@
  * The model is selectable in chat and on ask_mike. It is not in the default
  * fallback chain and it is not a legal-council seat.
  *
- * Thinking is requested with chat_template_kwargs.enable_thinking. Reasoning
- * tokens stay on the reasoning callback, the same split DeepSeek and xAI use,
- * and are not copied into the user-visible answer.
+ * Thinking is requested with chat_template_kwargs.enable_thinking. Nemotron
+ * emits reasoning_content before content, and a small max_tokens budget can
+ * end the response while content is still null. reasoning_content and
+ * reasoning deltas are discarded. They are not forwarded to callbacks and
+ * are not copied into the answer. max_tokens is at least 4000. A response
+ * whose content is null or empty throws, so the shared fallback path can
+ * retry instead of returning a blank answer.
  *
  * A missing NVIDIA_API_KEY throws before any request, matching the other
  * providers. Abort and HTTP failures propagate with the status or abort
@@ -27,7 +31,10 @@ import type {
 
 export const DEFAULT_NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1";
 export const DEFAULT_NVIDIA_MODEL = "nvidia/nemotron-3-ultra-550b-a55b";
-const MAX_OUTPUT_TOKENS = 16384;
+/** Chat budget. Callers may ask for more. They may not go below the floor. */
+const NVIDIA_DEFAULT_OUTPUT_TOKENS = 16384;
+/** Reasoning is emitted first. Below this, content often comes back null. */
+export const NVIDIA_MIN_OUTPUT_TOKENS = 4000;
 
 export type NvidiaClient = {
     provider: "nvidia";
@@ -120,6 +127,17 @@ export function nvidiaChatCompletionsUrl(baseUrl: string): string {
     return `${baseUrl.replace(/\/$/, "")}/chat/completions`;
 }
 
+/**
+ * Output budget sent as max_tokens. Omitted or non-finite values use the
+ * chat default. Any smaller caller value is raised to the floor.
+ */
+export function nvidiaOutputTokens(requested?: number): number {
+    if (requested == null || !Number.isFinite(requested)) {
+        return NVIDIA_DEFAULT_OUTPUT_TOKENS;
+    }
+    return Math.max(NVIDIA_MIN_OUTPUT_TOKENS, Math.trunc(requested));
+}
+
 function thinkingBody(): { chat_template_kwargs: { enable_thinking: true } } {
     return { chat_template_kwargs: { enable_thinking: true } };
 }
@@ -171,18 +189,14 @@ function chunkError(chunk: ChatCompletionsChunk): string | null {
     return code ? `NVIDIA error (${code}): ${message}` : message;
 }
 
-function reasoningText(delta: ContentDelta | undefined): string {
-    if (!delta) return "";
-    if (typeof delta.reasoning_content === "string" && delta.reasoning_content) {
-        return delta.reasoning_content;
-    }
-    if (typeof delta.reasoning === "string" && delta.reasoning) return delta.reasoning;
-    return "";
-}
-
 function contentText(delta: ContentDelta | undefined): string {
     if (!delta || typeof delta.content !== "string") return "";
     return delta.content;
+}
+
+function assertHasContent(text: string): void {
+    if (text.trim()) return;
+    throw new Error("NVIDIA returned an empty response.");
 }
 
 function isJsonResponse(response: Response): boolean {
@@ -245,7 +259,6 @@ async function readCompletion(params: {
     response: Response;
     signal?: AbortSignal;
     onContent?: (text: string) => void;
-    onReasoning?: (text: string) => void;
 }): Promise<ReadResult> {
     if (isJsonResponse(params.response)) {
         const payload = (await params.response.json()) as ChatCompletionsChunk;
@@ -253,9 +266,7 @@ async function readCompletion(params: {
         if (failure) throw new Error(failure);
         const choice = payload.choices?.[0];
         const message = choice?.message ?? choice?.delta;
-        const reasoning = reasoningText(message);
         const text = contentText(message);
-        if (reasoning) params.onReasoning?.(reasoning);
         if (text) params.onContent?.(text);
         const toolCalls = new Map<number, ToolAcc>();
         for (const [index, call] of (message?.tool_calls ?? []).entries()) {
@@ -287,8 +298,6 @@ async function readCompletion(params: {
             if (!choice) continue;
             if (choice.finish_reason) finishReason = choice.finish_reason;
             const delta = choice.delta ?? choice.message;
-            const reasoning = reasoningText(delta);
-            if (reasoning) params.onReasoning?.(reasoning);
             const piece = contentText(delta);
             if (piece) {
                 text += piece;
@@ -349,12 +358,11 @@ export async function streamNvidia(params: StreamChatParams): Promise<StreamChat
                 model,
                 messages,
                 stream: true,
-                max_tokens: MAX_OUTPUT_TOKENS,
+                max_tokens: nvidiaOutputTokens(),
                 ...thinkingBody(),
                 ...(chatTools.length ? { tools: chatTools, tool_choice: "auto" } : {}),
             },
         });
-        let sawReasoning = false;
         const read = await readCompletion({
             response,
             signal: params.abortSignal,
@@ -362,13 +370,8 @@ export async function streamNvidia(params: StreamChatParams): Promise<StreamChat
                 fullText += piece;
                 callbacks.onContentDelta?.(piece);
             },
-            onReasoning: (piece) => {
-                sawReasoning = true;
-                callbacks.onReasoningDelta?.(piece);
-            },
         });
         if (read.responseId) responseId = read.responseId;
-        if (sawReasoning) callbacks.onReasoningBlockEnd?.();
 
         if (read.finishReason !== "tool_calls" || read.toolCalls.size === 0 || !runTools) break;
 
@@ -409,6 +412,7 @@ export async function streamNvidia(params: StreamChatParams): Promise<StreamChat
         }
     }
 
+    assertHasContent(fullText);
     return {
         fullText,
         providerMetadata: {
@@ -435,11 +439,12 @@ export async function completeNvidiaText(params: {
         body: {
             model: nvidiaRequestModel(params.model),
             messages,
-            max_tokens: params.maxTokens ?? 512,
+            max_tokens: nvidiaOutputTokens(params.maxTokens),
             stream: true,
             ...thinkingBody(),
         },
     });
     const read = await readCompletion({ response });
+    assertHasContent(read.text);
     return read.text;
 }
