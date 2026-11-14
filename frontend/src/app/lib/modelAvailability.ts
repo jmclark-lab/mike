@@ -7,7 +7,8 @@ export type ModelProvider =
     | "openai"
     | "xai"
     | "deepseek"
-    | "moonshot";
+    | "moonshot"
+    | "nvidia";
 
 export function getModelProvider(modelId: string): ModelProvider | null {
     const model = SETTINGS_MODELS.find((m) => m.id === modelId);
@@ -38,6 +39,7 @@ export function providerLabel(provider: ModelProvider): string {
     if (provider === "xai") return "xAI (Grok)";
     if (provider === "deepseek") return "DeepSeek";
     if (provider === "moonshot") return "Moonshot (Kimi)";
+    if (provider === "nvidia") return "NVIDIA (Nemotron)";
     return "Google (Gemini)";
 }
 
@@ -48,5 +50,6 @@ export function modelGroupToProvider(
     if (group === "OpenAI") return "openai";
     if (group === "xAI") return "xai";
     if (group === "Moonshot") return "moonshot";
+    if (group === "NVIDIA") return "nvidia";
     return "gemini";
 }

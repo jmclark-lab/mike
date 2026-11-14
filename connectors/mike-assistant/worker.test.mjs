@@ -96,6 +96,9 @@ test("tools expose bounded multipart output schemas and accurate annotations", a
     "gemini",
     "grok-4.7",
     "grok",
+    "nvidia/nemotron-3-ultra-550b-a55b",
+    "nemotron",
+    "nvidia",
   ]);
   assert.match(byName.ask_mike.inputSchema.properties.model.description, /gemini-4-carbon/);
   assert.match(byName.ask_mike.inputSchema.properties.model.description, /no fallback/i);
@@ -529,8 +532,30 @@ test("ask_mike rejects an unknown model and lists the allowed values", async () 
   });
   assert.equal(result.result.isError, true);
   assert.match(result.result.content[0].text, /Unknown model "claude-haiku"/);
-  for (const allowed of ["claude-fable-5-2", "claude", "claude-opus-5-5", "gpt-6-astra", "openai", "gpt", "gemini-4-carbon", "gemini", "grok-4.7", "grok"]) {
+  for (const allowed of ["claude-fable-5-2", "claude", "claude-opus-5-5", "gpt-6-astra", "openai", "gpt", "gemini-4-carbon", "gemini", "grok-4.7", "grok", "nvidia/nemotron-3-ultra-550b-a55b", "nemotron", "nvidia"]) {
     assert.match(result.result.content[0].text, new RegExp(allowed));
+  }
+});
+
+test("ask_mike maps nemotron and nvidia aliases to Nemotron 3 Ultra", async () => {
+  const env = {
+    MCP_API_KEY: "test-key",
+    MIKE_JOBS: {
+      idFromName: (id) => id,
+      get: () => asDurableObject(new workerModule.MikeJob(state(), {})),
+    },
+  };
+  for (const alias of ["nemotron", "NVIDIA", "nvidia/nemotron-3-ultra-550b-a55b"]) {
+    const started = await rpc(env, "tools/call", {
+      name: "ask_mike",
+      arguments: { prompt: "Review the indemnity clause.", model: alias },
+    });
+    assert.equal(started.result.isError, false, alias);
+    assert.equal(started.result.structuredContent.model, "nvidia/nemotron-3-ultra-550b-a55b");
+    assert.equal(started.result.structuredContent.provider, "nvidia");
+    assert.equal(started.result.structuredContent.model_policy, "explicit");
+    assert.match(started.result.content[0].text, /nvidia\/nvidia\/nemotron-3-ultra-550b-a55b/);
+    assert.match(started.result.content[0].text, /no fallback/);
   }
 });
 

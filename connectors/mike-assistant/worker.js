@@ -186,12 +186,14 @@ function logCouncilCompletion(payload) {
 __name(logCouncilCompletion, "logCouncilCompletion");
 // Models the ask path may pin. Keep this list aligned with
 // backend/src/lib/connectorModelChoice.ts. Gemini is the council seat.
+// Nemotron is a chat pin only and is not a council seat.
 var CONNECTOR_MODEL_CHOICES = [
   { id: "claude-fable-5-2", provider: "anthropic", aliases: ["claude"] },
   { id: "claude-opus-5-5", provider: "anthropic", aliases: [] },
   { id: "gpt-6-astra", provider: "openai", aliases: ["openai", "gpt"] },
   { id: "gemini-4-carbon", provider: "google", aliases: ["gemini"] },
-  { id: "grok-4.7", provider: "xai", aliases: ["grok"] }
+  { id: "grok-4.7", provider: "xai", aliases: ["grok"] },
+  { id: "nvidia/nemotron-3-ultra-550b-a55b", provider: "nvidia", aliases: ["nemotron", "nvidia"] }
 ];
 function connectorModelAllowedValues() {
   const values = [];
@@ -207,7 +209,7 @@ function connectorModelAllowedText() {
 }
 __name(connectorModelAllowedText, "connectorModelAllowedText");
 function connectorModelSchemaDescription() {
-  return "Optional. When set, Mike uses only this model for the whole request: no fallback, no council, no judge, and no other seat, whatever the prompt says. Allowed values: " + connectorModelAllowedText() + ". Aliases: gemini -> gemini-4-carbon (council Gemini 4 Carbon), claude -> claude-fable-5-2, openai and gpt -> gpt-6-astra, grok -> grok-4.7. Omit to keep the default chain claude-fable-5-2 -> claude-opus-5-5 -> gpt-6-astra, including council keyword routing. Unknown values are rejected with this list. get_mike_answer reports the provider and exact model id that produced the answer, and whether the default chain fell back.";
+  return "Optional. When set, Mike uses only this model for the whole request: no fallback, no council, no judge, and no other seat, whatever the prompt says. Allowed values: " + connectorModelAllowedText() + ". Aliases: gemini -> gemini-4-carbon (council Gemini 4 Carbon), claude -> claude-fable-5-2, openai and gpt -> gpt-6-astra, grok -> grok-4.7, nemotron and nvidia -> nvidia/nemotron-3-ultra-550b-a55b (not a council seat). Omit to keep the default chain claude-fable-5-2 -> claude-opus-5-5 -> gpt-6-astra, including council keyword routing. Unknown values are rejected with this list. get_mike_answer reports the provider and exact model id that produced the answer, and whether the default chain fell back.";
 }
 __name(connectorModelSchemaDescription, "connectorModelSchemaDescription");
 function resolveConnectorModelChoice(value) {
@@ -527,7 +529,7 @@ var worker_default = {
           tools: [
             {
               name: "ask_mike",
-              description: "Start a Mike Legal AI review — bioaccess\xAE contract and Latin-American regulatory legal analysis (NDAs, MSAs, work orders, distribution/IDE/CRO agreements). Paste the full legal question and any contract/clause text as 'prompt'. Optional 'model' pins one model with no fallback (gemini-4-carbon / gemini, claude-fable-5-2 / claude, claude-opus-5-5, gpt-6-astra / openai / gpt, grok-4.7 / grok). Omit model to keep the default chain. Returns a job_id immediately; then poll get_mike_answer until the analysis is ready. Complex reviews can take 5–30+ minutes; the job retries automatically so keep polling. get_mike_answer reports the provider and exact model id that produced the answer.",
+              description: "Start a Mike Legal AI review — bioaccess\xAE contract and Latin-American regulatory legal analysis (NDAs, MSAs, work orders, distribution/IDE/CRO agreements). Paste the full legal question and any contract/clause text as 'prompt'. Optional 'model' pins one model with no fallback (gemini-4-carbon / gemini, claude-fable-5-2 / claude, claude-opus-5-5, gpt-6-astra / openai / gpt, grok-4.7 / grok, nvidia/nemotron-3-ultra-550b-a55b / nemotron / nvidia). Omit model to keep the default chain. Returns a job_id immediately; then poll get_mike_answer until the analysis is ready. Complex reviews can take 5–30+ minutes; the job retries automatically so keep polling. get_mike_answer reports the provider and exact model id that produced the answer.",
               inputSchema: {
                 type: "object",
                 properties: {
@@ -544,7 +546,7 @@ var worker_default = {
                   status: { type: "string", enum: ["working"] },
                   retry_after_seconds: { type: "integer" },
                   model: { type: ["string", "null"], description: "Canonical model id when the caller pinned one. Null when the default chain is used; the answering id is on get_mike_answer." },
-                  provider: { type: ["string", "null"], description: "Provider for the pinned model (anthropic, google, openai, xai), or null for the default chain." },
+                  provider: { type: ["string", "null"], description: "Provider for the pinned model (anthropic, google, openai, xai, nvidia), or null for the default chain." },
                   model_policy: { type: "string", enum: ["explicit", "default_chain"] }
                 },
                 required: ["job_id", "status", "retry_after_seconds", "model", "provider", "model_policy"]
@@ -574,7 +576,7 @@ var worker_default = {
                   error: { type: "string" },
                   answer: { type: "string", description: "The analysis text for the requested part (present when status is completed). Concatenate answer across parts 1..total_parts for the full response." },
                   next_part: { type: ["integer", "null"], description: "The next part number to fetch, or null when this is the last/only part." },
-                  provider: { type: ["string", "null"], description: "Provider that produced the answer (anthropic, google, openai, or xai). Present when status is completed." },
+                  provider: { type: ["string", "null"], description: "Provider that produced the answer (anthropic, google, openai, xai, or nvidia). Present when status is completed." },
                   model: { type: ["string", "null"], description: "Exact model id that produced the answer. On the default chain this is whichever link answered. Present when status is completed." },
                   fallback: { type: "boolean", description: "True when a later model in the default chain produced the answer. Always false for an explicit model." },
                   fallback_depth: { type: ["integer", "null"], description: "0 when the first attempted model answered. Higher when the default chain fell back." }

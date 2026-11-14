@@ -18,6 +18,7 @@ test("ModelToggle list puts the verified frontier ids in picker order", () => {
   assert.ok(anthropic.indexOf("claude-sonnet-5-5") < anthropic.indexOf("claude-sonnet-4-6"));
   assert.equal(anthropic.includes("claude-opus-5-5"), true);
   assert.deepEqual(ids("xAI"), ["grok-4.7"]);
+  assert.deepEqual(ids("NVIDIA"), ["nvidia/nemotron-3-ultra-550b-a55b"]);
   assert.equal(
     SETTINGS_MODELS.some((model) => model.id === "claude-haiku-5-5"),
     true,
@@ -33,6 +34,7 @@ test("ModelToggle list puts the verified frontier ids in picker order", () => {
   const shownByDefault = visiblePickerModels(MODELS, false).map((model) => model.id);
   assert.equal(shownByDefault.includes("kimi-k3.1-pro"), false);
   assert.equal(shownByDefault.includes("gemini-4-argon"), true);
+  assert.equal(shownByDefault.includes("nvidia/nemotron-3-ultra-550b-a55b"), true);
   const shownWhenEnabled = visiblePickerModels(MODELS, false, true).map(
     (model) => model.id,
   );
@@ -42,4 +44,5 @@ test("ModelToggle list puts the verified frontier ids in picker order", () => {
   );
   assert.equal(shownInSponsorCi.includes("kimi-k3.1-pro"), false);
   assert.equal(shownInSponsorCi.includes("gemini-4-argon"), true);
+  assert.equal(shownInSponsorCi.includes("nvidia/nemotron-3-ultra-550b-a55b"), true);
 });

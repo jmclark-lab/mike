@@ -599,7 +599,8 @@ export type ApiKeyProvider =
     | "openrouter"
     | "courtlistener"
     | "xai"
-    | "deepseek";
+    | "deepseek"
+    | "nvidia";
 export type ApiKeySource = "user" | "env" | null;
 export type ApiKeyState = Record<
     ApiKeyProvider,

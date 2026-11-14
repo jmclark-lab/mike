@@ -11,6 +11,11 @@ export const CONNECTOR_MODEL_CHOICES = [
   { id: "gpt-6-astra", provider: "openai", aliases: ["openai", "gpt"] },
   { id: "gemini-4-carbon", provider: "google", aliases: ["gemini"] },
   { id: "grok-4.7", provider: "xai", aliases: ["grok"] },
+  {
+    id: "nvidia/nemotron-3-ultra-550b-a55b",
+    provider: "nvidia",
+    aliases: ["nemotron", "nvidia"],
+  },
 ] as const;
 
 export type ConnectorModelChoice = (typeof CONNECTOR_MODEL_CHOICES)[number];
@@ -39,6 +44,7 @@ export function connectorProviderForModel(model: string): string {
     if (provider === "gemini") return "google";
     if (provider === "openai") return "openai";
     if (provider === "xai") return "xai";
+    if (provider === "nvidia") return "nvidia";
     return provider;
   } catch {
     return "unknown";

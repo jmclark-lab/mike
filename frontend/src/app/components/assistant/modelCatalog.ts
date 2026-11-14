@@ -1,7 +1,7 @@
 export interface ModelOption {
     id: string;
     label: string;
-    group: "Anthropic" | "Google" | "OpenAI" | "xAI" | "Moonshot";
+    group: "Anthropic" | "Google" | "OpenAI" | "xAI" | "Moonshot" | "NVIDIA";
 }
 
 export const MODELS: ModelOption[] = [
@@ -24,6 +24,7 @@ export const MODELS: ModelOption[] = [
     { id: "gpt-5.5", label: "GPT-5.5", group: "OpenAI" },
     { id: "gpt-5.4", label: "GPT-5.4", group: "OpenAI" },
     { id: "grok-4.7", label: "Grok 4.7", group: "xAI" },
+    { id: "nvidia/nemotron-3-ultra-550b-a55b", label: "Nemotron 3 Ultra", group: "NVIDIA" },
     { id: "kimi-k3.1-pro", label: "Kimi K3.1 Pro", group: "Moonshot" },
 ];
 
@@ -74,5 +75,6 @@ export const GROUP_ORDER: ModelOption["group"][] = [
     "Google",
     "OpenAI",
     "xAI",
+    "NVIDIA",
     "Moonshot",
 ];
