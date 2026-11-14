@@ -45,6 +45,9 @@ export const DEEPSEEK_MAIN_MODELS = [
 // Moonshot OpenAI-compatible id. Selectable only while KIMI_K31_PRO_ENABLED
 // is on. Not a council seat. No API key is wired in this repo.
 export const MOONSHOT_MAIN_MODELS = ["kimi-k3.1-pro"] as const;
+// NVIDIA Nemotron 3 Ultra. Selectable in chat and on ask_mike.
+// Not a council seat and not in the default fallback chain.
+export const NVIDIA_MAIN_MODELS = ["nvidia/nemotron-3-ultra-550b-a55b"] as const;
 
 // Default Sakana Fugu model.
 export const DEFAULT_SAKANA_MODEL = "fugu-ultra-20260615";
@@ -73,6 +76,7 @@ const ALL_MODELS = new Set<string>([
     ...GROK_MAIN_MODELS,
     ...DEEPSEEK_MAIN_MODELS,
     ...MOONSHOT_MAIN_MODELS,
+    ...NVIDIA_MAIN_MODELS,
     ...CLAUDE_MID_MODELS,
     ...GEMINI_MID_MODELS,
     ...OPENAI_MID_MODELS,
@@ -94,7 +98,19 @@ export function providerForModel(model: string): Provider {
     if (model.startsWith("grok-")) return "xai";
     if (model.startsWith("deepseek-")) return "deepseek";
     if (model.startsWith("kimi-")) return "moonshot";
+    if (model.startsWith("nvidia/")) return "nvidia";
     throw new Error(`Unknown model id: ${model}`);
+}
+
+/** Nemotron ids and the ask_mike aliases. Council selection must ignore these. */
+export function isNvidiaModelId(model: string): boolean {
+    const id = model.trim().toLowerCase();
+    return (
+        id === "nvidia" ||
+        id === "nemotron" ||
+        id.startsWith("nvidia/") ||
+        id.startsWith("nemotron")
+    );
 }
 
 const KIMI_FLAG_TRUTHY = new Set(["1", "true", "yes", "on"]);

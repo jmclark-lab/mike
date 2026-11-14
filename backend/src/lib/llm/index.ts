@@ -10,6 +10,7 @@ import {
     providerForModel,
 } from "./models";
 import { completeMoonshotText, streamMoonshot } from "./moonshot";
+import { completeNvidiaText, streamNvidia } from "./nvidia";
 import {
     assertSponsorCiAllowsModel,
     isSponsorCiFencedModel,
@@ -315,6 +316,7 @@ async function invokeStream(
     if (provider === "xai") return streamXai({ ...params, model });
     if (provider === "deepseek") return streamDeepSeek({ ...params, model });
     if (provider === "moonshot") return streamMoonshot({ ...params, model });
+    if (provider === "nvidia") return streamNvidia({ ...params, model });
     throw new Error(`No chat stream adapter for ${provider} model ${model}.`);
 }
 
@@ -336,6 +338,7 @@ async function invokeComplete(
     if (provider === "xai") return completeXaiText({ ...params, model });
     if (provider === "deepseek") return completeDeepSeekText({ ...params, model });
     if (provider === "moonshot") return completeMoonshotText({ ...params, model });
+    if (provider === "nvidia") return completeNvidiaText({ ...params, model });
     throw new Error(`No completion adapter for ${provider} model ${model}.`);
 }
 

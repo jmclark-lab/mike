@@ -68,6 +68,7 @@ const API_KEY_PROVIDERS: ApiKeyProvider[] = [
     "courtlistener",
     "xai",
     "deepseek",
+    "nvidia",
 ];
 
 function emptyApiKeys(): ApiKeyState {
@@ -79,6 +80,7 @@ function emptyApiKeys(): ApiKeyState {
         courtlistener: { configured: false, source: null },
         xai: { configured: false, source: null },
         deepseek: { configured: false, source: null },
+        nvidia: { configured: false, source: null },
     };
 }
 

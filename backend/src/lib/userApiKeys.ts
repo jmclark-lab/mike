@@ -10,7 +10,8 @@ export type ApiKeyProvider =
     | "openrouter"
     | "courtlistener"
     | "xai"
-    | "deepseek";
+    | "deepseek"
+    | "nvidia";
 export type ApiKeySource = "user" | "env" | null;
 export type ApiKeyStatus = Record<ApiKeyProvider, boolean> & {
     sources: Record<ApiKeyProvider, ApiKeySource>;
@@ -30,7 +31,12 @@ const USER_STORED_PROVIDERS: ApiKeyProvider[] = [
     "openrouter",
     "courtlistener",
 ];
-const STATUS_PROVIDERS: ApiKeyProvider[] = [...USER_STORED_PROVIDERS, "xai", "deepseek"];
+const STATUS_PROVIDERS: ApiKeyProvider[] = [
+    ...USER_STORED_PROVIDERS,
+    "xai",
+    "deepseek",
+    "nvidia",
+];
 
 function envApiKey(provider: ApiKeyProvider): string | null {
     switch (provider) {
@@ -52,6 +58,8 @@ function envApiKey(provider: ApiKeyProvider): string | null {
             return process.env.XAI_API_KEY?.trim() || null;
         case "deepseek":
             return process.env.DEEPSEEK_API_KEY?.trim() || null;
+        case "nvidia":
+            return process.env.NVIDIA_API_KEY?.trim() || null;
         default:
             return null;
     }
@@ -125,6 +133,7 @@ export async function getUserApiKeyStatus(
         courtlistener: false,
         xai: false,
         deepseek: false,
+        nvidia: false,
         sources: {
             claude: null,
             gemini: null,
@@ -133,6 +142,7 @@ export async function getUserApiKeyStatus(
             courtlistener: null,
             xai: null,
             deepseek: null,
+            nvidia: null,
         },
     };
 
@@ -172,6 +182,7 @@ export async function getUserApiKeys(
         courtlistener: envApiKey("courtlistener"),
         xai: envApiKey("xai"),
         deepseek: envApiKey("deepseek"),
+        nvidia: envApiKey("nvidia"),
     };
 
     const { data, error } = await db
