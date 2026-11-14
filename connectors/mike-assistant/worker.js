@@ -240,6 +240,15 @@ function formatAnswerModel(record) {
   return note;
 }
 __name(formatAnswerModel, "formatAnswerModel");
+// A pinned id such as nvidia/nemotron-3-ultra-550b-a55b already starts with
+// its provider. Prepending the provider again shows nvidia/nvidia/...
+function formatPinnedModelLabel(provider, model) {
+  if (typeof provider === "string" && provider && typeof model === "string" && (model === provider || model.indexOf(provider + "/") === 0)) {
+    return model;
+  }
+  return provider + "/" + model;
+}
+__name(formatPinnedModelLabel, "formatPinnedModelLabel");
 // Start-or-poll a Railway-owned async job. Each Worker request is short-lived;
 // the long council execution stays in Railway and is never duplicated merely
 // because Cloudflare ends a request after its platform lifetime limit.
@@ -383,7 +392,7 @@ var worker_default = {
       return new Response(null, { status: 204, headers: CORS });
     }
     if (request.method === "GET" && (url.pathname === "/" || url.pathname === "/health")) {
-      return new Response("Mike Legal AI — MCP connector v1.8.4.", {
+      return new Response("Mike Legal AI — MCP connector v1.8.5.", {
         headers: { "content-type": "text/plain", ...CORS }
       });
     }
@@ -517,7 +526,7 @@ var worker_default = {
         return ok({
           protocolVersion: pv,
           capabilities: { tools: { listChanged: false } },
-          serverInfo: { name: "mike-legal", version: "1.8.4" },
+          serverInfo: { name: "mike-legal", version: "1.8.5" },
           instructions: "Start legal reviews with ask_mike, then poll get_mike_answer using retry_after_seconds. Fetch every numbered part before synthesizing. Treat Mike's analysis as legal work product requiring human counsel review."
         });
       }
@@ -665,7 +674,7 @@ var worker_default = {
           const reportedProvider = startedBody && startedBody.reused ? startedBody.requestedProvider || null : modelChoice.provider;
           const modelPolicy = reportedModel ? "explicit" : "default_chain";
           const modelLine = modelPolicy === "explicit"
-            ? "model=" + reportedProvider + "/" + reportedModel + " (explicit; no fallback)"
+            ? "model=" + formatPinnedModelLabel(reportedProvider, reportedModel) + " (explicit; no fallback)"
             : "model=default chain (claude-fable-5-2 -> claude-opus-5-5 -> gpt-6-astra). get_mike_answer reports the provider and exact model id that answers, and whether fallback happened.";
           const structuredContent = { job_id: jobId, status: "working", retry_after_seconds: 20, model: reportedModel, provider: reportedProvider, model_policy: modelPolicy };
           return ok({
@@ -714,7 +723,7 @@ var worker_default = {
             });
           }
           if (s.status === "error") {
-            const requested = s.requestedModel ? " requested_model=" + (s.requestedProvider || "unknown") + "/" + s.requestedModel + " (no fallback)" : "";
+            const requested = s.requestedModel ? " requested_model=" + formatPinnedModelLabel(s.requestedProvider || "unknown", s.requestedModel) + " (no fallback)" : "";
             return ok({
               content: [{ type: "text", text: "STATUS: failed" + requested + "\n\n" + (s.error || "Unknown error") }],
               structuredContent: {
