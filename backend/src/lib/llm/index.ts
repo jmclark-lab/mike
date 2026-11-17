@@ -7,6 +7,7 @@ import {
     assertKimiSelectable,
     DEFAULT_FALLBACK_MODELS,
     DEFAULT_MAIN_MODEL,
+    isKimiModelId,
     isSakanaModelId,
     isSelectableModelId,
     providerForModel,
@@ -46,6 +47,7 @@ export function resolveActiveModel(
     const explicit = env.LLM_MODEL?.trim();
     if (
         explicit &&
+        !isKimiModelId(explicit) &&
         !isSakanaModelId(explicit) &&
         isSelectableModelId(explicit, env) &&
         sponsorCiAllowsChatModel(explicit, env)
@@ -74,7 +76,8 @@ function sponsorCiAllowsChatModel(
  *
  * `LLM_MODEL` replaces the primary. `LLM_FALLBACK_MODEL` replaces the tail
  * (comma-separated model ids, tried in the order given). Fugu / Sakana ids
- * are dropped from both, including explicit overrides. `SAKANA_MODEL` never
+ * are dropped from both, including explicit overrides. Kimi ids are dropped
+ * too: kimi-k3.1-pro is pin-only and never a chain hop. `SAKANA_MODEL` never
  * composes this chain. While Sponsor-CI mode is on, DeepSeek and other
  * non-frontier ids are dropped. Sponsor-CI re-appends this same
  * non-Claude/OpenAI chain; it does not put Claude or OpenAI back.
@@ -85,7 +88,7 @@ export function resolveModelChain(
     const chain: string[] = [];
     const push = (m?: string | null) => {
         const v = m?.trim();
-        if (!v || isSakanaModelId(v) || !isSelectableModelId(v, env) || chain.includes(v)) return;
+        if (!v || isSakanaModelId(v) || isKimiModelId(v) || !isSelectableModelId(v, env) || chain.includes(v)) return;
         if (!sponsorCiAllowsChatModel(v, env)) return;
         chain.push(v);
     };

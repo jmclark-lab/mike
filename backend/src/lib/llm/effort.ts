@@ -135,3 +135,30 @@ export function openAIMaxOutputTokens(
 export function nvidiaEnableThinking(effort?: AskEffort): boolean {
   return effort !== "low";
 }
+
+/**
+ * Kimi K3.1 Pro reasoning_effort. Moonshot accepts low, high, and max
+ * (default max) and has no medium. medium maps to high. Omitted effort
+ * sends no field, so the API default (max) applies. Thinking cannot be
+ * turned off.
+ */
+export type KimiReasoningEffort = "low" | "high" | "max";
+
+export function kimiReasoningEffort(
+  effort?: AskEffort,
+): KimiReasoningEffort | undefined {
+  if (!effort) return undefined;
+  if (effort === "low") return "low";
+  if (effort === "medium" || effort === "high") return "high";
+  return "max";
+}
+
+/** Reasoning tokens count against the completion cap. low keeps a smaller cap. */
+export function kimiMaxCompletionTokens(
+  effort?: AskEffort,
+  requested?: number,
+): number {
+  const floor = effort === "low" ? 16_384 : 32_768;
+  if (requested === undefined) return floor;
+  return Math.max(1, Math.trunc(requested));
+}

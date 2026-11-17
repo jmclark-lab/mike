@@ -17,6 +17,7 @@ export const CONNECTOR_MODEL_CHOICES = [
     provider: "nvidia",
     aliases: ["nemotron", "nvidia"],
   },
+  { id: "kimi-k3.1-pro", provider: "moonshot", aliases: [] as string[] },
 ] as const;
 
 export type ConnectorModelChoice = (typeof CONNECTOR_MODEL_CHOICES)[number];

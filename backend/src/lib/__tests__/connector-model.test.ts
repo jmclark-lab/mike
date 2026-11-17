@@ -71,6 +71,11 @@ test("connector model aliases resolve to the current ids", () => {
     model: "gpt-6.1-sol",
     provider: "openai",
   });
+  assert.deepEqual(parseConnectorModelChoice("kimi-k3.1-pro"), {
+    ok: true,
+    model: "kimi-k3.1-pro",
+    provider: "moonshot",
+  });
   assert.equal(parseConnectorModelChoice("claude-opus-5-5").ok, true);
 });
 

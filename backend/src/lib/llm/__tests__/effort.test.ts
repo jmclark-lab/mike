@@ -3,13 +3,15 @@ import test from "node:test";
 import {
   anthropicOutputEffort,
   geminiThinkingLevel,
+  kimiMaxCompletionTokens,
+  kimiReasoningEffort,
   nvidiaEnableThinking,
   openAIMaxOutputTokens,
   openAIReasoningEffort,
   xaiMaxOutputTokens,
   xaiReasoningEffort,
 } from "../effort";
-import { buildClaudeMessageParams, buildGeminiRequestConfig, buildOpenAIResponsesBody } from "../requestParams";
+import { buildClaudeMessageParams, buildGeminiRequestConfig, buildKimiChatBody, buildOpenAIResponsesBody } from "../requestParams";
 import { thinkingBody, nvidiaOutputTokens } from "../nvidia";
 import { resolveModelChain } from "../index";
 
@@ -22,7 +24,7 @@ test("unpinned chain starts with gemini-4-carbon and has no Claude or OpenAI", (
     "grok-4.7",
     "nvidia/nemotron-3-ultra-550b-a55b",
   ]);
-  assert.equal(chain.some((id) => id.startsWith("claude") || id.startsWith("gpt-")), false);
+  assert.equal(chain.some((id) => id.startsWith("claude") || id.startsWith("gpt-") || id.startsWith("kimi-")), false);
 });
 
 test("gemini-4-carbon request payloads map effort onto thinking_level", () => {
@@ -146,4 +148,23 @@ test("NVIDIA request payloads map effort onto enable_thinking and keep a thinkin
   assert.equal(nvidiaOutputTokens(1000, "high"), 16384);
   assert.equal(nvidiaOutputTokens(1000, "max"), 16384);
   assert.equal(nvidiaOutputTokens(), 16384);
+});
+
+test("kimi-k3.1-pro maps effort onto reasoning_effort and has no medium", () => {
+  assert.equal(kimiReasoningEffort(), undefined);
+  assert.equal(kimiReasoningEffort("low"), "low");
+  assert.equal(kimiReasoningEffort("medium"), "high");
+  assert.equal(kimiReasoningEffort("high"), "high");
+  assert.equal(kimiReasoningEffort("max"), "max");
+  assert.equal(kimiMaxCompletionTokens("low"), 16384);
+  assert.equal(kimiMaxCompletionTokens("max"), 32768);
+  const body = buildKimiChatBody({
+    model: "kimi-k3.1-pro",
+    messages: [{ role: "user", content: "Hello" }],
+    maxTokens: kimiMaxCompletionTokens("medium"),
+    reasoningEffort: kimiReasoningEffort("medium"),
+  });
+  assert.equal(body.reasoning_effort, "high");
+  assert.equal(body.thinking, undefined);
+  assert.equal(body.max_completion_tokens, 32768);
 });

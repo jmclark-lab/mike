@@ -46,11 +46,12 @@ const JOB_TTL_MS = 24 * 60 * 60 * 1000;
  * Visible answer events on Mike's `/chat` SSE stream.
  *
  * Gemini thought parts (`includeThoughts: true` on gemini-4-carbon), xAI and
- * OpenAI `response.reasoning_summary_text.delta`, and Anthropic `thinking`
- * deltas are all written as `reasoning_delta` before they reach this reader.
- * NVIDIA drops `reasoning_content` before forwarding, so it never arrives.
- * Those events must not be concatenated into the connector answer. A stream
- * that contains only reasoning stays empty, and the job's empty-answer error
+ * OpenAI `response.reasoning_summary_text.delta`, Anthropic `thinking`
+ * deltas, and Moonshot `reasoning_content` deltas are all written as
+ * `reasoning_delta` before they reach this reader. NVIDIA drops
+ * `reasoning_content` before forwarding, so it never arrives. Those events
+ * must not be concatenated into the connector answer. A stream that
+ * contains only reasoning stays empty, and the job's empty-answer error
  * still fires.
  */
 const CONNECTOR_ANSWER_EVENT_TYPES = new Set(["content_delta", "content"]);
