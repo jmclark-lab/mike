@@ -24,8 +24,11 @@
  *   key is configured. Kimi also stays off unless `KIMI_K31_PRO_ENABLED`
  *   is set; that flag defaults off and does not wire a Moonshot key.
  * - Council seats and the judge stay on the locked frontier GA ids already
- *   on main. Chat hops that are not those frontier ids are dropped, and the
- *   default Fable → Opus 5.5 → Astra chain is kept.
+ *   on main. Chat hops that are not those frontier ids are dropped. The
+ *   unpinned chat chain stays gemini-4-carbon → grok-4.7 → Nemotron.
+ *   Sponsor-CI does not put Claude or OpenAI back on that chain. An
+ *   explicit LLM_MODEL, LLM_FALLBACK_MODEL, or ask_mike pin may still
+ *   name a frontier Claude or OpenAI id.
  * - The fail-closed export attribution gate cannot be skipped. Docx, PDF,
  *   and legacy .doc were already gated. Plain text and any other download
  *   are scanned too.
@@ -51,8 +54,11 @@ export const SPONSOR_CI_FRONTIER_MODELS = [
   "claude-fable-5-2",
   "claude-opus-5-5",
   "gpt-6-astra",
+  "gpt-6.1-sol",
   "gemini-3.1-pro-preview",
+  "gemini-4-carbon",
   "grok-4.7",
+  "nvidia/nemotron-3-ultra-550b-a55b",
 ] as const;
 
 const FRONTIER = new Set<string>(SPONSOR_CI_FRONTIER_MODELS);

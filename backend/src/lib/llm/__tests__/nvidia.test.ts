@@ -107,17 +107,14 @@ describe("NVIDIA Nemotron selectable chat model", { concurrency: false }, () => 
     ]);
   });
 
-  test("Nemotron is absent from the default chain and from council selection", () => {
+  test("Nemotron is the last default-chain hop and is not a council seat", () => {
     delete process.env.LLM_MODEL;
     delete process.env.LLM_FALLBACK_MODEL;
     delete process.env.SPONSOR_CI_MODE;
     const chain = resolveModelChain();
-    assert.equal(chain.some((id) => isNvidiaModelId(id)), false);
-    assert.deepEqual(chain, [
-      "claude-fable-5-2",
-      "claude-opus-5-5",
-      "gpt-6-astra",
-    ]);
+    assert.equal(chain.at(-1), DEFAULT_NVIDIA_MODEL);
+    assert.equal(chain[0], "gemini-4-carbon");
+    assert.equal(chain.some((id) => id.startsWith("claude") || id.startsWith("gpt-")), false);
 
     const seats = resolveCouncilSeats({
       COUNCIL_ANTHROPIC_MODEL: "nemotron",
@@ -146,14 +143,18 @@ describe("NVIDIA Nemotron selectable chat model", { concurrency: false }, () => 
 
     assert.deepEqual(
       resolveModelChain({ LLM_MODEL: DEFAULT_NVIDIA_MODEL }),
-      [DEFAULT_NVIDIA_MODEL, "claude-opus-5-5", "gpt-6-astra"],
+      [DEFAULT_NVIDIA_MODEL, "grok-4.7"],
     );
+    const sponsorChain = resolveModelChain({
+      SPONSOR_CI_MODE: "1",
+      NODE_ENV: "test",
+      LLM_MODEL: DEFAULT_NVIDIA_MODEL,
+    });
+    assert.equal(sponsorChain[0], DEFAULT_NVIDIA_MODEL);
+    assert.equal(sponsorChain.includes("grok-4.7"), true);
+    assert.equal(sponsorChain.includes("gemini-4-carbon"), true);
     assert.equal(
-      resolveModelChain({
-        SPONSOR_CI_MODE: "1",
-        NODE_ENV: "test",
-        LLM_MODEL: DEFAULT_NVIDIA_MODEL,
-      }).some((id) => isNvidiaModelId(id)),
+      sponsorChain.some((id) => id.startsWith("claude") || id.startsWith("gpt-")),
       false,
     );
   });

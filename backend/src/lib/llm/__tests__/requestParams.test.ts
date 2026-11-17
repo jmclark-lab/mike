@@ -132,8 +132,15 @@ test("Gemini 4 Carbon keeps Argon thinking config and clamps maxOutputTokens to 
     },
   });
   assertAbsent(council, FORBIDDEN_KEYS);
-  assert.equal(council.maxOutputTokens, 16000);
-  assert.equal(council.thinkingConfig, undefined);
+  assert.equal(council.maxOutputTokens, GEMINI_4_CARBON_MAX_OUTPUT_TOKENS);
+  assert.equal(
+    (council.thinkingConfig as { thinkingLevel?: string }).thinkingLevel,
+    "high",
+  );
+  assert.equal(
+    (council.thinkingConfig as { thinkingBudget?: number }).thinkingBudget,
+    undefined,
+  );
   assert.equal(
     geminiClientTimeoutMs("gemini-4-carbon"),
     GEMINI_4_ARGON_TIMEOUT_MS,
@@ -149,7 +156,7 @@ test("Gemini 4 Carbon keeps Argon thinking config and clamps maxOutputTokens to 
   assert.equal(overCap.maxOutputTokens, GEMINI_4_CARBON_MAX_OUTPUT_TOKENS);
   assert.equal(
     (overCap.thinkingConfig as { thinkingLevel?: string }).thinkingLevel,
-    "medium",
+    "high",
   );
   assert.equal(
     (overCap.thinkingConfig as { thinkingBudget?: number }).thinkingBudget,
@@ -163,7 +170,23 @@ test("Gemini 4 Carbon keeps Argon thinking config and clamps maxOutputTokens to 
     applyThinkingConfig: true,
   });
   assert.equal(omitted.maxOutputTokens, GEMINI_4_CARBON_MAX_OUTPUT_TOKENS);
-  assert.equal(omitted.thinkingConfig, undefined);
+  assert.equal(
+    (omitted.thinkingConfig as { thinkingLevel?: string }).thinkingLevel,
+    "high",
+  );
+
+  const low = buildGeminiRequestConfig({
+    model: "gemini-4-carbon",
+    streaming: false,
+    maxTokens: 16000,
+    thinkingLevel: "low",
+    applyThinkingConfig: true,
+  });
+  assert.equal(
+    (low.thinkingConfig as { thinkingLevel?: string }).thinkingLevel,
+    "low",
+  );
+  assert.equal(low.maxOutputTokens, 16000);
 });
 
 test("other Gemini models keep the thinking budget the chat path already sent", () => {

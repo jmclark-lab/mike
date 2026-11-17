@@ -56,7 +56,11 @@ export type ReasoningEffort =
     | "low"
     | "medium"
     | "high"
-    | "xhigh";
+    | "xhigh"
+    | "max";
+
+/** ask_mike effort. Mapped per provider in llm/effort.ts. */
+export type AskEffort = "low" | "medium" | "high" | "max";
 
 export type SkippedModel = {
     provider_name: string;
@@ -93,6 +97,11 @@ export type StreamChatParams = {
      * one-shot completions should leave this off to save tokens and latency.
      */
     enableThinking?: boolean;
+    /**
+     * ask_mike effort. Omitted keeps provider defaults, including the
+     * hard-set gemini-4-carbon thinking level and grok-4.7 reasoning effort.
+     */
+    effort?: AskEffort;
     abortSignal?: AbortSignal;
     /**
      * When true, `model` is the only model invoked. The env fallback chain

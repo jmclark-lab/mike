@@ -12,6 +12,12 @@ import {
   buildOpenAIResponsesBody,
   openAIPersistedReasoningContext,
 } from "./requestParams";
+import {
+  openAIMaxOutputTokens,
+  openAIReasoningEffort,
+  xaiMaxOutputTokens,
+  xaiReasoningEffort,
+} from "./effort";
 
 const OPENAI_BASE_URL = "https://api.openai.com/v1";
 const MAX_OUTPUT_TOKENS = 16384;
@@ -303,6 +309,14 @@ export async function streamOpenAI(
   try {
     for (let iter = 0; iter < maxIter; iter++) {
       throwIfAborted(params.abortSignal);
+      const reasoningEffort =
+        resolvedClient.provider === "xai"
+          ? xaiReasoningEffort(model, params.effort)
+          : openAIReasoningEffort(model, params.effort);
+      const maxTokens =
+        resolvedClient.provider === "xai"
+          ? xaiMaxOutputTokens(model, reasoningEffort)
+          : openAIMaxOutputTokens(params.effort, MAX_OUTPUT_TOKENS);
       const response = await createResponse({
         model,
         instructions: responseInstructions(
@@ -312,8 +326,10 @@ export async function streamOpenAI(
         input,
         tools: responseTools,
         stream: true,
+        maxTokens,
         previousResponseId,
         reasoningSummary: !!enableThinking,
+        reasoningEffort,
         client: resolvedClient,
         signal: params.abortSignal,
       });

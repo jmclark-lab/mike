@@ -4751,6 +4751,8 @@ export async function runLLMStream(params: {
    * Unset for the interactive UI, which keeps the env chain.
    */
   strictModel?: boolean;
+  /** ask_mike effort. Omitted keeps each provider's default. */
+  effort?: import("./llm").AskEffort;
   apiKeys?: import("./llm").UserApiKeys;
   signal?: AbortSignal;
   /**
@@ -4779,6 +4781,7 @@ export async function runLLMStream(params: {
     buildCitations,
     model,
     strictModel,
+    effort,
     apiKeys,
     signal,
     projectId,
@@ -4964,6 +4967,7 @@ export async function runLLMStream(params: {
       maxIterations: 10,
       apiKeys,
       enableThinking: true,
+      effort,
       abortSignal: signal,
       callbacks: {
         onContentDelta: (delta) => {

@@ -26,7 +26,7 @@ test("CLAUDE_MAIN_MODELS lists Fable 5.2 first and keeps Fable 5.1 and Fable 5 s
     resolveModel("claude-fable-5-1", DEFAULT_MAIN_MODEL),
     "claude-fable-5-1",
   );
-  assert.equal(DEFAULT_MAIN_MODEL, "claude-fable-5-2");
+  assert.equal(DEFAULT_MAIN_MODEL, "gemini-4-carbon");
   assert.equal(
     tokenPriceForModel("claude-fable-5-2")?.inputUsdPerMillion,
     8,
@@ -49,7 +49,7 @@ test("CLAUDE_MAIN_MODELS lists Opus 5.5 above Opus 5 and Opus 4.8", () => {
     "claude-opus-5-5",
   );
   assert.equal(resolveModel("claude-opus-5", DEFAULT_MAIN_MODEL), "claude-opus-5");
-  assert.equal(DEFAULT_MAIN_MODEL, "claude-fable-5-2");
+  assert.equal(DEFAULT_MAIN_MODEL, "gemini-4-carbon");
 });
 
 test("title/low tier uses stable gemini-3.1-flash-lite; retired preview id falls back", () => {
@@ -68,6 +68,7 @@ test("title/low tier uses stable gemini-3.1-flash-lite; retired preview id falls
 
 test("frontier refresh adds verified selectable ids and moves Claude tiers", () => {
   assert.equal(GEMINI_MAIN_MODELS[0], "gemini-4-argon");
+  assert.equal(GEMINI_MAIN_MODELS.includes("gemini-4-carbon"), true);
   assert.equal(
     resolveModel("gemini-4-argon", DEFAULT_MAIN_MODEL),
     "gemini-4-argon",
@@ -100,7 +101,7 @@ test("frontier refresh adds verified selectable ids and moves Claude tiers", () 
   );
 
   assert.equal(CLAUDE_MAIN_MODELS[0], "claude-fable-5-2");
-  assert.equal(DEFAULT_MAIN_MODEL, "claude-fable-5-2");
+  assert.equal(DEFAULT_MAIN_MODEL, "gemini-4-carbon");
   assert.deepEqual(COUNCIL_MEMBERS, [
     "claude-fable-5-2",
     "gpt-6-astra",

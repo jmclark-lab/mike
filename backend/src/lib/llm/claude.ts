@@ -9,6 +9,7 @@ import type {
 import { toClaudeTools } from "./tools";
 import { createRawLlmStreamRecorder, logRawLlmStream } from "./rawStreamLog";
 import { buildClaudeMessageParams } from "./requestParams";
+import { anthropicOutputEffort } from "./effort";
 
 type ContentBlock =
   | { type: "text"; text: string }
@@ -302,7 +303,13 @@ export async function streamClaude(
     maxTokens: number;
   }> => {
     throwIfAborted(params.abortSignal);
-    const maxTokens = maxTokensFor();
+    const baseMaxTokens = maxTokensFor();
+    // max effort has no token-spend cap. Use the model output ceiling so
+    // thinking does not consume a 32k budget before the answer.
+    const maxTokens =
+      params.effort === "max"
+        ? Math.max(baseMaxTokens, FABLE_MAX_OUTPUT_TOKENS)
+        : baseMaxTokens;
     const stream = streamMessage(
       buildClaudeMessageParams({
         model,
@@ -315,6 +322,9 @@ export async function streamClaude(
         // Adaptive thinking plus output_config.effort. Sonnet 5.5 and
         // Haiku 5.5 reject temperature, top_p, top_k, and budget_tokens.
         enableThinking,
+        ...(params.effort
+          ? { effort: anthropicOutputEffort(params.effort) }
+          : {}),
       }),
     );
 
