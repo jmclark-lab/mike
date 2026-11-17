@@ -10,7 +10,12 @@ import {
   resolveCouncilJudge,
   resolveCouncilSeats,
 } from "../llm/council";
-import { completeTextStrict, resolveModelChain } from "../llm/index";
+import {
+  chatModelsForRequest,
+  completeTextStrict,
+  resolveModelChain,
+  streamChatWithTools,
+} from "../llm/index";
 import { DEFAULT_MAIN_MODEL, resolveModel } from "../llm/models";
 import {
   OutboundAttributionError,
@@ -24,6 +29,7 @@ import {
 import { byteViewToArrayBuffer } from "../storage";
 import {
   assertSponsorCiAllowsModel,
+  fenceModelId,
   isFencedModelId,
   isSponsorCiMode,
   SPONSOR_CI_FRONTIER_MODELS,
@@ -379,6 +385,116 @@ test("Sponsor-CI frontier allowlist includes Fable 5.2 and keeps 5.1", () => {
   assert.equal(SPONSOR_CI_FRONTIER_MODELS.includes("claude-fable-5"), true);
 });
 
+const pinnedKimiReady = {
+  ...sponsorOn,
+  KIMI_K31_PRO_ENABLED: "true",
+  MOONSHOT_API_KEY: "test-moonshot-key",
+} as NodeJS.ProcessEnv;
+
+test("Sponsor-CI allows only an explicit kimi-k3.1-pro pin when the flag is exactly true and a key is set", () => {
+  assert.doesNotThrow(() =>
+    assertSponsorCiAllowsModel("kimi-k3.1-pro", pinnedKimiReady),
+  );
+  assert.doesNotThrow(() =>
+    assertSponsorCiAllowsModel(" Kimi-K3.1-Pro ", {
+      ...pinnedKimiReady,
+      KIMI_K31_PRO_ENABLED: " true ",
+    }),
+  );
+  assert.equal(isFencedModelId("kimi-k3.1-pro"), true);
+  assert.equal(
+    resolveModel("kimi-k3.1-pro", DEFAULT_MAIN_MODEL, pinnedKimiReady),
+    DEFAULT_MAIN_MODEL,
+  );
+  assert.equal(
+    fenceModelId("kimi-k3.1-pro", DEFAULT_MAIN_MODEL, pinnedKimiReady),
+    DEFAULT_MAIN_MODEL,
+  );
+  assert.deepEqual(resolveModelChain(pinnedKimiReady), [
+    "gemini-4-carbon",
+    "grok-4.7",
+    "nvidia/nemotron-3-ultra-550b-a55b",
+  ]);
+  assert.deepEqual(
+    resolveModelChain({
+      ...pinnedKimiReady,
+      LLM_MODEL: "kimi-k3.1-pro",
+      LLM_FALLBACK_MODEL: "kimi-k3.1-pro,deepseek-v4-pro",
+    }),
+    ["gemini-4-carbon", "grok-4.7", "nvidia/nemotron-3-ultra-550b-a55b"],
+  );
+  const pinned = chatModelsForRequest({
+    strictModel: true,
+    model: "kimi-k3.1-pro",
+    env: pinnedKimiReady,
+  });
+  assert.equal(pinned.strict, true);
+  assert.deepEqual(pinned.models, ["kimi-k3.1-pro"]);
+  const unpinned = chatModelsForRequest({
+    strictModel: false,
+    model: "kimi-k3.1-pro",
+    env: pinnedKimiReady,
+  });
+  assert.equal(unpinned.strict, false);
+  assert.deepEqual(unpinned.models, [
+    "gemini-4-carbon",
+    "grok-4.7",
+    "nvidia/nemotron-3-ultra-550b-a55b",
+  ]);
+});
+
+test("Sponsor-CI still refuses the Kimi pin when the flag is off or the key is missing", () => {
+  for (const env of [
+    sponsorOn,
+    { ...sponsorOn, KIMI_K31_PRO_ENABLED: "true" },
+    { ...sponsorOn, KIMI_K31_PRO_ENABLED: "1", MOONSHOT_API_KEY: "test-moonshot-key" },
+    { ...sponsorOn, KIMI_K31_PRO_ENABLED: "yes", MOONSHOT_API_KEY: "test-moonshot-key" },
+    { ...sponsorOn, KIMI_K31_PRO_ENABLED: "on", MOONSHOT_API_KEY: "test-moonshot-key" },
+    { ...sponsorOn, KIMI_K31_PRO_ENABLED: "TRUE", MOONSHOT_API_KEY: "test-moonshot-key" },
+    { ...sponsorOn, KIMI_K31_PRO_ENABLED: "true", MOONSHOT_API_KEY: "   " },
+  ] as NodeJS.ProcessEnv[]) {
+    assert.throws(
+      () => assertSponsorCiAllowsModel("kimi-k3.1-pro", env),
+      /Sponsor-CI mode refuses kimi-k3\.1-pro/,
+    );
+  }
+});
+
+test("Sponsor-CI still refuses other Kimi ids, DeepSeek, and Sakana when the Kimi pin is ready", () => {
+  for (const id of [
+    "kimi-k3.1-pro-highspeed",
+    "kimi-k2.5",
+    "deepseek-v4-pro",
+    "fugu-ultra-20260615",
+  ]) {
+    assert.throws(
+      () => assertSponsorCiAllowsModel(id, pinnedKimiReady),
+      new RegExp(`Sponsor-CI mode refuses ${id}`),
+    );
+  }
+});
+
+test("Sponsor-CI keeps Kimi off the council and the judge when the pin is ready", () => {
+  const env = {
+    ...pinnedKimiReady,
+    COUNCIL_ANTHROPIC_MODEL: "kimi-k3.1-pro",
+    COUNCIL_OPENAI_MODEL: "kimi-k2.5",
+    COUNCIL_GEMINI_MODEL: "kimi-k3.1-pro",
+    COUNCIL_GEMINI_LABEL: "Kimi",
+    COUNCIL_XAI_MODEL: "deepseek-v4-pro",
+    COUNCIL_JUDGE: "kimi-k3.1-pro",
+  } as NodeJS.ProcessEnv;
+  assert.deepEqual(
+    resolveCouncilSeats(env).map((seat) => seat.model),
+    [...COUNCIL_MEMBERS],
+  );
+  assert.equal(resolveCouncilJudge(env), COUNCIL_JUDGE);
+  assert.equal(
+    resolveCouncilSeats(env).some((seat) => seat.model.startsWith("kimi-")),
+    false,
+  );
+});
+
 test("Sponsor-CI unpinned chat chain is Gemini, Grok, and Nemotron", () => {
   assert.deepEqual(
     resolveModelChain({
@@ -494,6 +610,162 @@ test("Sponsor-CI ignores injected Sakana and DeepSeek council seats", async () =
     invoked.some((id) => id.startsWith("deepseek-") || id.startsWith("fugu-")),
     false,
   );
+});
+
+test("a strict chat pin of kimi-k3.1-pro runs under Sponsor-CI only when the flag and key are set", async () => {
+  const previous = {
+    sponsor: process.env.SPONSOR_CI_MODE,
+    kimi: process.env.KIMI_K31_PRO_ENABLED,
+    key: process.env.MOONSHOT_API_KEY,
+    serp: process.env.SERP_SEARCH_MODE,
+    router: process.env.SEARCH_ROUTER_MODE,
+  };
+  const originalFetch = globalThis.fetch;
+  let requestedModels: string[] = [];
+  globalThis.fetch = async (_input, init) => {
+    const body = JSON.parse(String(init?.body)) as { model?: string };
+    requestedModels.push(body.model ?? "");
+    const encoder = new TextEncoder();
+    const payload = [
+      `data: ${JSON.stringify({ choices: [{ delta: { reasoning_content: "hidden indemnity thought" } }] })}\n\n`,
+      `data: ${JSON.stringify({ choices: [{ delta: { content: "The clause is mutual." }, finish_reason: "stop" }] })}\n\n`,
+    ].join("");
+    return new Response(encoder.encode(payload), { status: 200 });
+  };
+  process.env.SERP_SEARCH_MODE = "off";
+  process.env.SEARCH_ROUTER_MODE = "off";
+  try {
+    process.env.SPONSOR_CI_MODE = "1";
+    delete process.env.KIMI_K31_PRO_ENABLED;
+    process.env.MOONSHOT_API_KEY = "test-moonshot-key";
+    await assert.rejects(
+      () =>
+        streamChatWithTools({
+          model: "kimi-k3.1-pro",
+          strictModel: true,
+          systemPrompt: "Answer.",
+          messages: [{ role: "user", content: "Review the clause." }],
+        }),
+      /Sponsor-CI mode refuses kimi-k3\.1-pro/,
+    );
+    assert.deepEqual(requestedModels, []);
+
+    process.env.KIMI_K31_PRO_ENABLED = "true";
+    delete process.env.MOONSHOT_API_KEY;
+    await assert.rejects(
+      () =>
+        streamChatWithTools({
+          model: "kimi-k3.1-pro",
+          strictModel: true,
+          systemPrompt: "Answer.",
+          messages: [{ role: "user", content: "Review the clause." }],
+        }),
+      /Sponsor-CI mode refuses kimi-k3\.1-pro/,
+    );
+    assert.deepEqual(requestedModels, []);
+
+    process.env.MOONSHOT_API_KEY = "test-moonshot-key";
+    await assert.rejects(
+      () =>
+        streamChatWithTools({
+          model: "kimi-k3.1-pro-highspeed",
+          strictModel: true,
+          systemPrompt: "Answer.",
+          messages: [{ role: "user", content: "Review the clause." }],
+        }),
+      /Sponsor-CI mode refuses kimi-k3\.1-pro-highspeed/,
+    );
+    const result = await streamChatWithTools({
+      model: "kimi-k3.1-pro",
+      strictModel: true,
+      systemPrompt: "Answer.",
+      messages: [{ role: "user", content: "Review the clause." }],
+    });
+    assert.deepEqual(requestedModels, ["kimi-k3.1-pro"]);
+    assert.equal(result.fullText, "The clause is mutual.");
+    assert.equal(result.fullText.includes("hidden indemnity"), false);
+    assert.equal(result.providerMetadata?.model_name, "kimi-k3.1-pro");
+    assert.deepEqual(result.providerMetadata?.attempted_models, ["kimi-k3.1-pro"]);
+    assert.equal(result.providerMetadata?.fallback_depth, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+    for (const [name, value] of [
+      ["SPONSOR_CI_MODE", previous.sponsor],
+      ["KIMI_K31_PRO_ENABLED", previous.kimi],
+      ["MOONSHOT_API_KEY", previous.key],
+      ["SERP_SEARCH_MODE", previous.serp],
+      ["SEARCH_ROUTER_MODE", previous.router],
+    ] as const) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
+});
+
+test("Sponsor-CI replaces an injected Kimi council seat and judge even when the pin is ready", async () => {
+  const previous = {
+    sponsor: process.env.SPONSOR_CI_MODE,
+    kimi: process.env.KIMI_K31_PRO_ENABLED,
+    key: process.env.MOONSHOT_API_KEY,
+    judge: process.env.COUNCIL_JUDGE,
+  };
+  process.env.SPONSOR_CI_MODE = "1";
+  process.env.KIMI_K31_PRO_ENABLED = "true";
+  process.env.MOONSHOT_API_KEY = "test-moonshot-key";
+  process.env.COUNCIL_JUDGE = "kimi-k3.1-pro";
+  const invoked: string[] = [];
+  try {
+    await conveneCouncilWithCompleter(
+      { question: "Review this matter." },
+      async ({ model }) => {
+        invoked.push(model);
+        return model === COUNCIL_JUDGE ? "Judge answer" : `Answer from ${model}`;
+      },
+      {
+        retryBaseDelayMs: 0,
+        sleepFn: async () => undefined,
+        seats: [
+          {
+            provider: "anthropic",
+            model: "kimi-k3.1-pro",
+            label: "Kimi",
+            maxTokens: 1000,
+          },
+          {
+            provider: "openai",
+            model: "kimi-k2.5",
+            label: "Kimi other",
+            maxTokens: 1000,
+          },
+          {
+            provider: "google",
+            model: "deepseek-v4-pro",
+            label: "DeepSeek",
+            maxTokens: 1000,
+          },
+          {
+            provider: "xai",
+            model: "fugu-ultra-20260615",
+            label: "Fugu",
+            maxTokens: 1000,
+          },
+        ],
+      },
+    );
+  } finally {
+    for (const [name, value] of [
+      ["SPONSOR_CI_MODE", previous.sponsor],
+      ["KIMI_K31_PRO_ENABLED", previous.kimi],
+      ["MOONSHOT_API_KEY", previous.key],
+      ["COUNCIL_JUDGE", previous.judge],
+    ] as const) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
+  assert.deepEqual(invoked.slice(0, 4).sort(), [...COUNCIL_MEMBERS].sort());
+  assert.equal(invoked.at(-1), COUNCIL_JUDGE);
+  assert.equal(invoked.some((id) => id.startsWith("kimi-")), false);
 });
 
 test("strict completion refuses DeepSeek before any provider call when Sponsor-CI is on", async () => {
