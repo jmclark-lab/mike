@@ -34,25 +34,28 @@ function restoreRoutingEnv() {
 afterEach(restoreRoutingEnv);
 
 describe("LLM routing chain", { concurrency: false }, () => {
-  test("default chain is Fable 5.2 → Opus 5.5 → GPT-6 Astra with no Fugu hop", () => {
+  test("default chain is Gemini 4 Carbon → Grok 4.7 → Nemotron with no Claude or OpenAI hop", () => {
     clearRoutingEnv();
-    assert.deepEqual(resolveModelChain(), [
-      "claude-fable-5-2",
-      "claude-opus-5-5",
-      "gpt-6-astra",
+    const chain = resolveModelChain();
+    assert.deepEqual(chain, [
+      "gemini-4-carbon",
+      "grok-4.7",
+      "nvidia/nemotron-3-ultra-550b-a55b",
     ]);
-    assert.equal(resolveActiveModel(), "claude-fable-5-2");
+    assert.equal(chain[0], "gemini-4-carbon");
+    assert.equal(chain.some((id) => id.startsWith("claude") || id.startsWith("gpt-")), false);
+    assert.equal(resolveActiveModel(), "gemini-4-carbon");
   });
 
   test("SAKANA_MODEL does not become primary or enter the default chain", () => {
     clearRoutingEnv();
     process.env.SAKANA_MODEL = "fugu-ultra-20260615";
     const chain = resolveModelChain();
-    assert.equal(resolveActiveModel(), "claude-fable-5-2");
+    assert.equal(resolveActiveModel(), "gemini-4-carbon");
     assert.deepEqual(chain, [
-      "claude-fable-5-2",
-      "claude-opus-5-5",
-      "gpt-6-astra",
+      "gemini-4-carbon",
+      "grok-4.7",
+      "nvidia/nemotron-3-ultra-550b-a55b",
     ]);
     assert.equal(
       chain.some((id) => id.startsWith("fugu-")),
@@ -64,39 +67,39 @@ describe("LLM routing chain", { concurrency: false }, () => {
     clearRoutingEnv();
     process.env.LLM_PROVIDER = "sakana";
     process.env.SAKANA_MODEL = "fugu-ultra-20260615";
-    assert.equal(resolveActiveModel(), "claude-fable-5-2");
+    assert.equal(resolveActiveModel(), "gemini-4-carbon");
     assert.deepEqual(resolveModelChain(), [
-      "claude-fable-5-2",
-      "claude-opus-5-5",
-      "gpt-6-astra",
+      "gemini-4-carbon",
+      "grok-4.7",
+      "nvidia/nemotron-3-ultra-550b-a55b",
     ]);
   });
 
-  test("LLM_PROVIDER=anthropic does not change the Fable default", () => {
+  test("LLM_PROVIDER=anthropic does not change the Gemini default", () => {
     clearRoutingEnv();
     process.env.LLM_PROVIDER = "anthropic";
-    assert.equal(resolveActiveModel(), "claude-fable-5-2");
+    assert.equal(resolveActiveModel(), "gemini-4-carbon");
   });
 
   test("LLM_MODEL naming Fugu is ignored and cannot become primary", () => {
     clearRoutingEnv();
     process.env.LLM_MODEL = "fugu-ultra-20260615";
-    assert.equal(resolveActiveModel(), "claude-fable-5-2");
+    assert.equal(resolveActiveModel(), "gemini-4-carbon");
     assert.deepEqual(resolveModelChain(), [
-      "claude-fable-5-2",
-      "claude-opus-5-5",
-      "gpt-6-astra",
+      "gemini-4-carbon",
+      "grok-4.7",
+      "nvidia/nemotron-3-ultra-550b-a55b",
     ]);
   });
 
-  test("LLM_MODEL still overrides the primary for a non-Sakana model", () => {
+  test("LLM_MODEL still overrides the primary for an explicit Claude model", () => {
     clearRoutingEnv();
     process.env.LLM_MODEL = "claude-fable-5";
     assert.equal(resolveActiveModel(), "claude-fable-5");
     assert.deepEqual(resolveModelChain(), [
       "claude-fable-5",
-      "claude-opus-5-5",
-      "gpt-6-astra",
+      "grok-4.7",
+      "nvidia/nemotron-3-ultra-550b-a55b",
     ]);
   });
 
@@ -115,11 +118,11 @@ describe("LLM routing chain", { concurrency: false }, () => {
   test("LLM_FALLBACK_MODEL dedupes the primary if it is repeated", () => {
     clearRoutingEnv();
     process.env.LLM_FALLBACK_MODEL =
-      "claude-fable-5-2,claude-opus-5-5,gpt-6-astra";
+      "gemini-4-carbon,grok-4.7,nvidia/nemotron-3-ultra-550b-a55b";
     assert.deepEqual(resolveModelChain(), [
-      "claude-fable-5-2",
-      "claude-opus-5-5",
-      "gpt-6-astra",
+      "gemini-4-carbon",
+      "grok-4.7",
+      "nvidia/nemotron-3-ultra-550b-a55b",
     ]);
   });
 
@@ -129,8 +132,8 @@ describe("LLM routing chain", { concurrency: false }, () => {
     assert.equal(resolveActiveModel(), "claude-fable-5-1");
     assert.deepEqual(resolveModelChain(), [
       "claude-fable-5-1",
-      "claude-opus-5-5",
-      "gpt-6-astra",
+      "grok-4.7",
+      "nvidia/nemotron-3-ultra-550b-a55b",
     ]);
   });
 });

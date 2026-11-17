@@ -3,8 +3,9 @@
  *
  * Grok is OpenAI-compatible at https://api.x.ai/v1 (Chat Completions and
  * Responses). Mike reuses the Responses adapter with this base URL. Grok is
- * selectable in chat (not in the default fallback chain) and is the fourth
- * legal-council seat (`grok-4.7`).
+ * selectable in chat (second hop of the unpinned chain) and is the fourth
+ * legal-council seat (`grok-4.7`). Omitted effort sends reasoning.effort
+ * xhigh, the top value on the xAI Responses API.
  */
 
 import {
@@ -12,7 +13,8 @@ import {
     streamOpenAI,
     type OpenAICompatibleClient,
 } from "./openai";
-import type { ReasoningEffort, StreamChatParams, StreamChatResult } from "./types";
+import type { AskEffort, ReasoningEffort, StreamChatParams, StreamChatResult } from "./types";
+import { xaiMaxOutputTokens, xaiReasoningEffort } from "./effort";
 
 export const DEFAULT_XAI_BASE_URL = "https://api.x.ai/v1";
 
@@ -64,6 +66,20 @@ export async function completeXaiText(params: {
     maxTokens?: number;
     apiKeys?: { xai?: string | null };
     reasoningEffort?: ReasoningEffort;
+    effort?: AskEffort;
 }): Promise<string> {
-    return completeOpenAIText(params, xaiClient(params.apiKeys?.xai));
+    const reasoningEffort =
+        params.reasoningEffort ?? xaiReasoningEffort(params.model, params.effort);
+    return completeOpenAIText(
+        {
+            ...params,
+            reasoningEffort,
+            maxTokens: xaiMaxOutputTokens(
+                params.model,
+                reasoningEffort,
+                params.maxTokens,
+            ),
+        },
+        xaiClient(params.apiKeys?.xai),
+    );
 }

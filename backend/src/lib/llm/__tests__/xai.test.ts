@@ -51,24 +51,18 @@ describe("xAI Grok selectable-only wiring", { concurrency: false }, () => {
     assert.deepEqual([...GROK_MAIN_MODELS], ["grok-4.7"]);
     assert.equal(providerForModel("grok-4.7"), "xai");
     assert.equal(resolveModel("grok-4.7", DEFAULT_MAIN_MODEL), "grok-4.7");
-    assert.equal(DEFAULT_MAIN_MODEL, "claude-fable-5-2");
+    assert.equal(DEFAULT_MAIN_MODEL, "gemini-4-carbon");
   });
 
-  test("Grok is not in the default chat fallback chain", () => {
+  test("Grok 4.7 is the second hop of the default chat chain", () => {
     delete process.env.LLM_MODEL;
     delete process.env.LLM_FALLBACK_MODEL;
     delete process.env.LLM_PROVIDER;
     delete process.env.SAKANA_MODEL;
     const chain = resolveModelChain();
-    assert.equal(
-      chain.some((id) => id.startsWith("grok-")),
-      false,
-    );
-    assert.deepEqual(chain, [
-      "claude-fable-5-2",
-      "claude-opus-5-5",
-      "gpt-6-astra",
-    ]);
+    assert.equal(chain[0], "gemini-4-carbon");
+    assert.equal(chain[1], "grok-4.7");
+    assert.equal(chain.some((id) => id.startsWith("claude") || id.startsWith("gpt-")), false);
   });
 
   test("Grok 4.7 is the fourth legal-council seat (Astra OpenAI slot stays)", () => {
@@ -136,6 +130,11 @@ describe("xAI Grok selectable-only wiring", { concurrency: false }, () => {
       assert.equal(requestedUrl, "https://api.x.ai/v1/responses");
       assert.equal(requestBody?.model, "grok-4.7");
       assert.equal(requestBody?.stream, true);
+      assert.equal(
+        (requestBody?.reasoning as { effort?: string } | undefined)?.effort,
+        "xhigh",
+      );
+      assert.equal(requestBody?.max_output_tokens, 32768);
       assert.equal(authHeader.startsWith("Bearer "), true);
     } finally {
       globalThis.fetch = originalFetch;

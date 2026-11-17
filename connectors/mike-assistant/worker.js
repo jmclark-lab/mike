@@ -187,10 +187,14 @@ __name(logCouncilCompletion, "logCouncilCompletion");
 // Models the ask path may pin. Keep this list aligned with
 // backend/src/lib/connectorModelChoice.ts. Gemini is the council seat.
 // Nemotron is a chat pin only and is not a council seat.
+var CONNECTOR_VERSION = "1.8.6";
+var DEFAULT_CHAIN_LABEL = "gemini-4-carbon -> grok-4.7 -> nvidia/nemotron-3-ultra-550b-a55b";
+var ASK_EFFORTS = ["low", "medium", "high", "max"];
 var CONNECTOR_MODEL_CHOICES = [
   { id: "claude-fable-5-2", provider: "anthropic", aliases: ["claude"] },
   { id: "claude-opus-5-5", provider: "anthropic", aliases: [] },
   { id: "gpt-6-astra", provider: "openai", aliases: ["openai", "gpt"] },
+  { id: "gpt-6.1-sol", provider: "openai", aliases: [] },
   { id: "gemini-4-carbon", provider: "google", aliases: ["gemini"] },
   { id: "grok-4.7", provider: "xai", aliases: ["grok"] },
   { id: "nvidia/nemotron-3-ultra-550b-a55b", provider: "nvidia", aliases: ["nemotron", "nvidia"] }
@@ -209,7 +213,7 @@ function connectorModelAllowedText() {
 }
 __name(connectorModelAllowedText, "connectorModelAllowedText");
 function connectorModelSchemaDescription() {
-  return "Optional. When set, Mike uses only this model for the whole request: no fallback, no council, no judge, and no other seat, whatever the prompt says. Allowed values: " + connectorModelAllowedText() + ". Aliases: gemini -> gemini-4-carbon (council Gemini 4 Carbon), claude -> claude-fable-5-2, openai and gpt -> gpt-6-astra, grok -> grok-4.7, nemotron and nvidia -> nvidia/nemotron-3-ultra-550b-a55b (not a council seat). Omit to keep the default chain claude-fable-5-2 -> claude-opus-5-5 -> gpt-6-astra, including council keyword routing. Unknown values are rejected with this list. get_mike_answer reports the provider and exact model id that produced the answer, and whether the default chain fell back.";
+  return "Optional. When set, Mike uses only this model for the whole request: no fallback, no council, no judge, and no other seat, whatever the prompt says. Allowed values: " + connectorModelAllowedText() + ". Aliases: gemini -> gemini-4-carbon (council Gemini 4 Carbon), claude -> claude-fable-5-2, openai and gpt -> gpt-6-astra, grok -> grok-4.7, nemotron and nvidia -> nvidia/nemotron-3-ultra-550b-a55b (not a council seat). gpt-6.1-sol is the exact id with no alias. Omit to keep the default chain " + DEFAULT_CHAIN_LABEL + " (no Claude, no OpenAI), including council keyword routing. Unknown values are rejected with this list. get_mike_answer reports the provider and exact model id that produced the answer, and whether the default chain fell back.";
 }
 __name(connectorModelSchemaDescription, "connectorModelSchemaDescription");
 function resolveConnectorModelChoice(value) {
@@ -229,6 +233,21 @@ function resolveConnectorModelChoice(value) {
   return { ok: false, error: "Unknown model \"" + value.trim() + "\". Allowed values: " + connectorModelAllowedText() + "." };
 }
 __name(resolveConnectorModelChoice, "resolveConnectorModelChoice");
+function resolveAskEffort(value) {
+  if (value == null || value === "") return { ok: true, effort: null };
+  if (typeof value !== "string") {
+    return { ok: false, error: "effort must be a string. Allowed values: low, medium, high, max." };
+  }
+  const key = value.trim().toLowerCase();
+  if (!key) {
+    return { ok: false, error: "effort must be a non-empty string. Allowed values: low, medium, high, max." };
+  }
+  if (ASK_EFFORTS.indexOf(key) === -1) {
+    return { ok: false, error: "Unknown effort \"" + value.trim() + "\". Allowed values: low, medium, high, max." };
+  }
+  return { ok: true, effort: key };
+}
+__name(resolveAskEffort, "resolveAskEffort");
 function formatAnswerModel(record) {
   const provider = record && record.provider ? record.provider : "unknown";
   const model = record && record.model ? record.model : "unknown";
@@ -262,6 +281,7 @@ async function callMike(env, prompt, opts) {
     const base = env.MIKE_BACKEND_URL.replace(/\/$/, "");
     const requestBody = { prompt };
     if (opts && opts.model) requestBody.model = opts.model;
+    if (opts && opts.effort) requestBody.effort = opts.effort;
     const r = await fetch(base + "/connector/jobs/" + encodeURIComponent(jobId), {
       method: "POST",
       headers: { "x-connector-key": env.CONNECTOR_API_KEY, "content-type": "application/json" },
@@ -392,7 +412,7 @@ var worker_default = {
       return new Response(null, { status: 204, headers: CORS });
     }
     if (request.method === "GET" && (url.pathname === "/" || url.pathname === "/health")) {
-      return new Response("Mike Legal AI — MCP connector v1.8.5.", {
+      return new Response("Mike Legal AI — MCP connector v" + CONNECTOR_VERSION + ".", {
         headers: { "content-type": "text/plain", ...CORS }
       });
     }
@@ -526,7 +546,7 @@ var worker_default = {
         return ok({
           protocolVersion: pv,
           capabilities: { tools: { listChanged: false } },
-          serverInfo: { name: "mike-legal", version: "1.8.5" },
+          serverInfo: { name: "mike-legal", version: CONNECTOR_VERSION },
           instructions: "Start legal reviews with ask_mike, then poll get_mike_answer using retry_after_seconds. Fetch every numbered part before synthesizing. Treat Mike's analysis as legal work product requiring human counsel review."
         });
       }
@@ -538,12 +558,13 @@ var worker_default = {
           tools: [
             {
               name: "ask_mike",
-              description: "Start a Mike Legal AI review — bioaccess\xAE contract and Latin-American regulatory legal analysis (NDAs, MSAs, work orders, distribution/IDE/CRO agreements). Paste the full legal question and any contract/clause text as 'prompt'. Optional 'model' pins one model with no fallback (gemini-4-carbon / gemini, claude-fable-5-2 / claude, claude-opus-5-5, gpt-6-astra / openai / gpt, grok-4.7 / grok, nvidia/nemotron-3-ultra-550b-a55b / nemotron / nvidia). Omit model to keep the default chain. Returns a job_id immediately; then poll get_mike_answer until the analysis is ready. Complex reviews can take 5–30+ minutes; the job retries automatically so keep polling. get_mike_answer reports the provider and exact model id that produced the answer.",
+              description: "Start a Mike Legal AI review — bioaccess\xAE contract and Latin-American regulatory legal analysis (NDAs, MSAs, work orders, distribution/IDE/CRO agreements). Paste the full legal question and any contract/clause text as 'prompt'. Optional 'model' pins one model with no fallback (gemini-4-carbon / gemini, claude-fable-5-2 / claude, claude-opus-5-5, gpt-6-astra / openai / gpt, gpt-6.1-sol, grok-4.7 / grok, nvidia/nemotron-3-ultra-550b-a55b / nemotron / nvidia). Omit model to keep the default chain " + DEFAULT_CHAIN_LABEL + ". Optional 'effort' is low, medium, high, or max. Returns a job_id immediately; then poll get_mike_answer until the analysis is ready. Complex reviews can take 5–30+ minutes; the job retries automatically so keep polling. get_mike_answer reports the provider and exact model id that produced the answer.",
               inputSchema: {
                 type: "object",
                 properties: {
                   prompt: { type: "string", minLength: 1, maxLength: 500000, description: "The legal question plus any contract or clause text to review. Prompts are stored in R2 or chunked Durable Object values (UTF-8 byte chunks under 128 KiB each); large reviews should still prefer ingest for huge attachments." },
                   model: { type: "string", enum: connectorModelAllowedValues(), description: connectorModelSchemaDescription() },
+                  effort: { type: "string", enum: ASK_EFFORTS, description: "Optional reasoning effort: low, medium, high, or max. Omit for the model default. gemini-4-carbon defaults to thinking_level high. grok-4.7 defaults to reasoning effort xhigh (the top xAI value). max maps to each provider's top setting: Gemini high, Grok xhigh, Claude max, OpenAI max on gpt-6.1-sol and xhigh on other OpenAI ids, NVIDIA enable_thinking true except low." },
                   idempotency_key: { type: "string", minLength: 1, maxLength: 128, description: "Optional stable key. Reusing it for the same authenticated principal returns the existing job instead of starting a duplicate." }
                 },
                 required: ["prompt"]
@@ -641,12 +662,14 @@ var worker_default = {
           if (prompt.length > 500000) return ok({ content: [{ type: "text", text: "Prompt exceeds the 500,000 character limit. Ingest documents first and submit a focused legal question." }], isError: true });
           const modelChoice = resolveConnectorModelChoice(Object.prototype.hasOwnProperty.call(args, "model") ? args.model : null);
           if (!modelChoice.ok) return ok({ content: [{ type: "text", text: modelChoice.error }], isError: true });
+          const effortChoice = resolveAskEffort(Object.prototype.hasOwnProperty.call(args, "effort") ? args.effort : null);
+          if (!effortChoice.ok) return ok({ content: [{ type: "text", text: effortChoice.error }], isError: true });
           if (!env.MIKE_JOBS) return ok({ content: [{ type: "text", text: "Async backend not configured (MIKE_JOBS Durable Object missing)." }], isError: true });
           const idempotencyKey = (args.idempotency_key || "").toString().trim();
           if (idempotencyKey.length > 128) return ok({ content: [{ type: "text", text: "idempotency_key exceeds 128 characters." }], isError: true });
           const jobId = idempotencyKey ? "idem_" + await sha256base64url(auth.principal + ":" + idempotencyKey) : crypto.randomUUID();
           const stub = env.MIKE_JOBS.get(env.MIKE_JOBS.idFromName(jobId));
-          const started = await stub.fetch("https://do/start", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ prompt, principal: auth.principal, idempotencyKey: idempotencyKey || null, jobId, model: modelChoice.model, provider: modelChoice.provider }) });
+          const started = await stub.fetch("https://do/start", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ prompt, principal: auth.principal, idempotencyKey: idempotencyKey || null, jobId, model: modelChoice.model, provider: modelChoice.provider, effort: effortChoice.effort }) });
           if (!started.ok) {
             if (started.status === 413) {
               const errBody = await started.json().catch(() => ({}));
@@ -672,13 +695,15 @@ var worker_default = {
           const startedBody = await started.json().catch(() => ({}));
           const reportedModel = startedBody && startedBody.reused ? startedBody.requestedModel || null : modelChoice.model;
           const reportedProvider = startedBody && startedBody.reused ? startedBody.requestedProvider || null : modelChoice.provider;
+          const reportedEffort = startedBody && startedBody.reused ? startedBody.requestedEffort || null : effortChoice.effort;
           const modelPolicy = reportedModel ? "explicit" : "default_chain";
+          const effortLine = reportedEffort ? " effort=" + reportedEffort + "." : "";
           const modelLine = modelPolicy === "explicit"
             ? "model=" + formatPinnedModelLabel(reportedProvider, reportedModel) + " (explicit; no fallback)"
-            : "model=default chain (claude-fable-5-2 -> claude-opus-5-5 -> gpt-6-astra). get_mike_answer reports the provider and exact model id that answers, and whether fallback happened.";
+            : "model=default chain (" + DEFAULT_CHAIN_LABEL + "). get_mike_answer reports the provider and exact model id that answers, and whether fallback happened.";
           const structuredContent = { job_id: jobId, status: "working", retry_after_seconds: 20, model: reportedModel, provider: reportedProvider, model_policy: modelPolicy };
           return ok({
-            content: [{ type: "text", text: "Mike Legal job started. job_id=" + jobId + "\n" + modelLine + "\nNow call get_mike_answer with this exact job_id, polling about every 20 seconds until the analysis is ready (usually 1–3 minutes)." }],
+            content: [{ type: "text", text: "Mike Legal job started. job_id=" + jobId + "\n" + modelLine + effortLine + "\nNow call get_mike_answer with this exact job_id, polling about every 20 seconds until the analysis is ready (usually 1–3 minutes)." }],
             structuredContent,
             isError: false
           });
@@ -815,7 +840,8 @@ var MikeJob = class {
           reused: true,
           status: existing.status,
           requestedModel: existing.requestedModel || null,
-          requestedProvider: existing.requestedProvider || null
+          requestedProvider: existing.requestedProvider || null,
+          requestedEffort: existing.requestedEffort || null
         }), { headers: { "content-type": "application/json" } });
       }
       const promptText = (body.prompt || "").toString();
@@ -833,6 +859,7 @@ var MikeJob = class {
           idempotencyKey: body.idempotencyKey || null,
           requestedModel: body.model || null,
           requestedProvider: body.provider || null,
+          requestedEffort: body.effort || null,
           backendJobId: jobId,
           created: now,
           startedAt: now
@@ -924,7 +951,7 @@ var MikeJob = class {
     });
     await this.state.storage.put("job", activeJob);
     try {
-      const result = await callMike(this.env, promptText, { jobId: backendJobId, model: activeJob.requestedModel || null });
+      const result = await callMike(this.env, promptText, { jobId: backendJobId, model: activeJob.requestedModel || null, effort: activeJob.requestedEffort || null });
       if (result && result.status === "working") {
         await this.state.storage.put("job", stripPromptFromJob(activeJob, {
           status: "working",

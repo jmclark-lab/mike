@@ -51,11 +51,18 @@ type GeminiThinkingConfig = {
   thinkingLevel?: "low" | "medium" | "high";
 };
 
+export type GeminiThinkingLevelName = NonNullable<
+  GeminiThinkingConfig["thinkingLevel"]
+>;
+
 /**
  * Gemini generateContent config. Gemini 4 Argon and Carbon drop sampling
  * params and explicit cache handles, and replace thinking_budget with
- * thinking_level (Carbon keeps that same thinking config). Argon never sends
- * a max output below 32,768. Carbon clamps maxOutputTokens to 32,768.
+ * thinking_level. Argon never sends a max output below 32,768. Carbon
+ * clamps maxOutputTokens to 32,768. Carbon's thinking_level default is
+ * high (not the API default of medium). High uses the full 32,768 cap so
+ * thinking tokens, which count against maxOutputTokens, leave room for
+ * the answer.
  */
 export function buildGeminiRequestConfig(params: {
   model: string;
@@ -66,9 +73,11 @@ export function buildGeminiRequestConfig(params: {
   /**
    * Chat streaming already sends a thinking config. One-shot completion
    * does not, except for Gemini 4 Argon and Carbon, which must not send
-   * thinking_budget.
+   * thinking_budget. Carbon always sends thinking_level.
    */
   applyThinkingConfig?: boolean;
+  /** Overrides the Gemini 4 thinking_level. Carbon defaults to high. */
+  thinkingLevel?: GeminiThinkingLevelName;
   maxTokens?: number;
   extra?: Record<string, unknown>;
 }): Record<string, unknown> {
@@ -89,31 +98,37 @@ export function buildGeminiRequestConfig(params: {
 
   for (const key of GEMINI_FORBIDDEN_KEYS) delete config[key];
 
-  if (params.enableThinking) {
+  if (params.model === GEMINI_4_CARBON) {
+    const thinkingLevel = params.thinkingLevel ?? "high";
+    config.thinkingConfig = {
+      includeThoughts: true,
+      thinkingLevel,
+    };
+    const requested =
+      typeof params.maxTokens === "number" && Number.isFinite(params.maxTokens)
+        ? params.maxTokens
+        : GEMINI_4_CARBON_MAX_OUTPUT_TOKENS;
+    const floor =
+      thinkingLevel === "high" ? GEMINI_4_CARBON_MAX_OUTPUT_TOKENS : 0;
+    config.maxOutputTokens = Math.min(
+      Math.max(requested, floor),
+      GEMINI_4_CARBON_MAX_OUTPUT_TOKENS,
+    );
+    return config;
+  }
+
+  if (params.enableThinking || params.thinkingLevel) {
     const thinking: GeminiThinkingConfig = {
       ...((config.thinkingConfig as GeminiThinkingConfig | undefined) ?? {}),
     };
     delete thinking.thinkingBudget;
     thinking.includeThoughts = true;
-    thinking.thinkingLevel = thinking.thinkingLevel ?? "medium";
+    thinking.thinkingLevel = params.thinkingLevel ?? thinking.thinkingLevel ?? "medium";
     config.thinkingConfig = thinking;
   } else {
-    // thinking_budget is not sent. Omitting thinking_level leaves the API
-    // default (medium). Carbon keeps this Argon thinking config; it spends
-    // more of the output budget on thinking, so the level is not raised.
+    // thinking_budget is not sent. Omitting thinking_level leaves Argon's
+    // API default (medium).
     delete config.thinkingConfig;
-  }
-
-  if (params.model === GEMINI_4_CARBON) {
-    const requested =
-      typeof params.maxTokens === "number" && Number.isFinite(params.maxTokens)
-        ? params.maxTokens
-        : GEMINI_4_CARBON_MAX_OUTPUT_TOKENS;
-    config.maxOutputTokens = Math.min(
-      requested,
-      GEMINI_4_CARBON_MAX_OUTPUT_TOKENS,
-    );
-    return config;
   }
 
   const cap = params.streaming
@@ -140,14 +155,18 @@ export function buildClaudeMessageParams<T extends ClaudeMessage>(input: {
   messages: T[];
   tools?: unknown;
   enableThinking?: boolean;
+  /** ask_mike effort. When set, adaptive thinking is on and this effort is sent. */
+  effort?: "low" | "medium" | "high" | "max";
   temperature?: number;
   top_p?: number;
   top_k?: number;
   thinking?: Record<string, unknown>;
 }): Record<string, unknown> {
-  const thinking = input.enableThinking
+  const thinkingOn = input.enableThinking === true || input.effort !== undefined;
+  const thinking = thinkingOn
     ? { type: "adaptive", ...(input.thinking ?? {}) }
     : input.thinking;
+  const effort = input.effort ?? (thinkingOn ? "high" : undefined);
   const body: Record<string, unknown> = {
     model: input.model,
     max_tokens: input.max_tokens,
@@ -155,7 +174,7 @@ export function buildClaudeMessageParams<T extends ClaudeMessage>(input: {
     messages: input.messages,
     ...(input.tools ? { tools: input.tools } : {}),
     ...(thinking ? { thinking } : {}),
-    ...(input.enableThinking ? { output_config: { effort: "high" } } : {}),
+    ...(effort ? { output_config: { effort } } : {}),
   };
   if (input.temperature !== undefined) body.temperature = input.temperature;
   if (input.top_p !== undefined) body.top_p = input.top_p;

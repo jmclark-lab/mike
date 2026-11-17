@@ -66,6 +66,11 @@ test("connector model aliases resolve to the current ids", () => {
     model: "grok-4.7",
     provider: "xai",
   });
+  assert.deepEqual(parseConnectorModelChoice("gpt-6.1-sol"), {
+    ok: true,
+    model: "gpt-6.1-sol",
+    provider: "openai",
+  });
   assert.equal(parseConnectorModelChoice("claude-opus-5-5").ok, true);
 });
 
@@ -109,10 +114,14 @@ test("omitting model keeps the default chain, including under Sponsor-CI", () =>
   assert.equal(chain.strict, false);
   assert.deepEqual(chain.models, resolveModelChain());
   assert.deepEqual(chain.models, [
-    "claude-fable-5-2",
-    "claude-opus-5-5",
-    "gpt-6-astra",
+    "gemini-4-carbon",
+    "grok-4.7",
+    "nvidia/nemotron-3-ultra-550b-a55b",
   ]);
+  assert.equal(
+    chain.models.some((id) => id.startsWith("claude") || id.startsWith("gpt-")),
+    false,
+  );
 });
 
 test("an explicit model is the only attempt and a failure does not fall back", async () => {

@@ -9,6 +9,7 @@ export const CONNECTOR_MODEL_CHOICES = [
   { id: "claude-fable-5-2", provider: "anthropic", aliases: ["claude"] },
   { id: "claude-opus-5-5", provider: "anthropic", aliases: [] as string[] },
   { id: "gpt-6-astra", provider: "openai", aliases: ["openai", "gpt"] },
+  { id: "gpt-6.1-sol", provider: "openai", aliases: [] as string[] },
   { id: "gemini-4-carbon", provider: "google", aliases: ["gemini"] },
   { id: "grok-4.7", provider: "xai", aliases: ["grok"] },
   {

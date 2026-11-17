@@ -4,8 +4,8 @@
  * Nemotron 3 Ultra is an OpenAI-compatible Chat Completions model at
  * https://integrate.api.nvidia.com/v1/chat/completions. NVIDIA has no
  * /responses endpoint, so this does not use the xAI/OpenAI Responses client.
- * The model is selectable in chat and on ask_mike. It is not in the default
- * fallback chain and it is not a legal-council seat.
+ * The model is selectable in chat and on ask_mike. It is the last hop of
+ * the unpinned chat chain and it is not a legal-council seat.
  *
  * Thinking is requested with chat_template_kwargs.enable_thinking. Nemotron
  * emits reasoning_content before content, and a small max_tokens budget can
@@ -23,11 +23,13 @@
  */
 
 import type {
+    AskEffort,
     NormalizedToolCall,
     OpenAIToolSchema,
     StreamChatParams,
     StreamChatResult,
 } from "./types";
+import { nvidiaEnableThinking } from "./effort";
 
 export const DEFAULT_NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1";
 export const DEFAULT_NVIDIA_MODEL = "nvidia/nemotron-3-ultra-550b-a55b";
@@ -131,15 +133,21 @@ export function nvidiaChatCompletionsUrl(baseUrl: string): string {
  * Output budget sent as max_tokens. Omitted or non-finite values use the
  * chat default. Any smaller caller value is raised to the floor.
  */
-export function nvidiaOutputTokens(requested?: number): number {
+export function nvidiaOutputTokens(requested?: number, effort?: AskEffort): number {
     if (requested == null || !Number.isFinite(requested)) {
         return NVIDIA_DEFAULT_OUTPUT_TOKENS;
     }
+    if (effort === "high" || effort === "max") {
+        return Math.max(NVIDIA_DEFAULT_OUTPUT_TOKENS, Math.trunc(requested));
+    }
+    if (effort === "low") return Math.max(1, Math.trunc(requested));
     return Math.max(NVIDIA_MIN_OUTPUT_TOKENS, Math.trunc(requested));
 }
 
-function thinkingBody(): { chat_template_kwargs: { enable_thinking: true } } {
-    return { chat_template_kwargs: { enable_thinking: true } };
+export function thinkingBody(effort?: AskEffort): {
+    chat_template_kwargs: { enable_thinking: boolean };
+} {
+    return { chat_template_kwargs: { enable_thinking: nvidiaEnableThinking(effort) } };
 }
 
 function extractSseEvents(buffer: string): { events: ChatCompletionsChunk[]; rest: string } {
@@ -358,8 +366,8 @@ export async function streamNvidia(params: StreamChatParams): Promise<StreamChat
                 model,
                 messages,
                 stream: true,
-                max_tokens: nvidiaOutputTokens(),
-                ...thinkingBody(),
+                max_tokens: nvidiaOutputTokens(undefined, params.effort),
+                ...thinkingBody(params.effort),
                 ...(chatTools.length ? { tools: chatTools, tool_choice: "auto" } : {}),
             },
         });
@@ -429,6 +437,7 @@ export async function completeNvidiaText(params: {
     user: string;
     maxTokens?: number;
     apiKeys?: { nvidia?: string | null };
+    effort?: AskEffort;
 }): Promise<string> {
     const client = nvidiaClient(params.apiKeys?.nvidia);
     const messages: ChatMessage[] = [];
@@ -439,9 +448,9 @@ export async function completeNvidiaText(params: {
         body: {
             model: nvidiaRequestModel(params.model),
             messages,
-            max_tokens: nvidiaOutputTokens(params.maxTokens),
+            max_tokens: nvidiaOutputTokens(params.maxTokens, params.effort),
             stream: true,
-            ...thinkingBody(),
+            ...thinkingBody(params.effort),
         },
     });
     const read = await readCompletion({ response });

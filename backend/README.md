@@ -17,7 +17,7 @@ The server starts on `http://localhost:3001` by default.
 
 ## LLM routing
 
-Streaming chat defaults to `claude-fable-5-2` → `claude-opus-5-5` → `gpt-6-astra`. The legal council is four seats: Fable 5.2, GPT-6 Astra, `gemini-4-carbon`, and Grok 4.7. Opus 5.5 is the judge and is not a voting seat. Minimum quorum defaults to 4.
+Streaming chat with no pin defaults to `gemini-4-carbon` → `grok-4.7` → `nvidia/nemotron-3-ultra-550b-a55b`. That chain has no Claude and no OpenAI hop. An explicit `LLM_MODEL`, `LLM_FALLBACK_MODEL`, or ask_mike `model` pin can still name Claude or OpenAI. The legal council is four seats: Fable 5.2, GPT-6 Astra, `gemini-4-carbon`, and Grok 4.7. Opus 5.5 is the judge and is not a voting seat. Minimum quorum defaults to 4.
 
 `SAKANA_API_KEY` is optional. The process does not exit when it is missing, and council/chat do not call Sakana. DeepSeek is not offered in the model picker.
 

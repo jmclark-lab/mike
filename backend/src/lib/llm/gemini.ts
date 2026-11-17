@@ -7,6 +7,7 @@ import {
   buildGeminiRequestConfig,
   geminiClientTimeoutMs,
 } from "./requestParams";
+import { geminiThinkingLevel } from "./effort";
 import {
   LONG_DOCUMENT_CHARS,
   LONG_DOCUMENT_TURN_INSTRUCTION,
@@ -320,6 +321,7 @@ export async function streamGemini(
             // to 32,768, including when a long document asks for more.
             enableThinking,
             applyThinkingConfig: true,
+            thinkingLevel: geminiThinkingLevel(model, params.effort),
             ...(maxOutputTokens !== undefined
               ? { maxTokens: maxOutputTokens }
               : {}),

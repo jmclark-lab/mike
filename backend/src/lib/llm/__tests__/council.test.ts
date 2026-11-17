@@ -28,13 +28,14 @@ test("default council seats are four providers including Fable 5.2 and Grok 4.7"
   assert.equal(seats[2].provider, "google");
   assert.equal(seats[2].model, "gemini-4-carbon");
   assert.equal(seats[2].label, "Gemini 4 Carbon");
-  assert.equal(seats[2].maxTokens, 16000);
+  assert.equal(seats[2].maxTokens, 32768);
   assert.equal(seats[3].provider, "xai");
   assert.equal(seats[3].model, "grok-4.7");
   assert.equal(seats[3].label, "Grok 4.7");
   assert.equal(seats[0].maxTokens, 32000);
   assert.equal(seats[1].maxTokens, 16384);
-  assert.equal(seats[3].maxTokens, 8000);
+  assert.equal(seats[3].maxTokens, 32768);
+  assert.equal(seats[3].reasoningEffort, "xhigh");
   assert.equal(
     seats.some((seat) => seat.model.startsWith("fugu-") || seat.provider === ("sakana" as never)),
     false,
@@ -196,7 +197,7 @@ test("council seats are configurable and the OpenAI seat always uses xhigh reaso
   assert.equal(seats[1].reasoningEffort, "xhigh");
   assert.equal(seats[0].maxTokens, 32000);
   assert.equal(seats[1].maxTokens, 32000);
-  assert.equal(seats[2].maxTokens, 16000);
+  assert.equal(seats[2].maxTokens, 32768);
   assert.equal(seats[2].label, "Gemini 3.5 Pro");
   assert.equal(
     resolveCouncilSeats({ COUNCIL_GEMINI_MAX_TOKENS: "64000" })[2]?.maxTokens,
@@ -225,18 +226,18 @@ test("the Anthropic council call receives the raised token budget", async () => 
   assert.equal(observed.has("fugu-ultra-20260615"), false);
 });
 
-test("the xAI council call receives the Grok 4.7 token budget", async () => {
-  let observed: { maxTokens?: number } | undefined;
+test("the xAI council call receives the Grok 4.7 token budget and xhigh effort", async () => {
+  let observed: { maxTokens?: number; reasoningEffort?: string } | undefined;
   await conveneCouncilWithCompleter(
     { question: "Review this matter." },
-    async ({ model, maxTokens }) => {
-      if (model === "grok-4.7") observed = { maxTokens };
+    async ({ model, maxTokens, reasoningEffort }) => {
+      if (model === "grok-4.7") observed = { maxTokens, reasoningEffort };
       return model === COUNCIL_JUDGE ? "Judge answer" : `Answer from ${model}`;
     },
     noDelay,
   );
 
-  assert.deepEqual(observed, { maxTokens: 8000 });
+  assert.deepEqual(observed, { maxTokens: 32768, reasoningEffort: "xhigh" });
 });
 
 test("the OpenAI council call receives the Astra reasoning and token budget", async () => {

@@ -17,6 +17,7 @@ import { createServerSupabase } from "./lib/supabase";
 import { getRoutingHealth } from "./lib/llm";
 import { ConnectorJobManager, readMikeSseResult } from "./lib/connectorJobs";
 import { parseConnectorModelChoice } from "./lib/connectorModelChoice";
+import { parseAskEffort } from "./lib/llm/effort";
 import { requireConnectorKey } from "./middleware/auth";
 import { isSponsorCiMode, sponsorCiBootWarning } from "./lib/sponsorCiMode";
 
@@ -172,6 +173,7 @@ const connectorJobManager = new ConnectorJobManager(async (prompt, options) => {
       body.model = options.model;
       body.strict_model = true;
     }
+    if (options?.effort) body.effort = options.effort;
     const response = await fetch(`http://127.0.0.1:${PORT}/chat`, {
       method: "POST",
       headers: {
@@ -208,8 +210,16 @@ app.post("/connector/jobs/:jobId", requireConnectorKey, (req, res) => {
       allowed: choice.allowed,
     });
   }
+  const requestedEffort = Object.prototype.hasOwnProperty.call(req.body ?? {}, "effort")
+    ? (req.body as { effort?: unknown }).effort
+    : undefined;
+  const effort = parseAskEffort(requestedEffort);
+  if (!effort.ok) {
+    return void res.status(400).json({ detail: effort.detail });
+  }
   const snapshot = connectorJobManager.startOrGet(jobId, prompt, {
     model: choice.model,
+    effort: effort.effort,
   });
   res.status(snapshot.status === "working" ? 202 : 200).json(snapshot);
 });

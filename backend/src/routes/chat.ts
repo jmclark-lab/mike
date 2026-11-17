@@ -15,7 +15,7 @@ import {
     stripTransientAssistantEvents,
     type ChatMessage,
 } from "../lib/chatTools";
-import { completeText, persistableProviderMetadata } from "../lib/llm";
+import { completeText, parseAskEffort, persistableProviderMetadata } from "../lib/llm";
 import {
     connectorModelAllowedText,
     connectorModelAllowedValues,
@@ -475,6 +475,12 @@ chatRouter.post("/", connectorOrAuth, async (req, res) => {
     const messages = parsedMessages.messages;
     const chat_id = parsedChatId.chatId;
     const project_id = parsedProjectId.projectId;
+    const parsedEffort = parseAskEffort(
+        Object.prototype.hasOwnProperty.call(body, "effort") ? body.effort : undefined,
+    );
+    if (!parsedEffort.ok) {
+        return void res.status(400).json({ detail: parsedEffort.detail });
+    }
     const model = strictModelId ?? parsedModel.model;
 
     devLog("[chat/stream] incoming request", {
@@ -625,6 +631,7 @@ chatRouter.post("/", connectorOrAuth, async (req, res) => {
             includeResearchTools: legalResearchUs,
             model,
             strictModel: Boolean(strictModelId),
+            effort: parsedEffort.effort,
             apiKeys,
             signal: streamAbort.signal,
             projectId: resolvedProjectId,

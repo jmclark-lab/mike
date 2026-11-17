@@ -5,6 +5,8 @@ import { completeXaiText, streamXai } from "./xai";
 import { completeDeepSeekText, streamDeepSeek } from "./deepseek";
 import {
     assertKimiSelectable,
+    DEFAULT_FALLBACK_MODELS,
+    DEFAULT_MAIN_MODEL,
     isSakanaModelId,
     isSelectableModelId,
     providerForModel,
@@ -29,20 +31,14 @@ import { isGroundingEnabled, buildGroundingContext } from "../hybridSearch";
 
 export * from "./types";
 export * from "./models";
-
-const DEFAULT_FABLE_MODEL = "claude-fable-5-2";
-// Stable Anthropic fallback after Fable 5.2.
-const INTERIM_STABLE_MODEL = "claude-opus-5-5";
-// Final tail fallback: OpenAI GPT-6 Astra, the strongest commercial OpenAI
-// model. Sol and Luna stay selectable and are not default hops. Only reached
-// if Fable 5.2 and Opus 5.5 both fail.
-const FINAL_OPENAI_FALLBACK = "gpt-6-astra";
+export * from "./effort";
 
 /**
  * Chat primary. `LLM_MODEL` is the only env var that can change this.
  * Sakana / Fugu ids are ignored so a stale `LLM_MODEL` or `SAKANA_MODEL`
  * cannot put Fugu on `/healthz`. While Sponsor-CI mode is on, DeepSeek and
- * any id outside the frontier set are ignored too.
+ * any id outside the frontier set are ignored too. The code default is
+ * gemini-4-carbon, so an unset `LLM_MODEL` does not need a Railway change.
  */
 export function resolveActiveModel(
     env: NodeJS.ProcessEnv = process.env,
@@ -56,7 +52,7 @@ export function resolveActiveModel(
     ) {
         return explicit;
     }
-    return DEFAULT_FABLE_MODEL;
+    return DEFAULT_MAIN_MODEL;
 }
 
 function sponsorCiAllowsChatModel(
@@ -68,17 +64,20 @@ function sponsorCiAllowsChatModel(
 }
 
 /**
- * Ordered model fallback chain. Default is a three-way chain with no Sakana hop:
- *   1. Fable 5.2    (primary)    — claude-fable-5-2
- *   2. Opus 5.5     (fallback)   — claude-opus-5-5
- *   3. GPT-6 Astra  (final net)  — gpt-6-astra
+ * Ordered model fallback chain when nothing is pinned:
+ *   1. Gemini 4 Carbon — gemini-4-carbon
+ *   2. Grok 4.7        — grok-4.7
+ *   3. Nemotron 3 Ultra — nvidia/nemotron-3-ultra-550b-a55b
+ *
+ * No Claude and no OpenAI hop. Those ids still run when `LLM_MODEL`,
+ * `LLM_FALLBACK_MODEL`, or an ask_mike pin names them.
  *
  * `LLM_MODEL` replaces the primary. `LLM_FALLBACK_MODEL` replaces the tail
  * (comma-separated model ids, tried in the order given). Fugu / Sakana ids
  * are dropped from both, including explicit overrides. `SAKANA_MODEL` never
  * composes this chain. While Sponsor-CI mode is on, DeepSeek and other
- * non-frontier ids are dropped, and Fable 5.2, Opus 5.5, and Astra stay
- * on the chain.
+ * non-frontier ids are dropped. Sponsor-CI re-appends this same
+ * non-Claude/OpenAI chain; it does not put Claude or OpenAI back.
  */
 export function resolveModelChain(
     env: NodeJS.ProcessEnv = process.env,
@@ -97,16 +96,14 @@ export function resolveModelChain(
     if (explicitFallbacks) {
         for (const m of explicitFallbacks.split(",")) push(m);
     } else {
-        push(INTERIM_STABLE_MODEL);
-        push(FINAL_OPENAI_FALLBACK);
+        for (const model of DEFAULT_FALLBACK_MODELS) push(model);
     }
 
-    // Sponsor-CI chat stays on the locked frontier tail even when an
+    // Sponsor-CI keeps the non-Claude/OpenAI default on the chain when an
     // override names Sakana, DeepSeek, or a non-frontier id.
     if (isSponsorCiMode(env)) {
-        push(DEFAULT_FABLE_MODEL);
-        push(INTERIM_STABLE_MODEL);
-        push(FINAL_OPENAI_FALLBACK);
+        push(DEFAULT_MAIN_MODEL);
+        for (const model of DEFAULT_FALLBACK_MODELS) push(model);
     }
 
     return chain;

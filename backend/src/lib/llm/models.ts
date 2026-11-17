@@ -18,6 +18,7 @@ export const CLAUDE_MAIN_MODELS = [
 ] as const;
 export const GEMINI_MAIN_MODELS = [
     "gemini-4-argon",
+    "gemini-4-carbon",
     "gemini-3.5-flash",
     "gemini-3.1-pro-preview",
     "gemini-3-flash-preview",
@@ -46,7 +47,7 @@ export const DEEPSEEK_MAIN_MODELS = [
 // is on. Not a council seat. No API key is wired in this repo.
 export const MOONSHOT_MAIN_MODELS = ["kimi-k3.1-pro"] as const;
 // NVIDIA Nemotron 3 Ultra. Selectable in chat and on ask_mike.
-// Not a council seat and not in the default fallback chain.
+// Not a council seat. It is the last hop of the unpinned chat chain.
 export const NVIDIA_MAIN_MODELS = ["nvidia/nemotron-3-ultra-550b-a55b"] as const;
 
 // Default Sakana Fugu model.
@@ -65,7 +66,17 @@ export const CLAUDE_LEGACY_LOW_MODELS = ["claude-haiku-4-5"] as const;
 export const GEMINI_LOW_MODELS = ["gemini-3.1-flash-lite"] as const;
 export const OPENAI_LOW_MODELS = ["gpt-5.4-lite"] as const;
 
-export const DEFAULT_MAIN_MODEL = "claude-fable-5-2";
+/**
+ * Unpinned chat primary. Julio's rule: the default chain only counts on a
+ * model that is not Claude and not OpenAI. Pinned Claude and OpenAI ids
+ * still resolve when the caller names them.
+ */
+export const DEFAULT_MAIN_MODEL = "gemini-4-carbon";
+/** Unpinned chat tail, in order. No Claude and no OpenAI. */
+export const DEFAULT_FALLBACK_MODELS = [
+    "grok-4.7",
+    "nvidia/nemotron-3-ultra-550b-a55b",
+] as const;
 export const DEFAULT_TITLE_MODEL = "gemini-3.1-flash-lite";
 export const DEFAULT_TABULAR_MODEL = "gemini-3-flash-preview";
 

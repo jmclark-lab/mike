@@ -48,14 +48,14 @@ export class ConnectorJobManager {
   constructor(
     private readonly run: (
       prompt: string,
-      options?: { model?: string },
+      options?: { model?: string; effort?: string },
     ) => Promise<string | ConnectorRunResult>,
   ) {}
 
   startOrGet(
     id: string,
     prompt: string,
-    options?: { model?: string },
+    options?: { model?: string; effort?: string },
   ): ConnectorJobSnapshot {
     this.prune();
     const existing = this.jobs.get(id);
@@ -69,7 +69,7 @@ export class ConnectorJobManager {
       updatedAt: now,
     });
 
-    void this.run(prompt, { model: options?.model })
+    void this.run(prompt, { model: options?.model, effort: options?.effort })
       .then((value) => {
         const outcome = normalizeConnectorRunResult(value);
         const text = outcome.text;

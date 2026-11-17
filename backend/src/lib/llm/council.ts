@@ -43,13 +43,16 @@ const DEFAULT_COUNCIL_SEATS: readonly CouncilSeat[] = [
     provider: "google",
     model: "gemini-4-carbon",
     label: "Gemini 4 Carbon",
-    maxTokens: 16000,
+    // thinking_level high counts against this cap. Use the model maximum.
+    maxTokens: 32768,
   },
   {
     provider: "xai",
     model: "grok-4.7",
     label: "Grok 4.7",
-    maxTokens: 8000,
+    reasoningEffort: "xhigh",
+    // xhigh reasoning can consume a small max_output_tokens before any text.
+    maxTokens: 32768,
   },
 ] as const;
 
