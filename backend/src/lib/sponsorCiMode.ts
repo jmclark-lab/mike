@@ -19,16 +19,21 @@
  * production, unset stays off so local dev and unit tests are unchanged.
  *
  * While the mode is on:
- * - Sakana (`fugu-`), DeepSeek, and Kimi (`kimi-`) cannot be selected,
- *   cannot sit on the council, and cannot be the judge, even when an API
- *   key is configured. Kimi also stays off unless `KIMI_K31_PRO_ENABLED`
- *   is exactly `true`; that flag defaults off and does not wire a Moonshot key.
+ * - Sakana (`fugu-`), DeepSeek, and Kimi (`kimi-`) cannot sit on the
+ *   council, cannot be the judge, and cannot join the default or fallback
+ *   chain, even when an API key is configured. They are never
+ *   auto-selected. The one exception is an explicit chat or connector pin
+ *   of `kimi-k3.1-pro`, and only when `KIMI_K31_PRO_ENABLED` is exactly
+ *   `true` (after trimming; `1`, `yes`, `on`, and `TRUE` do not count)
+ *   and `MOONSHOT_API_KEY` is set. Every other `kimi-` id stays refused.
+ *   With the flag off, the pin is refused exactly as before.
  * - Council seats and the judge stay on the locked frontier GA ids already
  *   on main. Chat hops that are not those frontier ids are dropped. The
  *   unpinned chat chain stays gemini-4-carbon → grok-4.7 → Nemotron.
  *   Sponsor-CI does not put Claude or OpenAI back on that chain. An
  *   explicit LLM_MODEL, LLM_FALLBACK_MODEL, or ask_mike pin may still
- *   name a frontier Claude or OpenAI id.
+ *   name a frontier Claude or OpenAI id. `LLM_MODEL` and
+ *   `LLM_FALLBACK_MODEL` cannot name Kimi.
  * - The fail-closed export attribution gate cannot be skipped. Docx, PDF,
  *   and legacy .doc were already gated. Plain text and any other download
  *   are scanned too.
@@ -123,13 +128,37 @@ export function isSponsorCiFencedModel(
   return isSponsorCiMode(env) && isFencedModelId(model);
 }
 
+const PINNED_KIMI_K31_PRO = "kimi-k3.1-pro";
+
+/**
+ * Exact id of the opt-in pin. Case and surrounding space do not create a
+ * second id. `kimi-k3.1-pro-highspeed` and every other `kimi-` id stay out.
+ */
+function isPinnedKimiK31ProId(model: string): boolean {
+  return model.trim().toLowerCase() === PINNED_KIMI_K31_PRO;
+}
+
+/**
+ * Same gate as the pin itself: the flag is exactly "true" after trimming,
+ * and a Moonshot key is present. This does not make the id selectable for
+ * council, judge, resolveModel, or the fallback chain.
+ */
+function pinnedKimiK31ProReady(env: NodeJS.ProcessEnv): boolean {
+  return (
+    env.KIMI_K31_PRO_ENABLED?.trim() === "true" &&
+    Boolean(env.MOONSHOT_API_KEY?.trim())
+  );
+}
+
 export function isSponsorCiFrontierModel(model: string): boolean {
   return FRONTIER.has(model.trim());
 }
 
 /**
- * While Sponsor-CI mode is on, a Sakana or DeepSeek id is replaced with
- * `fallback`. Other ids pass through.
+ * While Sponsor-CI mode is on, a Sakana, DeepSeek, or Kimi id is replaced
+ * with `fallback`, including an otherwise allowed `kimi-k3.1-pro` pin.
+ * Other ids pass through. The pin exception lives only in
+ * `assertSponsorCiAllowsModel`.
  */
 export function fenceModelId(
   model: string | null | undefined,
@@ -143,13 +172,19 @@ export function fenceModelId(
 
 /**
  * Throws before any provider call when Sponsor-CI mode refuses the id.
- * API keys are irrelevant: the refusal happens before the adapter.
+ *
+ * Sakana, DeepSeek, and Kimi stay refused for council, the judge, and any
+ * default or fallback hop. An explicit chat or connector pin of
+ * `kimi-k3.1-pro` is the only exception, and only when the Kimi flag is
+ * exactly `true` and `MOONSHOT_API_KEY` is set. The id stays fenced for
+ * `resolveModel` and `fenceModelId`, so it is never auto-selected.
  */
 export function assertSponsorCiAllowsModel(
   model: string,
   env: NodeJS.ProcessEnv = process.env,
 ): void {
   if (!isSponsorCiFencedModel(model, env)) return;
+  if (isPinnedKimiK31ProId(model) && pinnedKimiK31ProReady(env)) return;
   throw new Error(
     `Sponsor-CI mode refuses ${model.trim()}. Sakana, DeepSeek, and Kimi cannot be used for chat, council, or judge, even when an API key is configured.`,
   );
