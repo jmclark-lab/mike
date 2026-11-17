@@ -83,7 +83,7 @@ test("tools expose bounded multipart output schemas and accurate annotations", a
   assert.equal(byName.ask_mike.annotations.destructiveHint, false);
   assert.equal(byName.ask_mike.inputSchema.properties.prompt.maxLength, 500000);
   assert.match(byName.ask_mike.inputSchema.properties.prompt.description, /UTF-8 byte chunks under 128 KiB/i);
-  assert.match(source, /CONNECTOR_VERSION = "1\.8\.6"/);
+  assert.match(source, /CONNECTOR_VERSION = "1\.8\.7"/);
   assert.equal(byName.ask_mike.inputSchema.properties.effort.enum.join(","), "low,medium,high,max");
   assert.deepEqual(byName.ask_mike.inputSchema.properties.model.enum, [
     "claude-fable-5-2",
@@ -100,6 +100,7 @@ test("tools expose bounded multipart output schemas and accurate annotations", a
     "nvidia/nemotron-3-ultra-550b-a55b",
     "nemotron",
     "nvidia",
+    "kimi-k3.1-pro",
   ]);
   assert.match(byName.ask_mike.inputSchema.properties.model.description, /gemini-4-carbon/);
   assert.match(byName.ask_mike.inputSchema.properties.model.description, /no fallback/i);
@@ -533,7 +534,7 @@ test("ask_mike rejects an unknown model and lists the allowed values", async () 
   });
   assert.equal(result.result.isError, true);
   assert.match(result.result.content[0].text, /Unknown model "claude-haiku"/);
-  for (const allowed of ["claude-fable-5-2", "claude", "claude-opus-5-5", "gpt-6-astra", "openai", "gpt", "gpt-6.1-sol", "gemini-4-carbon", "gemini", "grok-4.7", "grok", "nvidia/nemotron-3-ultra-550b-a55b", "nemotron", "nvidia"]) {
+  for (const allowed of ["claude-fable-5-2", "claude", "claude-opus-5-5", "gpt-6-astra", "openai", "gpt", "gpt-6.1-sol", "gemini-4-carbon", "gemini", "grok-4.7", "grok", "nvidia/nemotron-3-ultra-550b-a55b", "nemotron", "nvidia", "kimi-k3.1-pro"]) {
     assert.match(result.result.content[0].text, new RegExp(allowed));
   }
 });
@@ -576,6 +577,7 @@ test("ask_mike acknowledgement keeps a single provider prefix for every pinned m
     { input: "nvidia/nemotron-3-ultra-550b-a55b", provider: "nvidia", model: "nvidia/nemotron-3-ultra-550b-a55b", label: "nvidia/nemotron-3-ultra-550b-a55b" },
     { input: "nemotron", provider: "nvidia", model: "nvidia/nemotron-3-ultra-550b-a55b", label: "nvidia/nemotron-3-ultra-550b-a55b" },
     { input: "NVIDIA", provider: "nvidia", model: "nvidia/nemotron-3-ultra-550b-a55b", label: "nvidia/nemotron-3-ultra-550b-a55b" },
+    { input: "kimi-k3.1-pro", provider: "moonshot", model: "kimi-k3.1-pro", label: "moonshot/kimi-k3.1-pro" },
   ];
   const jobState = state();
   const env = {
@@ -836,12 +838,12 @@ test("an unpinned negation of the council is not forced into a council answer", 
   }
 });
 
-test("connector health and initialize report v1.8.6", async () => {
+test("connector health and initialize report v1.8.7", async () => {
   const health = await workerModule.default.fetch(new Request("https://mike.test/health"));
   assert.equal(health.status, 200);
-  assert.equal(await health.text(), "Mike Legal AI — MCP connector v1.8.6.");
+  assert.equal(await health.text(), "Mike Legal AI — MCP connector v1.8.7.");
   const initialized = await rpc({ MCP_API_KEY: "test-key" }, "initialize");
-  assert.equal(initialized.result.serverInfo.version, "1.8.6");
+  assert.equal(initialized.result.serverInfo.version, "1.8.7");
 });
 
 test("ask_mike forwards effort and rejects an unknown effort", async () => {

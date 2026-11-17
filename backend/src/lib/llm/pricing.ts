@@ -62,7 +62,7 @@ export const MODEL_TOKEN_PRICES: Record<string, readonly TokenPrice[]> = {
     {
       inputUsdPerMillion: 2,
       outputUsdPerMillion: 10,
-      note: "Moonshot standard rate. Cache read is $0.20 / 1M. No key is wired for this model.",
+      note: "International list price on platform.moonshot.ai. Cache hit is $0.20 / 1M and cache write is $2 / 1M. Pin-only; no key is wired in this repo.",
     },
   ],
 };

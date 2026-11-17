@@ -286,7 +286,11 @@ const KIMI_OMITTED_KEYS = [
 
 /**
  * Moonshot chat-completions body. Kimi K3.1 Pro fixes sampling params and
- * tells callers to omit them.
+ * tells callers to omit them. `reasoning_effort` is the K3 control
+ * (`low` | `high` | `max`). Omit it to keep Moonshot's default (`max`).
+ * `medium` is not a Moonshot value; callers map it before this function.
+ * The completion cap is `max_completion_tokens` (default 131072, max
+ * 1048576). Reasoning tokens count against that cap.
  */
 export function buildKimiChatBody(params: {
   model: string;
@@ -294,6 +298,7 @@ export function buildKimiChatBody(params: {
   maxTokens?: number;
   stream?: boolean;
   tools?: unknown;
+  reasoningEffort?: "low" | "high" | "max";
   temperature?: number;
   top_p?: number;
   n?: number;
@@ -303,8 +308,11 @@ export function buildKimiChatBody(params: {
   const body: Record<string, unknown> = {
     model: params.model,
     messages: params.messages,
-    max_tokens: params.maxTokens,
+    max_completion_tokens: params.maxTokens,
     stream: params.stream,
+    ...(params.reasoningEffort
+      ? { reasoning_effort: params.reasoningEffort }
+      : {}),
     ...(params.tools ? { tools: params.tools } : {}),
   };
   if (params.temperature !== undefined) body.temperature = params.temperature;

@@ -43,8 +43,10 @@ export const DEEPSEEK_MAIN_MODELS = [
     "deepseek-v4-flash",
     "deepseek-v4-pro",
 ] as const;
-// Moonshot OpenAI-compatible id. Selectable only while KIMI_K31_PRO_ENABLED
-// is on. Not a council seat. No API key is wired in this repo.
+// Public alias and verified Moonshot chat-completions id are the same
+// string: kimi-k3.1-pro. Selectable only while KIMI_K31_PRO_ENABLED is
+// exactly "true" and MOONSHOT_API_KEY is set. Not a council seat and not
+// on the unpinned chat chain.
 export const MOONSHOT_MAIN_MODELS = ["kimi-k3.1-pro"] as const;
 // NVIDIA Nemotron 3 Ultra. Selectable in chat and on ask_mike.
 // Not a council seat. It is the last hop of the unpinned chat chain.
@@ -124,14 +126,14 @@ export function isNvidiaModelId(model: string): boolean {
     );
 }
 
-const KIMI_FLAG_TRUTHY = new Set(["1", "true", "yes", "on"]);
-
-/** Off unless KIMI_K31_PRO_ENABLED is an explicit truthy value. */
+/**
+ * Off unless KIMI_K31_PRO_ENABLED is exactly "true" after trimming.
+ * "1", "yes", "on", and "TRUE" stay off. The pin does not fall back.
+ */
 export function isKimiK31ProEnabled(
     env: NodeJS.ProcessEnv = process.env,
 ): boolean {
-    const raw = env.KIMI_K31_PRO_ENABLED?.trim().toLowerCase() ?? "";
-    return KIMI_FLAG_TRUTHY.has(raw);
+    return env.KIMI_K31_PRO_ENABLED?.trim() === "true";
 }
 
 export function isKimiModelId(model: string): boolean {
@@ -151,10 +153,18 @@ export function assertKimiSelectable(
     model: string,
     env: NodeJS.ProcessEnv = process.env,
 ): void {
-    if (isSelectableModelId(model, env)) return;
-    throw new Error(
-        `Kimi is disabled (${model.trim()}). KIMI_K31_PRO_ENABLED is off and no Moonshot API key is wired.`,
-    );
+    if (!isKimiModelId(model)) return;
+    const id = model.trim();
+    if (!isKimiK31ProEnabled(env)) {
+        throw new Error(
+            `Kimi K3.1 Pro is switched off (${id}). Set KIMI_K31_PRO_ENABLED=true to pin it. The pin is rejected and does not fall back to another model.`,
+        );
+    }
+    if (!env.MOONSHOT_API_KEY?.trim()) {
+        throw new Error(
+            `Kimi K3.1 Pro pin ${id} requires MOONSHOT_API_KEY. No Moonshot API key is configured, so the pin is rejected and does not fall back to another model.`,
+        );
+    }
 }
 
 /** True for retired Sakana Fugu ids. Chat and council must not call these. */

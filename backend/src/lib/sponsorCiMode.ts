@@ -22,7 +22,7 @@
  * - Sakana (`fugu-`), DeepSeek, and Kimi (`kimi-`) cannot be selected,
  *   cannot sit on the council, and cannot be the judge, even when an API
  *   key is configured. Kimi also stays off unless `KIMI_K31_PRO_ENABLED`
- *   is set; that flag defaults off and does not wire a Moonshot key.
+ *   is exactly `true`; that flag defaults off and does not wire a Moonshot key.
  * - Council seats and the judge stay on the locked frontier GA ids already
  *   on main. Chat hops that are not those frontier ids are dropped. The
  *   unpinned chat chain stays gemini-4-carbon → grok-4.7 → Nemotron.

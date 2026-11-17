@@ -259,6 +259,18 @@ test("kimi-k3.1-pro chat body omits Moonshot's fixed sampling params", () => {
   ]);
   assert.equal(body.model, "kimi-k3.1-pro");
   assert.equal(body.stream, true);
+  assert.equal(body.max_completion_tokens, 256);
+  assert.equal(body.max_tokens, undefined);
+  assert.equal(body.reasoning_effort, undefined);
+
+  const high = buildKimiChatBody({
+    model: "kimi-k3.1-pro",
+    messages: [{ role: "user", content: "Hello" }],
+    maxTokens: 32768,
+    reasoningEffort: "high",
+  });
+  assert.equal(high.reasoning_effort, "high");
+  assert.equal(high.thinking, undefined);
 });
 
 test("gpt-6-sol stays on the legacy body, including reasoning effort none", () => {
