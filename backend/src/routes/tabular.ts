@@ -68,6 +68,7 @@ function providerLabel(provider: Provider): string {
     if (provider === "sakana") return "Sakana";
     if (provider === "moonshot") return "Moonshot";
     if (provider === "nvidia") return "NVIDIA";
+    if (provider === "orchestrator") return "Perplexity Orchestrator";
     return "Gemini";
 }
 

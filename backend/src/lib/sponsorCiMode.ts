@@ -34,6 +34,11 @@
  *   explicit LLM_MODEL, LLM_FALLBACK_MODEL, or ask_mike pin may still
  *   name a frontier Claude or OpenAI id. `LLM_MODEL` and
  *   `LLM_FALLBACK_MODEL` cannot name Kimi.
+ * - Perplexity Orchestrator ids (`orchestrator/<vendor>/<model>`) are refused
+ *   for every pin and dropped from every chain: they are not in the frontier
+ *   set above, and assertOrchestratorSelectable throws while this mode is on.
+ *   Perplexity zero data retention is off by default and needs a written
+ *   agreement, so sponsor documents must not reach it.
  * - The fail-closed export attribution gate cannot be skipped. Docx, PDF,
  *   and legacy .doc were already gated. Plain text and any other download
  *   are scanned too.

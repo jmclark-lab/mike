@@ -12,7 +12,7 @@ import { completeTextStrict } from "./index";
 import type { ReasoningEffort, UserApiKeys } from "./types";
 import { OUTBOUND_ATTRIBUTION_RULE } from "../outboundAttribution";
 import { isSponsorCiMode } from "../sponsorCiMode";
-import { isNvidiaModelId } from "./models";
+import { isNvidiaModelId, isOrchestratorModelId } from "./models";
 import { GEMINI_4_CARBON_MAX_OUTPUT_TOKENS } from "./requestParams";
 
 export interface CouncilSeat {
@@ -65,7 +65,7 @@ export function resolveCouncilJudge(
 ): string {
   if (isSponsorCiMode(env)) return COUNCIL_JUDGE;
   const override = env.COUNCIL_JUDGE?.trim() || "";
-  if (!override || isNvidiaModelId(override)) return COUNCIL_JUDGE;
+  if (!override || isNvidiaModelId(override) || isOrchestratorModelId(override)) return COUNCIL_JUDGE;
   return override;
 }
 
@@ -251,8 +251,8 @@ export function resolveCouncilSeats(
   const seatModel = (override: string | undefined, fallback: string) => {
     if (lockFrontier) return fallback;
     const requested = override?.trim() || "";
-    // Nemotron is a chat model only. A seat override cannot put it on the council.
-    if (!requested || isNvidiaModelId(requested)) return fallback;
+    // Nemotron and Orchestrator ids are chat-only. A seat override cannot put them on the council.
+    if (!requested || isNvidiaModelId(requested) || isOrchestratorModelId(requested)) return fallback;
     return requested;
   };
   return [
@@ -442,7 +442,8 @@ export async function conveneCouncilWithCompleter(
     ? resolveCouncilSeats()
     : (options.seats ?? resolveCouncilSeats());
   const seats = requestedSeats.map((seat, index) =>
-    index < DEFAULT_COUNCIL_SEATS.length && isNvidiaModelId(seat.model)
+    index < DEFAULT_COUNCIL_SEATS.length &&
+    (isNvidiaModelId(seat.model) || isOrchestratorModelId(seat.model))
       ? { ...DEFAULT_COUNCIL_SEATS[index] }
       : seat,
   );
