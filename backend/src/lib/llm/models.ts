@@ -1,5 +1,8 @@
 import type { Provider } from "./types";
 import { isSponsorCiFencedModel } from "../sponsorCiMode";
+import { isOrchestratorModelId, orchestratorWireModel } from "./orchestratorIds";
+
+export { isOrchestratorModelId, orchestratorWireModel, ORCHESTRATOR_MODEL_PREFIX } from "./orchestratorIds";
 
 // ---------------------------------------------------------------------------
 // Canonical model IDs
@@ -104,6 +107,7 @@ const ALL_MODELS = new Set<string>([
 // ---------------------------------------------------------------------------
 
 export function providerForModel(model: string): Provider {
+    if (isOrchestratorModelId(model)) return "orchestrator";
     if (model.startsWith("claude")) return "claude";
     if (model.startsWith("gemini")) return "gemini";
     if (model.startsWith("gpt-")) return "openai";
@@ -140,12 +144,24 @@ export function isKimiModelId(model: string): boolean {
     return model.trim().toLowerCase().startsWith("kimi-");
 }
 
-/** Kimi ids are selectable only while their flag is on. Every other id is. */
+/**
+ * Kimi ids are selectable only while their flag is on. Orchestrator ids only while ORCHESTRATOR_ENABLED is exactly
+ * "true", a key is set, and the id is a pinned catalog id (never perplexity/auto). Every other id is selectable.
+ * Orchestrator ids are never in ALL_MODELS, so resolveModel, account settings and the picker cannot select them;
+ * they are reachable only by an operator naming one in LLM_MODEL / LLM_FALLBACK_MODEL.
+ */
 export function isSelectableModelId(
     model: string,
     env: NodeJS.ProcessEnv = process.env,
 ): boolean {
     if (isKimiModelId(model)) return isKimiK31ProEnabled(env);
+    if (isOrchestratorModelId(model)) {
+        return (
+            env.ORCHESTRATOR_ENABLED?.trim() === "true" &&
+            Boolean((env.ORCHESTRATOR_API_KEY ?? env.PERPLEXITY_API_KEY)?.trim()) &&
+            orchestratorWireModel(model) !== null
+        );
+    }
     return true;
 }
 

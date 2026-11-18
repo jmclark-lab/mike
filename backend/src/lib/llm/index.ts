@@ -8,12 +8,14 @@ import {
     DEFAULT_FALLBACK_MODELS,
     DEFAULT_MAIN_MODEL,
     isKimiModelId,
+    isOrchestratorModelId,
     isSakanaModelId,
     isSelectableModelId,
     providerForModel,
 } from "./models";
 import { completeMoonshotText, streamMoonshot } from "./moonshot";
 import { completeNvidiaText, streamNvidia } from "./nvidia";
+import { assertOrchestratorSelectable, completeOrchestratorText, streamOrchestrator } from "./orchestrator";
 import {
     assertSponsorCiAllowsModel,
     isSponsorCiFencedModel,
@@ -302,6 +304,7 @@ function rejectUnavailableModel(model: string): void {
     rejectSakanaModel(model);
     assertSponsorCiAllowsModel(model);
     assertKimiSelectable(model);
+    assertOrchestratorSelectable(model, { sponsorCi: isSponsorCiMode() });
 }
 
 async function invokeStream(
@@ -317,6 +320,7 @@ async function invokeStream(
     if (provider === "deepseek") return streamDeepSeek({ ...params, model });
     if (provider === "moonshot") return streamMoonshot({ ...params, model });
     if (provider === "nvidia") return streamNvidia({ ...params, model });
+    if (provider === "orchestrator") return streamOrchestrator({ ...params, model });
     throw new Error(`No chat stream adapter for ${provider} model ${model}.`);
 }
 
@@ -339,6 +343,7 @@ async function invokeComplete(
     if (provider === "deepseek") return completeDeepSeekText({ ...params, model });
     if (provider === "moonshot") return completeMoonshotText({ ...params, model });
     if (provider === "nvidia") return completeNvidiaText({ ...params, model });
+    if (provider === "orchestrator") return completeOrchestratorText({ ...params, model });
     throw new Error(`No completion adapter for ${provider} model ${model}.`);
 }
 
@@ -607,6 +612,12 @@ export async function completeTextStrict(params: {
 }): Promise<string> {
     const model = params.model?.trim();
     if (!model) throw new Error("A model is required for strict completion.");
+    // Strict completion is the council seat/judge path. Orchestrator ids are never seats or the judge.
+    if (isOrchestratorModelId(model)) {
+        throw new Error(
+            `Council seats and the judge cannot use ${model}. Perplexity Orchestrator is not a council provider.`,
+        );
+    }
     const startedAt = Date.now();
     try {
         const result = await invokeComplete(model, params);

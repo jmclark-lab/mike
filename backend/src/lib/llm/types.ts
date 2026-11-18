@@ -2,7 +2,7 @@
 // Callers always speak OpenAI-style tools + { role, content } messages; each
 // provider translates internally.
 
-export type Provider = "claude" | "gemini" | "openai" | "sakana" | "xai" | "deepseek" | "moonshot" | "nvidia";
+export type Provider = "claude" | "gemini" | "openai" | "sakana" | "xai" | "deepseek" | "moonshot" | "nvidia" | "orchestrator";
 
 export type OpenAIToolSchema = {
     type: "function";
@@ -48,6 +48,8 @@ export type UserApiKeys = {
     /** Unused. Kimi does not read a user or env key from this slot. */
     moonshot?: string | null;
     nvidia?: string | null;
+    /** Unused. Orchestrator reads ORCHESTRATOR_API_KEY / PERPLEXITY_API_KEY from the env only, never a user key. */
+    orchestrator?: string | null;
 };
 
 export type ReasoningEffort =
